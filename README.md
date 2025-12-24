@@ -2,11 +2,11 @@
 
 > **Like beads, but smaller and faster!**
 
-Minimal task tracker for AI agents. 358KB binary, ~2ms startup, single JSONL file.
+Minimal task tracker for AI agents. 159KB binary, ~3ms startup, SQLite storage with beads compatibility.
 
 ## What is dots?
 
-dots is a CLI task tracker designed for Claude Code hooks. It tracks tasks in a `.dots` file using JSONL format. Each task has an ID, title, status, priority, and optional parent/dependency relationships.
+dots is a CLI task tracker designed for Claude Code hooks. It stores tasks in `.beads/beads.db` (SQLite) for beads compatibility, enabling drop-in replacement. Each task has an ID, title, status, priority, and optional parent/dependency relationships.
 
 ## Installation
 
@@ -15,7 +15,7 @@ dots is a CLI task tracker designed for Claude Code hooks. It tracks tasks in a 
 ```bash
 git clone https://github.com/joelreymont/dots.git
 cd dots
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=ReleaseSmall
 cp zig-out/bin/dot ~/.local/bin/
 ```
 
@@ -375,10 +375,10 @@ Status mapping: beads `in_progress` = dots `active`
 
 | | beads | dots | diff |
 |---|------:|-----:|------|
-| Binary | 19 MB | 358 KB | 53x smaller |
-| Code | 188K lines | 956 lines | 196x smaller |
-| Startup | ~7ms | ~2ms | 3.5x faster |
-| Storage | SQLite + JSONL | JSONL | simpler |
+| Binary | 19 MB | 159 KB | 119x smaller |
+| Code | 188K lines | ~800 lines | 235x smaller |
+| Startup | ~7ms | ~3ms | 2x faster |
+| Storage | SQLite | SQLite | same |
 | Daemon | Required | None | — |
 
 ## License
