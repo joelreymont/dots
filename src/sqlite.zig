@@ -28,6 +28,7 @@ pub const Db = struct {
             if (db) |d| _ = c.sqlite3_close(d);
             return SqliteError.OpenFailed;
         }
+        errdefer _ = c.sqlite3_close(db.?);
 
         const self = Self{
             .handle = db.?,
@@ -291,6 +292,9 @@ pub const Storage = struct {
     }
 
     pub fn createIssue(self: *Self, issue: Issue) !void {
+        try self.db.exec("BEGIN TRANSACTION");
+        errdefer self.db.exec("ROLLBACK") catch {};
+
         self.insert_stmt.reset();
         try self.insert_stmt.bindText(1, issue.id);
         try self.insert_stmt.bindText(2, issue.title);
@@ -311,6 +315,7 @@ pub const Storage = struct {
         }
 
         try self.markDirty(issue.id, issue.created_at);
+        try self.db.exec("COMMIT");
     }
 
     pub fn updateStatus(self: *Self, id: []const u8, status: []const u8, updated_at: []const u8, closed_at: ?[]const u8, reason: ?[]const u8) !void {

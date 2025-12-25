@@ -429,16 +429,19 @@ fn cmdBeadsClose(allocator: Allocator, args: []const []const u8) !void {
 }
 
 fn generateId(allocator: Allocator) ![]u8 {
-    const nanos = std.time.nanoTimestamp();
-    // Use microseconds with 32-bit truncation for ~4 billion unique IDs
-    const micros: u64 = @intCast(@as(u128, @intCast(nanos)) / 1000);
-    return std.fmt.allocPrint(allocator, "bd-{x}", .{@as(u32, @truncate(micros))});
+    // Use microseconds (48-bit) + random (16-bit) for collision resistance
+    const ts = std.time.microTimestamp();
+    if (ts < 0) return error.InvalidTimestamp;
+    const micros: u48 = @truncate(@as(u64, @intCast(ts)));
+    const rand: u16 = std.crypto.random.int(u16);
+    return std.fmt.allocPrint(allocator, "bd-{x}{x:0>4}", .{ micros, rand });
 }
 
 fn formatTimestamp(buf: []u8) ![]const u8 {
     const nanos = std.time.nanoTimestamp();
+    if (nanos < 0) return error.InvalidTimestamp;
     const epoch_nanos: u128 = @intCast(nanos);
-    const epoch_secs: libc.time_t = @intCast(epoch_nanos / 1_000_000_000);
+    const epoch_secs: libc.time_t = std.math.cast(libc.time_t, epoch_nanos / 1_000_000_000) orelse return error.TimestampOverflow;
     const micros: u64 = @intCast((epoch_nanos % 1_000_000_000) / 1000);
 
     var tm: libc.struct_tm = undefined;
@@ -466,29 +469,27 @@ fn formatTimestamp(buf: []u8) ![]const u8 {
 }
 
 fn writeIssueJson(issue: sqlite.Issue, w: Writer) !void {
-    try w.writeAll("{\"id\":\"");
-    try w.writeAll(issue.id);
-    try w.writeAll("\",\"title\":");
+    try w.writeAll("{\"id\":");
+    try writeJsonString(issue.id, w);
+    try w.writeAll(",\"title\":");
     try writeJsonString(issue.title, w);
     if (issue.description.len > 0) {
         try w.writeAll(",\"description\":");
         try writeJsonString(issue.description, w);
     }
-    try w.writeAll(",\"status\":\"");
-    try w.writeAll(displayStatus(issue.status));
-    try w.writeAll("\",\"priority\":");
+    try w.writeAll(",\"status\":");
+    try writeJsonString(displayStatus(issue.status), w);
+    try w.writeAll(",\"priority\":");
     try w.print("{d}", .{issue.priority});
-    try w.writeAll(",\"issue_type\":\"");
-    try w.writeAll(issue.issue_type);
-    try w.writeAll("\",\"created_at\":\"");
-    try w.writeAll(issue.created_at);
-    try w.writeAll("\",\"updated_at\":\"");
-    try w.writeAll(issue.updated_at);
-    try w.writeByte('"');
+    try w.writeAll(",\"issue_type\":");
+    try writeJsonString(issue.issue_type, w);
+    try w.writeAll(",\"created_at\":");
+    try writeJsonString(issue.created_at, w);
+    try w.writeAll(",\"updated_at\":");
+    try writeJsonString(issue.updated_at, w);
     if (issue.closed_at) |ca| {
-        try w.writeAll(",\"closed_at\":\"");
-        try w.writeAll(ca);
-        try w.writeByte('"');
+        try w.writeAll(",\"closed_at\":");
+        try writeJsonString(ca, w);
     }
     if (issue.close_reason) |r| {
         try w.writeAll(",\"close_reason\":");
@@ -611,9 +612,9 @@ fn hookSync(allocator: Allocator) !void {
         const status = if (todo.get("status")) |v| (if (v == .string) v.string else "pending") else "pending";
 
         if (std.mem.eql(u8, status, "completed")) {
-            // Mark as done if we have mapping
+            // Mark as done if we have mapping - only remove on success
             if (mapping.get(content)) |dot_id| {
-                storage.updateStatus(dot_id, "closed", now, now, "Completed via TodoWrite") catch {};
+                storage.updateStatus(dot_id, "closed", now, now, "Completed via TodoWrite") catch continue;
                 if (mapping.fetchRemove(content)) |kv| {
                     allocator.free(kv.key);
                     allocator.free(kv.value);
@@ -703,7 +704,6 @@ fn saveMapping(allocator: Allocator, map: std.StringHashMap([]const u8)) void {
     const file = fs.cwd().createFile(MAPPING_FILE, .{}) catch return;
     defer file.close();
 
-    // Build JSON manually
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
@@ -713,17 +713,14 @@ fn saveMapping(allocator: Allocator, map: std.StringHashMap([]const u8)) void {
     while (it.next()) |entry| {
         if (!first) buf.appendSlice(allocator, ",") catch return;
         first = false;
-        // Escape keys (content may have quotes)
         appendJsonString(&buf, allocator, entry.key_ptr.*) catch return;
         buf.appendSlice(allocator, ":") catch return;
-        // Values are IDs (safe, no escaping needed)
-        buf.appendSlice(allocator, "\"") catch return;
-        buf.appendSlice(allocator, entry.value_ptr.*) catch return;
-        buf.appendSlice(allocator, "\"") catch return;
+        appendJsonString(&buf, allocator, entry.value_ptr.*) catch return;
     }
     buf.appendSlice(allocator, "}") catch return;
 
-    _ = file.write(buf.items) catch return;
+    file.writeAll(buf.items) catch return;
+    file.sync() catch return;
 }
 
 fn appendJsonString(buf: *std.ArrayList(u8), allocator: Allocator, s: []const u8) !void {
