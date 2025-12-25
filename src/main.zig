@@ -243,7 +243,7 @@ fn cmdAdd(allocator: Allocator, args: []const []const u8) !void {
 
     const w = stdout();
     if (hasFlag(args, "--json")) {
-        try writeIssueJson(issue, w);
+        try writeIssueJson(allocator, issue, w);
         try w.writeByte('\n');
     } else {
         try w.print("{s}\n", .{id});
@@ -263,7 +263,7 @@ fn cmdList(allocator: Allocator, args: []const []const u8) !void {
     const issues = try storage.listIssues(filter_status);
     defer sqlite.freeIssues(allocator, issues);
 
-    try writeIssueList(issues, filter_status == null, hasFlag(args, "--json"));
+    try writeIssueList(allocator, issues, filter_status == null, hasFlag(args, "--json"));
 }
 
 fn cmdReady(allocator: Allocator, args: []const []const u8) !void {
@@ -273,10 +273,10 @@ fn cmdReady(allocator: Allocator, args: []const []const u8) !void {
     const issues = try storage.getReadyIssues();
     defer sqlite.freeIssues(allocator, issues);
 
-    try writeIssueList(issues, false, hasFlag(args, "--json"));
+    try writeIssueList(allocator, issues, false, hasFlag(args, "--json"));
 }
 
-fn writeIssueList(issues: []const sqlite.Issue, skip_done: bool, use_json: bool) !void {
+fn writeIssueList(allocator: Allocator, issues: []const sqlite.Issue, skip_done: bool, use_json: bool) !void {
     const w = stdout();
     if (use_json) {
         try w.writeByte('[');
@@ -285,7 +285,7 @@ fn writeIssueList(issues: []const sqlite.Issue, skip_done: bool, use_json: bool)
             if (skip_done and std.mem.eql(u8, issue.status, "closed")) continue;
             if (!first) try w.writeByte(',');
             first = false;
-            try writeIssueJson(issue, w);
+            try writeIssueJson(allocator, issue, w);
         }
         try w.writeAll("]\n");
     } else {
@@ -468,52 +468,35 @@ fn formatTimestamp(buf: []u8) ![]const u8 {
     });
 }
 
-fn writeIssueJson(issue: sqlite.Issue, w: Writer) !void {
-    try w.writeAll("{\"id\":");
-    try writeJsonString(issue.id, w);
-    try w.writeAll(",\"title\":");
-    try writeJsonString(issue.title, w);
-    if (issue.description.len > 0) {
-        try w.writeAll(",\"description\":");
-        try writeJsonString(issue.description, w);
-    }
-    try w.writeAll(",\"status\":");
-    try writeJsonString(displayStatus(issue.status), w);
-    try w.writeAll(",\"priority\":");
-    try w.print("{d}", .{issue.priority});
-    try w.writeAll(",\"issue_type\":");
-    try writeJsonString(issue.issue_type, w);
-    try w.writeAll(",\"created_at\":");
-    try writeJsonString(issue.created_at, w);
-    try w.writeAll(",\"updated_at\":");
-    try writeJsonString(issue.updated_at, w);
-    if (issue.closed_at) |ca| {
-        try w.writeAll(",\"closed_at\":");
-        try writeJsonString(ca, w);
-    }
-    if (issue.close_reason) |r| {
-        try w.writeAll(",\"close_reason\":");
-        try writeJsonString(r, w);
-    }
-    try w.writeByte('}');
-}
+const JsonIssue = struct {
+    id: []const u8,
+    title: []const u8,
+    description: ?[]const u8 = null,
+    status: []const u8,
+    priority: i64,
+    issue_type: []const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+    closed_at: ?[]const u8 = null,
+    close_reason: ?[]const u8 = null,
+};
 
-fn writeJsonString(s: []const u8, w: Writer) !void {
-    try w.writeByte('"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try w.writeAll("\\\""),
-            '\\' => try w.writeAll("\\\\"),
-            '\n' => try w.writeAll("\\n"),
-            '\r' => try w.writeAll("\\r"),
-            '\t' => try w.writeAll("\\t"),
-            0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f => {
-                try w.print("\\u{x:0>4}", .{c});
-            },
-            else => try w.writeByte(c),
-        }
-    }
-    try w.writeByte('"');
+fn writeIssueJson(allocator: Allocator, issue: sqlite.Issue, w: Writer) !void {
+    const json_issue = JsonIssue{
+        .id = issue.id,
+        .title = issue.title,
+        .description = if (issue.description.len > 0) issue.description else null,
+        .status = displayStatus(issue.status),
+        .priority = issue.priority,
+        .issue_type = issue.issue_type,
+        .created_at = issue.created_at,
+        .updated_at = issue.updated_at,
+        .closed_at = issue.closed_at,
+        .close_reason = issue.close_reason,
+    };
+    const json = try std.json.Stringify.valueAlloc(allocator, json_issue, .{});
+    defer allocator.free(json);
+    try w.writeAll(json);
 }
 
 // Claude Code hook handlers
