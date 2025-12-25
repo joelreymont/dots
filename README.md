@@ -2,7 +2,7 @@
 
 > **Like beads, but smaller and faster!**
 
-Minimal task tracker for AI agents. 159KB binary, ~3ms startup, SQLite storage with beads compatibility.
+Minimal task tracker for AI agents. 1.3MB binary (static SQLite), ~3ms startup, beads-compatible storage.
 
 ## What is dots?
 
@@ -373,9 +373,11 @@ Status mapping: beads `in_progress` = dots `active`
 
 ## Why dots?
 
+Both binaries statically link SQLite for zero runtime dependencies.
+
 | | beads | dots | diff |
 |---|------:|-----:|------|
-| Binary | 19 MB | 159 KB | 119x smaller |
+| Binary | 19 MB | 1.3 MB | 15x smaller |
 | Code | 188K lines | ~800 lines | 235x smaller |
 | Startup | ~7ms | ~3ms | 2x faster |
 | Storage | SQLite | SQLite | same |

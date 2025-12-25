@@ -14,8 +14,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Link SQLite
-    exe.linkSystemLibrary("sqlite3");
+    // Link SQLite statically
+    exe.addObjectFile(.{ .cwd_relative = "/opt/homebrew/Cellar/sqlite/3.51.1/lib/libsqlite3.a" });
+    exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/Cellar/sqlite/3.51.1/include" });
 
     b.installArtifact(exe);
 
