@@ -598,6 +598,15 @@ pub const Storage = struct {
     }
 
     pub fn addDependency(self: *Self, issue_id: []const u8, depends_on_id: []const u8, dep_type: []const u8, created_at: []const u8) !void {
+        // Check for direct cycle: if depends_on already depends on issue_id
+        self.get_dep_type_stmt.reset();
+        try self.get_dep_type_stmt.bindText(1, depends_on_id);
+        try self.get_dep_type_stmt.bindText(2, issue_id);
+        if (try self.get_dep_type_stmt.step()) {
+            return error.DependencyCycle;
+        }
+
+        // Check if dependency already exists
         self.get_dep_type_stmt.reset();
         try self.get_dep_type_stmt.bindText(1, issue_id);
         try self.get_dep_type_stmt.bindText(2, depends_on_id);

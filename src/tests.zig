@@ -26,6 +26,19 @@ fn isBlocking(status: Status) bool {
 }
 
 fn oracleReady(statuses: [4]Status, deps: [4][4]bool) [4]bool {
+    // Filter out cycles: if deps[i][j] and deps[j][i], later one is skipped
+    var effective_deps: [4][4]bool = undefined;
+    for (0..4) |i| {
+        for (0..4) |j| {
+            if (deps[i][j] and deps[j][i] and j < i) {
+                // Cycle: j->i was added first, skip i->j
+                effective_deps[i][j] = false;
+            } else {
+                effective_deps[i][j] = deps[i][j];
+            }
+        }
+    }
+
     var ready = [_]bool{ false, false, false, false };
     for (0..4) |i| {
         if (statuses[i] != .open) {
@@ -34,7 +47,7 @@ fn oracleReady(statuses: [4]Status, deps: [4][4]bool) [4]bool {
         }
         var blocked = false;
         for (0..4) |j| {
-            if (deps[i][j] and isBlocking(statuses[j])) {
+            if (effective_deps[i][j] and isBlocking(statuses[j])) {
                 blocked = true;
                 break;
             }
@@ -225,8 +238,9 @@ test "prop: ready issues match oracle" {
             for (0..4) |i| {
                 for (0..4) |j| {
                     if (args.deps[i][j]) {
-                        storage.addDependency(ids[i], ids[j], "blocks", fixed_timestamp) catch |err| {
-                            std.debug.panic("add dependency: {}", .{err});
+                        storage.addDependency(ids[i], ids[j], "blocks", fixed_timestamp) catch |err| switch (err) {
+                            error.DependencyCycle => {}, // Skip cycles
+                            else => std.debug.panic("add dependency: {}", .{err}),
                         };
                     }
                 }
@@ -572,6 +586,65 @@ test "prop: unknown id errors" {
             return true;
         }
     }.property, .{ .iterations = 20, .seed = 0xBAD1D });
+}
+
+test "prop: dependency cycle rejected" {
+    // Test cycle detection at sqlite level
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    var storage = openTestStorage(allocator, test_dir);
+    defer storage.close();
+
+    // Create two issues
+    const issue_a = sqlite.Issue{
+        .id = "test-a",
+        .title = "Issue A",
+        .description = "",
+        .status = "open",
+        .priority = 2,
+        .issue_type = "task",
+        .assignee = null,
+        .created_at = fixed_timestamp,
+        .updated_at = fixed_timestamp,
+        .closed_at = null,
+        .close_reason = null,
+        .after = null,
+        .parent = null,
+    };
+    storage.createIssue(issue_a) catch |err| {
+        std.debug.panic("create A: {}", .{err});
+    };
+
+    const issue_b = sqlite.Issue{
+        .id = "test-b",
+        .title = "Issue B",
+        .description = "",
+        .status = "open",
+        .priority = 2,
+        .issue_type = "task",
+        .assignee = null,
+        .created_at = fixed_timestamp,
+        .updated_at = fixed_timestamp,
+        .closed_at = null,
+        .close_reason = null,
+        .after = null,
+        .parent = null,
+    };
+    storage.createIssue(issue_b) catch |err| {
+        std.debug.panic("create B: {}", .{err});
+    };
+
+    // Add A depends on B (A->B)
+    storage.addDependency("test-a", "test-b", "blocks", fixed_timestamp) catch |err| {
+        std.debug.panic("add A->B: {}", .{err});
+    };
+
+    // Try to add B depends on A (B->A) - should fail with DependencyCycle
+    const cycle_result = storage.addDependency("test-b", "test-a", "blocks", fixed_timestamp);
+    try std.testing.expectError(error.DependencyCycle, cycle_result);
 }
 
 test "prop: invalid dependency rejected" {

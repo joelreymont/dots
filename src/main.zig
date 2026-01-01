@@ -270,6 +270,7 @@ fn cmdAdd(allocator: Allocator, args: []const []const u8) !void {
 
     storage.createIssue(issue) catch |err| switch (err) {
         error.DependencyNotFound => fatal("Parent or after issue not found\n", .{}),
+        error.DependencyCycle => fatal("Dependency would create a cycle\n", .{}),
         else => return err,
     };
 
