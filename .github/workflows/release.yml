@@ -59,15 +59,13 @@ jobs:
         with:
           path: artifacts
 
-      - name: Checkout for migrate script
-        uses: actions/checkout@v4
-
       - name: Prepare release assets
         run: |
           mkdir -p release
           mv artifacts/dot-linux-x86_64/dot-linux-x86_64 release/
           mv artifacts/dot-macos-arm64/dot-macos-arm64 release/
-          cp migrate-dots.sh release/
+          curl -LO https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/migrate-dots.sh
+          mv migrate-dots.sh release/
           chmod +x release/*
           ls -la release/
 
