@@ -18,6 +18,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Link libc for @cImport of time.h (localtime_r)
+    exe.linkLibC();
+
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
     options.addOption([]const u8, "git_hash", git_hash);
