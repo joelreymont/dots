@@ -234,6 +234,8 @@ pub const Issue = struct {
     }
 };
 
+const StatusMap = std.StringHashMap(Status);
+
 pub fn freeIssues(allocator: Allocator, issues: []const Issue) void {
     for (issues) |*issue| {
         issue.deinit(allocator);
@@ -1150,8 +1152,17 @@ pub const Storage = struct {
     }
 
     pub fn getReadyIssues(self: *Self) ![]Issue {
-        const all_issues = try self.listIssues(.open);
+        const all_issues = try self.listIssues(null);
         defer freeIssues(self.allocator, all_issues);
+
+        var status_by_id = StatusMap.init(self.allocator);
+        defer status_by_id.deinit();
+        if (all_issues.len <= std.math.maxInt(u32)) {
+            try status_by_id.ensureTotalCapacity(@intCast(all_issues.len));
+        }
+        for (all_issues) |issue| {
+            try status_by_id.put(issue.id, issue.status);
+        }
 
         var ready: std.ArrayList(Issue) = .{};
         errdefer {
@@ -1160,15 +1171,23 @@ pub const Storage = struct {
         }
 
         for (all_issues) |issue| {
-            const blocked = try self.isBlocked(issue);
-            if (!blocked) {
-                // Clone the issue since we're freeing all_issues
-                const cloned = try self.cloneIssue(issue);
-                try ready.append(self.allocator, cloned);
-            }
+            if (issue.status != .open) continue;
+            if (isBlockedByStatusMap(issue.blocks, &status_by_id)) continue;
+
+            // Clone the issue since we're freeing all_issues
+            const cloned = try self.cloneIssue(issue);
+            try ready.append(self.allocator, cloned);
         }
 
         return ready.toOwnedSlice(self.allocator);
+    }
+
+    fn isBlockedByStatusMap(blocks: []const []const u8, status_by_id: *const StatusMap) bool {
+        for (blocks) |blocker_id| {
+            const status = status_by_id.get(blocker_id) orelse continue;
+            if (status == .open or status == .active) return true;
+        }
+        return false;
     }
 
     fn isBlocked(self: *Self, issue: Issue) !bool {
@@ -1284,25 +1303,33 @@ pub const Storage = struct {
             matches.deinit(self.allocator);
         }
 
-        const lower_query = try std.ascii.allocLowerString(self.allocator, query);
-        defer self.allocator.free(lower_query);
-
         for (all_issues) |issue| {
-            const lower_title = try std.ascii.allocLowerString(self.allocator, issue.title);
-            defer self.allocator.free(lower_title);
-
-            const lower_desc = try std.ascii.allocLowerString(self.allocator, issue.description);
-            defer self.allocator.free(lower_desc);
-
-            if (std.mem.indexOf(u8, lower_title, lower_query) != null or
-                std.mem.indexOf(u8, lower_desc, lower_query) != null)
-            {
+            if (containsIgnoreCase(issue.title, query) or containsIgnoreCase(issue.description, query)) {
                 const cloned = try self.cloneIssue(issue);
                 try matches.append(self.allocator, cloned);
             }
         }
 
         return matches.toOwnedSlice(self.allocator);
+    }
+
+    fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0) return true;
+        if (needle.len > haystack.len) return false;
+
+        var i: usize = 0;
+        while (i + needle.len <= haystack.len) : (i += 1) {
+            if (asciiEqualIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+        }
+        return false;
+    }
+
+    fn asciiEqualIgnoreCase(a: []const u8, b: []const u8) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |ac, bc| {
+            if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
+        }
+        return true;
     }
 
     pub fn addDependency(self: *Self, issue_id: []const u8, depends_on_id: []const u8, dep_type: []const u8) !void {

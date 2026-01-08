@@ -17,6 +17,7 @@ const DOTS_DIR = ".dots";
 const MAPPING_FILE = ".dots/todo-mapping.json";
 const max_hook_input_bytes = 1024 * 1024;
 const max_mapping_bytes = 1024 * 1024;
+const max_jsonl_line_bytes = 1024 * 1024;
 const default_priority: i64 = 2;
 
 // Command dispatch table
@@ -115,6 +116,20 @@ fn resolveIdOrFatal(storage: *storage_mod.Storage, id: []const u8) []const u8 {
         error.AmbiguousId => fatal("Ambiguous ID: {s}\n", .{id}),
         else => fatal("Error resolving ID: {s}\n", .{id}),
     };
+}
+
+fn resolveIds(allocator: Allocator, storage: *Storage, ids: []const []const u8) !std.ArrayList([]const u8) {
+    var resolved: std.ArrayList([]const u8) = .{};
+    errdefer {
+        for (resolved.items) |id| allocator.free(id);
+        resolved.deinit(allocator);
+    }
+
+    for (ids) |id| {
+        try resolved.append(allocator, resolveIdOrFatal(storage, id));
+    }
+
+    return resolved;
 }
 
 // Status parsing helper
@@ -339,15 +354,10 @@ fn cmdOn(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    // Resolve and validate all IDs first
-    var resolved_ids: std.ArrayList([]const u8) = .{};
+    var resolved_ids = try resolveIds(allocator, &storage, args);
     defer {
         for (resolved_ids.items) |id| allocator.free(id);
         resolved_ids.deinit(allocator);
-    }
-
-    for (args) |id| {
-        try resolved_ids.append(allocator, resolveIdOrFatal(&storage, id));
     }
 
     for (resolved_ids.items) |id| {
@@ -376,15 +386,10 @@ fn cmdOff(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    // Resolve and validate all IDs first
-    var resolved_ids: std.ArrayList([]const u8) = .{};
+    var resolved_ids = try resolveIds(allocator, &storage, ids.items);
     defer {
         for (resolved_ids.items) |id| allocator.free(id);
         resolved_ids.deinit(allocator);
-    }
-
-    for (ids.items) |id| {
-        try resolved_ids.append(allocator, resolveIdOrFatal(&storage, id));
     }
 
     var ts_buf: [40]u8 = undefined;
@@ -404,15 +409,10 @@ fn cmdRm(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    // Resolve and validate all IDs first
-    var resolved_ids: std.ArrayList([]const u8) = .{};
+    var resolved_ids = try resolveIds(allocator, &storage, args);
     defer {
         for (resolved_ids.items) |id| allocator.free(id);
         resolved_ids.deinit(allocator);
-    }
-
-    for (args) |id| {
-        try resolved_ids.append(allocator, resolveIdOrFatal(&storage, id));
     }
 
     for (resolved_ids.items) |id| {
@@ -799,7 +799,7 @@ fn hookSync(allocator: Allocator) !void {
     }
 
     // Save mapping
-    try saveMappingAtomic(allocator, mapping);
+    try saveMappingAtomic(mapping);
 }
 
 fn loadMapping(allocator: Allocator) !Mapping {
@@ -841,7 +841,7 @@ fn loadMapping(allocator: Allocator) !Mapping {
     return map;
 }
 
-fn saveMappingAtomic(allocator: Allocator, map: Mapping) !void {
+fn saveMappingAtomic(map: Mapping) !void {
     const tmp_file = MAPPING_FILE ++ ".tmp";
 
     // Write to temp file
@@ -852,10 +852,11 @@ fn saveMappingAtomic(allocator: Allocator, map: Mapping) !void {
         else => {}, // Best effort cleanup
     };
 
-    const json = try std.json.Stringify.valueAlloc(allocator, map, .{});
-    defer allocator.free(json);
-
-    try file.writeAll(json);
+    var buffer: [4096]u8 = undefined;
+    var file_writer = file.writer(&buffer);
+    const w = &file_writer.interface;
+    try std.json.Stringify.value(map, .{}, w);
+    try w.flush();
     try file.sync();
 
     // Atomic rename
@@ -890,20 +891,25 @@ fn hydrateFromJsonl(allocator: Allocator, storage: *Storage, jsonl_path: []const
     };
     defer file.close();
 
-    const content = try file.readToEndAlloc(allocator, 100 * 1024 * 1024);
-    defer allocator.free(content);
-
     var count: usize = 0;
-    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    const read_buf = try allocator.alloc(u8, max_jsonl_line_bytes);
+    defer allocator.free(read_buf);
+    var file_reader = fs.File.Reader.init(file, read_buf);
+    const reader = &file_reader.interface;
 
-    while (line_iter.next()) |line| {
+    while (true) {
+        const line = reader.takeDelimiter('\n') catch |err| switch (err) {
+            error.StreamTooLong => return error.JsonlLineTooLong,
+            error.ReadFailed => break,
+        } orelse break;
+
         if (line.len == 0) continue;
 
         const parsed = std.json.parseFromSlice(JsonlIssue, allocator, line, .{
             .ignore_unknown_fields = true,
         }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => continue, // Malformed JSON line, skip
+            else => return error.InvalidJsonl,
         };
         defer parsed.deinit();
 
