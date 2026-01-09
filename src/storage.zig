@@ -806,6 +806,9 @@ pub const Storage = struct {
         var iter = dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
+                // Skip special files (_plan.md, _milestone.md) - the folder is the ID
+                if (std.mem.startsWith(u8, entry.name, "_")) continue;
+
                 const id = entry.name[0 .. entry.name.len - 3];
                 // Skip if this file matches parent folder name (already counted)
                 if (parent_folder) |pf| {
@@ -815,8 +818,14 @@ pub const Storage = struct {
                     const duped = try self.allocator.dupe(u8, id);
                     try matches.append(self.allocator, duped);
                 }
-            } else if (entry.kind == .directory and !std.mem.eql(u8, entry.name, "archive")) {
-                // Check folder name as potential ID
+            } else if (entry.kind == .directory) {
+                // Skip special directories
+                if (std.mem.eql(u8, entry.name, "archive")) continue;
+                if (std.mem.eql(u8, entry.name, "artifacts")) continue;
+                if (std.mem.eql(u8, entry.name, "done")) continue;
+                if (std.mem.eql(u8, entry.name, "backlog")) continue;
+
+                // Check folder name as potential ID (for plans and milestones)
                 if (std.mem.startsWith(u8, entry.name, prefix)) {
                     const duped = try self.allocator.dupe(u8, entry.name);
                     try matches.append(self.allocator, duped);
@@ -836,15 +845,23 @@ pub const Storage = struct {
     }
 
     fn findIssuePath(self: *Self, id: []const u8) ![]const u8 {
-        // Try direct file: .dots/{id}.md
         var path_buf: [MAX_PATH_LEN]u8 = undefined;
-        const direct_path = std.fmt.bufPrint(&path_buf, "{s}.md", .{id}) catch return StorageError.IoError;
 
+        // NEW: Try plan folder with _plan.md: .dots/{id}/_plan.md
+        if (std.mem.startsWith(u8, id, "p")) {
+            const plan_path = std.fmt.bufPrint(&path_buf, "{s}/_plan.md", .{id}) catch return StorageError.IoError;
+            if (self.dots_dir.statFile(plan_path)) |_| {
+                return self.allocator.dupe(u8, plan_path);
+            } else |_| {}
+        }
+
+        // Try direct file: .dots/{id}.md
+        const direct_path = std.fmt.bufPrint(&path_buf, "{s}.md", .{id}) catch return StorageError.IoError;
         if (self.dots_dir.statFile(direct_path)) |_| {
             return self.allocator.dupe(u8, direct_path);
         } else |_| {}
 
-        // Try folder: .dots/{id}/{id}.md
+        // LEGACY: Try folder: .dots/{id}/{id}.md (old convention)
         const folder_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.md", .{ id, id }) catch return StorageError.IoError;
         if (self.dots_dir.statFile(folder_path)) |_| {
             return self.allocator.dupe(u8, folder_path);
@@ -862,6 +879,26 @@ pub const Storage = struct {
             return self.allocator.dupe(u8, archive_folder_path);
         } else |_| {}
 
+        // Try in done: .dots/done/{id}/_plan.md or .dots/done/{id}/{id}.md
+        if (std.mem.startsWith(u8, id, "p")) {
+            const done_plan_path = std.fmt.bufPrint(&path_buf, "done/{s}/_plan.md", .{id}) catch return StorageError.IoError;
+            if (self.dots_dir.statFile(done_plan_path)) |_| {
+                return self.allocator.dupe(u8, done_plan_path);
+            } else |_| {}
+        }
+        const done_folder_path = std.fmt.bufPrint(&path_buf, "done/{s}/{s}.md", .{ id, id }) catch return StorageError.IoError;
+        if (self.dots_dir.statFile(done_folder_path)) |_| {
+            return self.allocator.dupe(u8, done_folder_path);
+        } else |_| {}
+
+        // Try in backlog: .dots/backlog/{id}/_plan.md
+        if (std.mem.startsWith(u8, id, "p")) {
+            const backlog_plan_path = std.fmt.bufPrint(&path_buf, "backlog/{s}/_plan.md", .{id}) catch return StorageError.IoError;
+            if (self.dots_dir.statFile(backlog_plan_path)) |_| {
+                return self.allocator.dupe(u8, backlog_plan_path);
+            } else |_| {}
+        }
+
         // Search recursively in all subdirectories
         return try self.searchForIssue(self.dots_dir, id) orelse StorageError.IssueNotFound;
     }
@@ -869,22 +906,33 @@ pub const Storage = struct {
     fn searchForIssue(self: *Self, dir: fs.Dir, id: []const u8) !?[]const u8 {
         var iter = dir.iterate();
         while (try iter.next()) |entry| {
-            if (entry.kind == .directory and !std.mem.eql(u8, entry.name, "archive")) {
-                var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch |err| switch (err) {
-                    error.FileNotFound, error.AccessDenied => continue, // Skip inaccessible dirs
-                    else => return err,
-                };
-                defer subdir.close();
+            // Skip special directories but still search in them for items
+            if (entry.kind != .directory) continue;
+            if (std.mem.eql(u8, entry.name, "artifacts")) continue;
 
-                // Check for {id}.md in this directory
-                var path_buf: [MAX_PATH_LEN]u8 = undefined;
-                const filename = std.fmt.bufPrint(&path_buf, "{s}.md", .{id}) catch return StorageError.IoError;
-                if (subdir.statFile(filename)) |_| {
-                    const full_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ entry.name, filename });
-                    return full_path;
+            var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch |err| switch (err) {
+                error.FileNotFound, error.AccessDenied => continue,
+                else => return err,
+            };
+            defer subdir.close();
+
+            var path_buf: [MAX_PATH_LEN]u8 = undefined;
+
+            // NEW: Check for milestone folder with _milestone.md
+            if (std.mem.eql(u8, entry.name, id) and std.mem.startsWith(u8, id, "m")) {
+                if (subdir.statFile("_milestone.md")) |_| {
+                    return try std.fmt.allocPrint(self.allocator, "{s}/_milestone.md", .{entry.name});
                 } else |_| {}
+            }
 
-                // Recurse
+            // Check for {id}.md in this directory (tasks and legacy)
+            const filename = std.fmt.bufPrint(&path_buf, "{s}.md", .{id}) catch return StorageError.IoError;
+            if (subdir.statFile(filename)) |_| {
+                return try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ entry.name, filename });
+            } else |_| {}
+
+            // Recurse into subdirectories (but not archive at root level)
+            if (!std.mem.eql(u8, entry.name, "archive")) {
                 if (try self.searchForIssue(subdir, id)) |path| {
                     const full_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ entry.name, path }) catch |err| {
                         self.allocator.free(path);
@@ -1289,7 +1337,16 @@ pub const Storage = struct {
         var iter = dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
-                const id = entry.name[0 .. entry.name.len - 3];
+                // Handle special files: _plan.md and _milestone.md use parent folder as ID
+                var id: []const u8 = undefined;
+                if (std.mem.eql(u8, entry.name, "_plan.md") or std.mem.eql(u8, entry.name, "_milestone.md")) {
+                    // ID is the parent folder name (last component of prefix)
+                    if (prefix.len == 0) continue; // Invalid - no parent folder
+                    id = fs.path.basename(prefix);
+                } else {
+                    id = entry.name[0 .. entry.name.len - 3];
+                }
+
                 var path_buf: [MAX_PATH_LEN]u8 = undefined;
                 const path = if (prefix.len > 0)
                     std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ prefix, entry.name }) catch return StorageError.IoError
@@ -1313,7 +1370,13 @@ pub const Storage = struct {
                     issue.deinit(self.allocator);
                     return err;
                 };
-            } else if (entry.kind == .directory and !std.mem.eql(u8, entry.name, "archive")) {
+            } else if (entry.kind == .directory) {
+                // Skip special directories
+                if (std.mem.eql(u8, entry.name, "archive")) continue;
+                if (std.mem.eql(u8, entry.name, "artifacts")) continue;
+                if (std.mem.eql(u8, entry.name, "done")) continue;
+                if (std.mem.eql(u8, entry.name, "backlog")) continue;
+
                 var subdir = try dir.openDir(entry.name, .{ .iterate = true });
                 defer subdir.close();
 
@@ -1405,12 +1468,27 @@ pub const Storage = struct {
                 } else {
                     issue.deinit(self.allocator);
                 }
-            } else if (entry.kind == .directory and !std.mem.eql(u8, entry.name, "archive")) {
-                // Folder = parent issue
+            } else if (entry.kind == .directory) {
+                // Skip special directories
+                if (std.mem.eql(u8, entry.name, "archive")) continue;
+                if (std.mem.eql(u8, entry.name, "done")) continue;
+                if (std.mem.eql(u8, entry.name, "backlog")) continue;
+
+                // Folder = parent issue (plan)
                 var path_buf: [MAX_PATH_LEN]u8 = undefined;
-                const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.md", .{ entry.name, entry.name }) catch return StorageError.IoError;
-                const issue = self.readIssueFromPath(path, entry.name) catch |err| switch (err) {
+
+                // Try new convention: {id}/_plan.md
+                const plan_path = std.fmt.bufPrint(&path_buf, "{s}/_plan.md", .{entry.name}) catch return StorageError.IoError;
+                var issue = self.readIssueFromPath(plan_path, entry.name) catch |err| switch (err) {
                     StorageError.InvalidFrontmatter, StorageError.InvalidStatus => continue,
+                    error.FileNotFound => blk: {
+                        // Try legacy convention: {id}/{id}.md
+                        const legacy_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.md", .{ entry.name, entry.name }) catch return StorageError.IoError;
+                        break :blk self.readIssueFromPath(legacy_path, entry.name) catch |err2| switch (err2) {
+                            StorageError.InvalidFrontmatter, StorageError.InvalidStatus => continue,
+                            else => return err2,
+                        };
+                    },
                     else => return err,
                 };
 
@@ -1435,8 +1513,15 @@ pub const Storage = struct {
             children.deinit(self.allocator);
         }
 
+        // First try direct path, then search for the parent folder
+        var folder_path_buf: [MAX_PATH_LEN]u8 = undefined;
+        const folder_path = self.findIssueFolderPath(parent_id, &folder_path_buf) catch |err| switch (err) {
+            StorageError.IssueNotFound => return children.toOwnedSlice(self.allocator),
+            else => return err,
+        };
+
         // Open parent folder
-        var folder = self.dots_dir.openDir(parent_id, .{ .iterate = true }) catch |err| switch (err) {
+        var folder = self.dots_dir.openDir(folder_path, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return children.toOwnedSlice(self.allocator),
             else => return err,
         };
@@ -1444,15 +1529,49 @@ pub const Storage = struct {
 
         var iter = folder.iterate();
         while (try iter.next()) |entry| {
+            // Handle task files (.md files that aren't special)
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
+                // Skip special files
+                if (std.mem.startsWith(u8, entry.name, "_")) continue;
+
                 const id = entry.name[0 .. entry.name.len - 3];
-                if (std.mem.eql(u8, id, parent_id)) continue; // Skip parent itself
+                if (std.mem.eql(u8, id, parent_id)) continue; // Skip parent itself (legacy)
 
                 var path_buf: [MAX_PATH_LEN]u8 = undefined;
-                const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ parent_id, entry.name }) catch return StorageError.IoError;
+                const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ folder_path, entry.name }) catch return StorageError.IoError;
 
                 const issue = self.readIssueFromPath(path, id) catch |err| switch (err) {
                     StorageError.InvalidFrontmatter, StorageError.InvalidStatus => continue,
+                    else => return err,
+                };
+                const blocked = try self.isBlocked(issue);
+
+                try children.append(self.allocator, .{
+                    .issue = issue,
+                    .blocked = blocked,
+                });
+            }
+            // Handle milestone folders (directories with _milestone.md)
+            else if (entry.kind == .directory) {
+                // Skip special directories
+                if (std.mem.eql(u8, entry.name, "artifacts")) continue;
+                if (std.mem.eql(u8, entry.name, "done")) continue;
+
+                var path_buf: [MAX_PATH_LEN]u8 = undefined;
+
+                // Try new convention: {folder}/{child}/_milestone.md
+                const milestone_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/_milestone.md", .{ folder_path, entry.name }) catch return StorageError.IoError;
+                const issue = self.readIssueFromPath(milestone_path, entry.name) catch |err| switch (err) {
+                    StorageError.InvalidFrontmatter, StorageError.InvalidStatus => continue,
+                    error.FileNotFound => blk: {
+                        // Try legacy convention: {folder}/{child}/{child}.md
+                        const legacy_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/{s}.md", .{ folder_path, entry.name, entry.name }) catch return StorageError.IoError;
+                        break :blk self.readIssueFromPath(legacy_path, entry.name) catch |err2| switch (err2) {
+                            StorageError.InvalidFrontmatter, StorageError.InvalidStatus => continue,
+                            error.FileNotFound => continue, // No milestone file found
+                            else => return err2,
+                        };
+                    },
                     else => return err,
                 };
                 const blocked = try self.isBlocked(issue);
@@ -1468,6 +1587,58 @@ pub const Storage = struct {
         std.mem.sort(ChildIssue, children.items, {}, ChildIssue.order);
 
         return children.toOwnedSlice(self.allocator);
+    }
+
+    /// Find the folder path for an issue (not the .md file path)
+    fn findIssueFolderPath(self: *Self, id: []const u8, buf: []u8) ![]const u8 {
+        // Direct folder at root
+        self.dots_dir.access(id, .{}) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+        if (self.dots_dir.statFile(id)) |stat| {
+            if (stat.kind == .directory) {
+                return std.fmt.bufPrint(buf, "{s}", .{id}) catch return StorageError.IoError;
+            }
+        } else |_| {}
+
+        // Search for folder in subdirectories (for milestones within plans)
+        return try self.searchForIssueFolder(self.dots_dir, id, buf, "") orelse StorageError.IssueNotFound;
+    }
+
+    fn searchForIssueFolder(self: *Self, dir: fs.Dir, id: []const u8, buf: []u8, prefix: []const u8) !?[]const u8 {
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind != .directory) continue;
+            if (std.mem.eql(u8, entry.name, "archive")) continue;
+            if (std.mem.eql(u8, entry.name, "artifacts")) continue;
+            if (std.mem.eql(u8, entry.name, "done")) continue;
+            if (std.mem.eql(u8, entry.name, "backlog")) continue;
+
+            if (std.mem.eql(u8, entry.name, id)) {
+                // Found it
+                if (prefix.len > 0) {
+                    return std.fmt.bufPrint(buf, "{s}/{s}", .{ prefix, entry.name }) catch return StorageError.IoError;
+                } else {
+                    return std.fmt.bufPrint(buf, "{s}", .{entry.name}) catch return StorageError.IoError;
+                }
+            }
+
+            // Recurse
+            var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
+            defer subdir.close();
+
+            var new_prefix_buf: [MAX_PATH_LEN]u8 = undefined;
+            const new_prefix = if (prefix.len > 0)
+                std.fmt.bufPrint(&new_prefix_buf, "{s}/{s}", .{ prefix, entry.name }) catch return StorageError.IoError
+            else
+                entry.name;
+
+            if (try self.searchForIssueFolder(subdir, id, buf, new_prefix)) |path| {
+                return path;
+            }
+        }
+        return null;
     }
 
     pub fn searchIssues(self: *Self, query: []const u8) ![]Issue {
@@ -1696,6 +1867,7 @@ pub const Storage = struct {
     }
 
     /// Create a plan with its folder structure and artifacts subfolder
+    /// Uses new hierarchical naming: p{n}-{slug}/_plan.md
     pub fn createPlanWithArtifacts(self: *Self, issue: Issue) !void {
         validateId(issue.id) catch return StorageError.InvalidId;
 
@@ -1715,14 +1887,125 @@ pub const Storage = struct {
             else => return StorageError.IoError,
         };
 
-        // Create plan file: {id}/{id}.md
+        // Create done subfolder: {id}/done/
+        plan_dir.makeDir("done") catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return StorageError.IoError,
+        };
+
+        // Create plan file: {id}/_plan.md (new convention)
         const content = try serializeFrontmatter(self.allocator, issue);
         defer self.allocator.free(content);
 
         var path_buf: [MAX_PATH_LEN]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.md", .{ issue.id, issue.id }) catch return StorageError.IoError;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/_plan.md", .{issue.id}) catch return StorageError.IoError;
 
         try writeFileAtomic(self.dots_dir, path, content);
+    }
+
+    /// Create a milestone with its folder structure
+    /// Uses new hierarchical naming: {plan}/m{n}-{slug}/_milestone.md
+    pub fn createMilestoneWithFolder(self: *Self, issue: Issue, plan_id: []const u8) !void {
+        validateId(issue.id) catch return StorageError.InvalidId;
+        validateId(plan_id) catch return StorageError.InvalidId;
+
+        // Open plan directory
+        var plan_dir = self.dots_dir.openDir(plan_id, .{}) catch |err| switch (err) {
+            error.FileNotFound => return StorageError.IssueNotFound,
+            else => return StorageError.IoError,
+        };
+        defer plan_dir.close();
+
+        // Create milestone folder: {plan}/{milestone}/
+        plan_dir.makeDir(issue.id) catch |err| switch (err) {
+            error.PathAlreadyExists => return StorageError.IssueAlreadyExists,
+            else => return StorageError.IoError,
+        };
+        errdefer plan_dir.deleteTree(issue.id) catch {};
+
+        // Open milestone directory
+        var milestone_dir = plan_dir.openDir(issue.id, .{}) catch return StorageError.IoError;
+        defer milestone_dir.close();
+
+        // Create done subfolder: {plan}/{milestone}/done/
+        milestone_dir.makeDir("done") catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return StorageError.IoError,
+        };
+
+        // Create milestone file: {plan}/{milestone}/_milestone.md
+        const content = try serializeFrontmatter(self.allocator, issue);
+        defer self.allocator.free(content);
+
+        var path_buf: [MAX_PATH_LEN]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}/_milestone.md", .{ plan_id, issue.id }) catch return StorageError.IoError;
+
+        try writeFileAtomic(self.dots_dir, path, content);
+    }
+
+    /// Create a task file within a milestone
+    /// Uses new hierarchical naming: {plan}/{milestone}/t{n}-{slug}.md
+    pub fn createTaskInMilestone(self: *Self, issue: Issue, plan_id: []const u8, milestone_id: []const u8) !void {
+        validateId(issue.id) catch return StorageError.InvalidId;
+        validateId(plan_id) catch return StorageError.InvalidId;
+        validateId(milestone_id) catch return StorageError.InvalidId;
+
+        // Verify milestone folder exists
+        var path_buf: [MAX_PATH_LEN]u8 = undefined;
+        const milestone_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ plan_id, milestone_id }) catch return StorageError.IoError;
+
+        self.dots_dir.access(milestone_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return StorageError.IssueNotFound,
+            else => return StorageError.IoError,
+        };
+
+        // Create task file: {plan}/{milestone}/{task}.md
+        const content = try serializeFrontmatter(self.allocator, issue);
+        defer self.allocator.free(content);
+
+        var task_path_buf: [MAX_PATH_LEN]u8 = undefined;
+        const task_path = std.fmt.bufPrint(&task_path_buf, "{s}/{s}/{s}.md", .{ plan_id, milestone_id, issue.id }) catch return StorageError.IoError;
+
+        // Check if task already exists
+        self.dots_dir.access(task_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => {}, // Good - file doesn't exist
+            else => return StorageError.IoError,
+        };
+        if (self.dots_dir.statFile(task_path)) |_| {
+            return StorageError.IssueAlreadyExists;
+        } else |_| {}
+
+        try writeFileAtomic(self.dots_dir, task_path, content);
+    }
+
+    /// Generate a hierarchical ID for a plan
+    pub fn generatePlanId(self: *Self, title: []const u8) ![]u8 {
+        return generateHierarchicalId(self.allocator, self.dots_dir, "plan", title);
+    }
+
+    /// Generate a hierarchical ID for a milestone within a plan
+    pub fn generateMilestoneId(self: *Self, plan_id: []const u8, title: []const u8) ![]u8 {
+        var plan_dir = self.dots_dir.openDir(plan_id, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return StorageError.IssueNotFound,
+            else => return err,
+        };
+        defer plan_dir.close();
+
+        return generateHierarchicalId(self.allocator, plan_dir, "milestone", title);
+    }
+
+    /// Generate a hierarchical ID for a task within a milestone
+    pub fn generateTaskId(self: *Self, plan_id: []const u8, milestone_id: []const u8, title: []const u8) ![]u8 {
+        var path_buf: [MAX_PATH_LEN]u8 = undefined;
+        const milestone_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ plan_id, milestone_id }) catch return StorageError.IoError;
+
+        var milestone_dir = self.dots_dir.openDir(milestone_path, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return StorageError.IssueNotFound,
+            else => return err,
+        };
+        defer milestone_dir.close();
+
+        return generateHierarchicalId(self.allocator, milestone_dir, "task", title);
     }
 
     /// Update an existing issue's content (preserves location/parent)

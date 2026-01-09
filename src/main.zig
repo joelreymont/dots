@@ -497,18 +497,39 @@ fn cmdTree(allocator: Allocator, _: []const []const u8) !void {
     defer storage_mod.freeIssues(allocator, roots);
 
     const w = stdout();
-    for (roots) |root| {
+    for (roots, 0..) |root, root_idx| {
         try w.print("[{s}] {s} {s}\n", .{ root.id, root.status.symbol(), root.title });
 
         const children = try storage.getChildren(root.id);
         defer storage_mod.freeChildIssues(allocator, children);
 
-        for (children) |child| {
+        const is_last_root = (root_idx == roots.len - 1);
+
+        for (children, 0..) |child, child_idx| {
             const blocked_msg: []const u8 = if (child.blocked) " (blocked)" else "";
+            const is_last_child = (child_idx == children.len - 1);
+            const child_prefix: []const u8 = if (is_last_child) "  └─" else "  ├─";
             try w.print(
-                "  └─ [{s}] {s} {s}{s}\n",
-                .{ child.issue.id, child.issue.status.symbol(), child.issue.title, blocked_msg },
+                "{s} [{s}] {s} {s}{s}\n",
+                .{ child_prefix, child.issue.id, child.issue.status.symbol(), child.issue.title, blocked_msg },
             );
+
+            // Show grandchildren (tasks under milestones)
+            const grandchildren = try storage.getChildren(child.issue.id);
+            defer storage_mod.freeChildIssues(allocator, grandchildren);
+
+            const continuation: []const u8 = if (is_last_child) "   " else "  │";
+            _ = is_last_root;
+
+            for (grandchildren, 0..) |grandchild, gc_idx| {
+                const gc_blocked_msg: []const u8 = if (grandchild.blocked) " (blocked)" else "";
+                const is_last_gc = (gc_idx == grandchildren.len - 1);
+                const gc_prefix: []const u8 = if (is_last_gc) "  └─" else "  ├─";
+                try w.print(
+                    "{s}{s} [{s}] {s} {s}{s}\n",
+                    .{ continuation, gc_prefix, grandchild.issue.id, grandchild.issue.status.symbol(), grandchild.issue.title, gc_blocked_msg },
+                );
+            }
         }
     }
 }
@@ -736,10 +757,8 @@ fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
-
-    const id = try storage_mod.generateId(allocator, prefix);
+    // Generate hierarchical plan ID: p{n}-{slug}
+    const id = try storage.generatePlanId(title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -761,7 +780,7 @@ fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
         .acceptance = acceptance,
     };
 
-    // Create plan with artifacts folder
+    // Create plan with artifacts folder and done subfolder
     try storage.createPlanWithArtifacts(issue);
     try stdout().print("{s}\n", .{id});
 }
@@ -786,11 +805,8 @@ fn cmdMilestone(allocator: Allocator, args: []const []const u8) !void {
         fatal("Error: {s} is not a plan (type: {s})\n", .{ plan_id, plan.issue_type });
     }
 
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
-
-    // Generate milestone ID with m prefix
-    const id = try storage_mod.generateId(allocator, prefix);
+    // Generate hierarchical milestone ID: m{n}-{slug}
+    const id = try storage.generateMilestoneId(plan_id, title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -812,7 +828,8 @@ fn cmdMilestone(allocator: Allocator, args: []const []const u8) !void {
         .acceptance = null,
     };
 
-    try storage.createIssue(issue, plan_id);
+    // Create milestone folder within plan
+    try storage.createMilestoneWithFolder(issue, plan_id);
     try stdout().print("{s}\n", .{id});
 }
 
@@ -829,17 +846,18 @@ fn cmdTask(allocator: Allocator, args: []const []const u8) !void {
     const milestone_id = resolveIdOrFatal(&storage, milestone_id_arg);
     defer allocator.free(milestone_id);
 
-    // Verify it's a milestone
+    // Verify it's a milestone and get its parent plan
     const milestone = try storage.getIssue(milestone_id) orelse fatal("Milestone not found: {s}\n", .{milestone_id_arg});
     defer milestone.deinit(allocator);
     if (!std.mem.eql(u8, milestone.issue_type, "milestone")) {
         fatal("Error: {s} is not a milestone (type: {s})\n", .{ milestone_id, milestone.issue_type });
     }
 
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
+    // Get the parent plan ID from milestone
+    const plan_id = milestone.parent orelse fatal("Milestone {s} has no parent plan\n", .{milestone_id});
 
-    const id = try storage_mod.generateId(allocator, prefix);
+    // Generate hierarchical task ID: t{n}-{slug}
+    const id = try storage.generateTaskId(plan_id, milestone_id, title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -861,7 +879,8 @@ fn cmdTask(allocator: Allocator, args: []const []const u8) !void {
         .acceptance = null,
     };
 
-    try storage.createIssue(issue, milestone_id);
+    // Create task file within milestone folder
+    try storage.createTaskInMilestone(issue, plan_id, milestone_id);
     try stdout().print("{s}\n", .{id});
 }
 

@@ -2205,10 +2205,11 @@ test "snap: tree output format" {
 
     const oh = OhSnap{};
     // Tree shows parent with children indented
+    // Using ├─ for non-last, └─ for last child
     try oh.snap(@src(),
         \\[]u8
         \\  "[ID] ○ Parent task
-        \\  └─ [ID] ○ Child one
+        \\  ├─ [ID] ○ Child one
         \\  └─ [ID] ○ Child two
         \\"
     ).expectEqual(normalized.items);
