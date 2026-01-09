@@ -119,6 +119,9 @@ pub const Issue = struct {
     closed_at: ?[]const u8,
     close_reason: ?[]const u8,
     blocks: []const []const u8,
+    // ExecPlan extensions
+    scope: ?[]const u8 = null,
+    acceptance: ?[]const u8 = null,
     // Computed from path, not stored in frontmatter
     parent: ?[]const u8 = null,
 
@@ -142,6 +145,8 @@ pub const Issue = struct {
             .closed_at = closed_at,
             .close_reason = close_reason,
             .blocks = self.blocks,
+            .scope = self.scope,
+            .acceptance = self.acceptance,
             .parent = self.parent,
         };
     }
@@ -160,6 +165,8 @@ pub const Issue = struct {
             .closed_at = self.closed_at,
             .close_reason = self.close_reason,
             .blocks = blocks,
+            .scope = self.scope,
+            .acceptance = self.acceptance,
             .parent = self.parent,
         };
     }
@@ -203,6 +210,12 @@ pub const Issue = struct {
         const parent = if (self.parent) |p| try allocator.dupe(u8, p) else null;
         errdefer if (parent) |p| allocator.free(p);
 
+        const scope = if (self.scope) |s| try allocator.dupe(u8, s) else null;
+        errdefer if (scope) |s| allocator.free(s);
+
+        const acceptance = if (self.acceptance) |a| try allocator.dupe(u8, a) else null;
+        errdefer if (acceptance) |a| allocator.free(a);
+
         return Issue{
             .id = id,
             .title = title,
@@ -215,6 +228,8 @@ pub const Issue = struct {
             .closed_at = closed_at,
             .close_reason = close_reason,
             .blocks = try blocks.toOwnedSlice(allocator),
+            .scope = scope,
+            .acceptance = acceptance,
             .parent = parent,
         };
     }
@@ -230,6 +245,8 @@ pub const Issue = struct {
         if (self.close_reason) |s| allocator.free(s);
         for (self.blocks) |b| allocator.free(b);
         allocator.free(self.blocks);
+        if (self.scope) |s| allocator.free(s);
+        if (self.acceptance) |a| allocator.free(a);
         if (self.parent) |p| allocator.free(p);
     }
 };
@@ -275,6 +292,9 @@ const Frontmatter = struct {
     closed_at: ?[]const u8 = null,
     close_reason: ?[]const u8 = null,
     blocks: []const []const u8 = &.{},
+    // ExecPlan extensions
+    scope: ?[]const u8 = null,
+    acceptance: ?[]const u8 = null,
 };
 
 const ParseResult = struct {
@@ -302,6 +322,9 @@ const FrontmatterField = enum {
     closed_at,
     close_reason,
     blocks,
+    // ExecPlan extensions
+    scope,
+    acceptance,
 };
 
 const frontmatter_field_map = std.StaticStringMap(FrontmatterField).initComptime(.{
@@ -314,6 +337,9 @@ const frontmatter_field_map = std.StaticStringMap(FrontmatterField).initComptime
     .{ "closed-at", .closed_at },
     .{ "close-reason", .close_reason },
     .{ "blocks", .blocks },
+    // ExecPlan extensions
+    .{ "scope", .scope },
+    .{ "acceptance", .acceptance },
 });
 
 /// Result of parsing a YAML value - clearly indicates ownership
@@ -440,6 +466,9 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
             .closed_at => fm.closed_at = if (value.len > 0) value else null,
             .close_reason => fm.close_reason = if (value.len > 0) value else null,
             .blocks => in_blocks = true,
+            // ExecPlan extensions
+            .scope => fm.scope = if (value.len > 0) value else null,
+            .acceptance => fm.acceptance = if (value.len > 0) value else null,
         }
     }
 
@@ -529,6 +558,17 @@ fn serializeFrontmatter(allocator: Allocator, issue: Issue) ![]u8 {
             try buf.appendSlice(allocator, "\n  - ");
             try buf.appendSlice(allocator, block_id);
         }
+    }
+
+    // ExecPlan extensions
+    if (issue.scope) |scope| {
+        try buf.appendSlice(allocator, "\nscope: ");
+        try writeYamlValue(&buf, allocator, scope);
+    }
+
+    if (issue.acceptance) |acceptance| {
+        try buf.appendSlice(allocator, "\nacceptance: ");
+        try writeYamlValue(&buf, allocator, acceptance);
     }
 
     try buf.appendSlice(allocator, "\n---\n");
@@ -788,6 +828,13 @@ pub const Storage = struct {
         const close_reason = if (parsed.frontmatter.close_reason) |r| try self.allocator.dupe(u8, r) else null;
         errdefer if (close_reason) |r| self.allocator.free(r);
 
+        // ExecPlan extensions
+        const scope = if (parsed.frontmatter.scope) |s| try self.allocator.dupe(u8, s) else null;
+        errdefer if (scope) |s| self.allocator.free(s);
+
+        const acceptance = if (parsed.frontmatter.acceptance) |a| try self.allocator.dupe(u8, a) else null;
+        errdefer if (acceptance) |a| self.allocator.free(a);
+
         // Mark blocks as transferred (will be owned by Issue)
         blocks_transferred = true;
         return Issue{
@@ -802,6 +849,8 @@ pub const Storage = struct {
             .closed_at = closed_at,
             .close_reason = close_reason,
             .blocks = parsed.allocated_blocks,
+            .scope = scope,
+            .acceptance = acceptance,
             .parent = parent,
         };
     }
@@ -1516,5 +1565,111 @@ pub const Storage = struct {
         }
 
         try writeFileAtomic(self.dots_dir, "config", buf.items);
+    }
+
+    /// Create a plan with its folder structure and artifacts subfolder
+    pub fn createPlanWithArtifacts(self: *Self, issue: Issue) !void {
+        validateId(issue.id) catch return StorageError.InvalidId;
+
+        // Create plan folder: {id}/
+        self.dots_dir.makeDir(issue.id) catch |err| switch (err) {
+            error.PathAlreadyExists => return StorageError.IssueAlreadyExists,
+            else => return StorageError.IoError,
+        };
+        errdefer self.dots_dir.deleteTree(issue.id) catch {};
+
+        // Create artifacts subfolder: {id}/artifacts/
+        var plan_dir = self.dots_dir.openDir(issue.id, .{}) catch return StorageError.IoError;
+        defer plan_dir.close();
+
+        plan_dir.makeDir("artifacts") catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return StorageError.IoError,
+        };
+
+        // Create plan file: {id}/{id}.md
+        const content = try serializeFrontmatter(self.allocator, issue);
+        defer self.allocator.free(content);
+
+        var path_buf: [MAX_PATH_LEN]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.md", .{ issue.id, issue.id }) catch return StorageError.IoError;
+
+        try writeFileAtomic(self.dots_dir, path, content);
+    }
+
+    /// Update an existing issue's content (preserves location/parent)
+    pub fn updateIssue(self: *Self, issue: Issue) !void {
+        const path = try self.findIssuePath(issue.id);
+        defer self.allocator.free(path);
+
+        const content = try serializeFrontmatter(self.allocator, issue);
+        defer self.allocator.free(content);
+
+        try writeFileAtomic(self.dots_dir, path, content);
+    }
+
+    /// Move a plan (and its children) to the backlog directory
+    pub fn moveToBacklog(self: *Self, id: []const u8) !void {
+        const path = try self.findIssuePath(id);
+        defer self.allocator.free(path);
+
+        // Ensure backlog directory exists
+        self.dots_dir.makeDir("backlog") catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        // Check if it's a folder (parent with children)
+        if (std.mem.indexOf(u8, path, "/")) |slash_idx| {
+            const folder_name = path[0..slash_idx];
+            const filename = std.fs.path.basename(path);
+            const file_id = filename[0 .. filename.len - 3];
+
+            // Only move parent folder (not individual children)
+            if (std.mem.eql(u8, file_id, folder_name)) {
+                var dest_path_buf: [MAX_PATH_LEN]u8 = undefined;
+                const dest_path = std.fmt.bufPrint(&dest_path_buf, "backlog/{s}", .{folder_name}) catch return StorageError.IoError;
+                try self.dots_dir.rename(folder_name, dest_path);
+                return;
+            }
+        }
+
+        // Simple file, move to backlog
+        var dest_path_buf: [MAX_PATH_LEN]u8 = undefined;
+        const dest_path = std.fmt.bufPrint(&dest_path_buf, "backlog/{s}", .{path}) catch return StorageError.IoError;
+        try self.dots_dir.rename(path, dest_path);
+    }
+
+    /// Move a plan from backlog back to active (root of .dots)
+    pub fn activateFromBacklog(self: *Self, id: []const u8) !void {
+        // Look for the issue in backlog
+        var backlog_dir = self.dots_dir.openDir("backlog", .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return StorageError.IssueNotFound,
+            else => return err,
+        };
+        defer backlog_dir.close();
+
+        // Check for direct file
+        var file_path_buf: [MAX_PATH_LEN]u8 = undefined;
+        const file_name = std.fmt.bufPrint(&file_path_buf, "{s}.md", .{id}) catch return StorageError.IoError;
+
+        backlog_dir.access(file_name, .{}) catch |err| switch (err) {
+            error.FileNotFound => {
+                // Check for folder
+                backlog_dir.access(id, .{}) catch return StorageError.IssueNotFound;
+
+                // Move folder from backlog to root
+                var src_buf: [MAX_PATH_LEN]u8 = undefined;
+                const src = std.fmt.bufPrint(&src_buf, "backlog/{s}", .{id}) catch return StorageError.IoError;
+                try self.dots_dir.rename(src, id);
+                return;
+            },
+            else => return err,
+        };
+
+        // Move file from backlog to root
+        var src_buf: [MAX_PATH_LEN]u8 = undefined;
+        const src = std.fmt.bufPrint(&src_buf, "backlog/{s}", .{file_name}) catch return StorageError.IoError;
+        try self.dots_dir.rename(src, file_name);
     }
 };

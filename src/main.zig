@@ -41,6 +41,15 @@ const commands = [_]Command{
     .{ .names = &.{"init"}, .handler = cmdInitWrapper },
     .{ .names = &.{ "help", "--help", "-h" }, .handler = cmdHelp },
     .{ .names = &.{ "--version", "-v" }, .handler = cmdVersion },
+    // ExecPlan commands
+    .{ .names = &.{"plan"}, .handler = cmdPlan },
+    .{ .names = &.{"milestone"}, .handler = cmdMilestone },
+    .{ .names = &.{"task"}, .handler = cmdTask },
+    .{ .names = &.{"progress"}, .handler = cmdProgress },
+    .{ .names = &.{"discover"}, .handler = cmdDiscover },
+    .{ .names = &.{"decide"}, .handler = cmdDecide },
+    .{ .names = &.{"backlog"}, .handler = cmdBacklog },
+    .{ .names = &.{"activate"}, .handler = cmdActivate },
 };
 
 fn findCommand(name: []const u8) ?Handler {
@@ -161,7 +170,7 @@ const USAGE =
     \\Commands:
     \\  dot "title"                  Quick add a dot
     \\  dot add "title" [options]    Add a dot (-p priority, -d desc, -P parent, -a after)
-    \\  dot ls [--status S] [--json] List dots
+    \\  dot ls [--status S] [--json] List dots (--type plan|milestone|task)
     \\  dot on <id>                  Start working (turn it on!)
     \\  dot off <id> [-r reason]     Complete ("cross it off")
     \\  dot rm <id>                  Remove a dot
@@ -172,12 +181,24 @@ const USAGE =
     \\  dot purge                    Delete archived dots
     \\  dot init                     Initialize .dots directory
     \\
+    \\ExecPlan Commands:
+    \\  dot plan "title"             Create a new plan
+    \\  dot milestone <plan> "title" Add milestone to a plan
+    \\  dot task <milestone> "title" Add task to a milestone
+    \\  dot progress <id> "message"  Add progress entry with timestamp
+    \\  dot discover <id> "note"     Add to Surprises & Discoveries
+    \\  dot decide <id> "decision"   Add to Decision Log
+    \\  dot backlog <id>             Move plan to backlog
+    \\  dot activate <id>            Move plan from backlog to active
+    \\
     \\Examples:
     \\  dot "Fix the bug"
     \\  dot add "Design API" -p 1 -d "REST endpoints"
     \\  dot add "Implement" -P dots-1 -a dots-2
     \\  dot on dots-3
     \\  dot off dots-3 -r "shipped"
+    \\  dot plan "User Authentication"
+    \\  dot milestone dots-abc "Setup infrastructure"
     \\
 ;
 
@@ -304,18 +325,37 @@ fn cmdAdd(allocator: Allocator, args: []const []const u8) !void {
 
 fn cmdList(allocator: Allocator, args: []const []const u8) !void {
     var filter_status: ?Status = null;
+    var filter_type: ?[]const u8 = null;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (getArg(args, &i, "--status")) |v| filter_status = parseStatusArg(v);
+        if (getArg(args, &i, "--status")) |v| {
+            filter_status = parseStatusArg(v);
+        } else if (getArg(args, &i, "--type")) |v| {
+            filter_type = v;
+        }
     }
 
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    const issues = try storage.listIssues(filter_status);
-    defer storage_mod.freeIssues(allocator, issues);
+    const all_issues = try storage.listIssues(filter_status);
+    defer storage_mod.freeIssues(allocator, all_issues);
 
-    try writeIssueList(issues, filter_status == null, hasFlag(args, "--json"));
+    // Filter by type if specified
+    if (filter_type) |ft| {
+        var filtered: std.ArrayList(Issue) = .{};
+        defer filtered.deinit(allocator);
+
+        for (all_issues) |issue| {
+            if (std.mem.eql(u8, issue.issue_type, ft)) {
+                try filtered.append(allocator, issue);
+            }
+        }
+
+        try writeIssueList(filtered.items, filter_status == null, hasFlag(args, "--json"));
+    } else {
+        try writeIssueList(all_issues, filter_status == null, hasFlag(args, "--json"));
+    }
 }
 
 fn cmdReady(allocator: Allocator, args: []const []const u8) !void {
@@ -599,6 +639,411 @@ fn writeIssueJson(issue: Issue, w: *std.Io.Writer) !void {
     try std.json.Stringify.value(json_issue, .{}, w);
 }
 
+// ExecPlan command handlers
+
+// Plan template for new plans
+const plan_template =
+    \\## Purpose / Big Picture
+    \\
+    \\[What someone gains after this change]
+    \\
+    \\## Milestones
+    \\
+    \\[Auto-populated as milestones are added]
+    \\
+    \\## Progress
+    \\
+    \\## Surprises & Discoveries
+    \\
+    \\## Decision Log
+    \\
+    \\## Context and Orientation
+    \\
+    \\[Current state, key files, definitions]
+    \\
+    \\## Plan of Work
+    \\
+    \\[Narrative describing the sequence of edits]
+    \\
+    \\## Validation and Acceptance
+    \\
+    \\[How to verify success]
+    \\
+    \\## Idempotence and Recovery
+    \\
+    \\[Safe retry/rollback paths]
+    \\
+    \\## Outcomes & Retrospective
+    \\
+    \\[Filled at completion]
+;
+
+const milestone_template =
+    \\## Goal
+    \\
+    \\[What will exist at the end of this milestone]
+    \\
+    \\## Tasks
+    \\
+    \\[Auto-populated as tasks are added]
+    \\
+    \\## Notes
+    \\
+    \\## Outcomes & Retrospective
+    \\
+    \\[Filled at completion]
+;
+
+const task_template =
+    \\## Description
+    \\
+    \\[What to do, concrete steps, expected output]
+    \\
+    \\## Acceptance Criteria
+    \\
+    \\- [ ] [Criterion 1]
+    \\- [ ] [Criterion 2]
+    \\
+    \\## Outcomes & Retrospective
+    \\
+    \\[Filled at completion]
+;
+
+fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len == 0) fatal("Usage: dot plan <title> [-s scope] [-a acceptance]\n", .{});
+
+    var title: []const u8 = "";
+    var scope: ?[]const u8 = null;
+    var acceptance: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (getArg(args, &i, "-s")) |v| {
+            scope = v;
+        } else if (getArg(args, &i, "-a")) |v| {
+            acceptance = v;
+        } else if (title.len == 0 and args[i].len > 0 and args[i][0] != '-') {
+            title = args[i];
+        }
+    }
+
+    if (title.len == 0) fatal("Error: title required\n", .{});
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
+    defer allocator.free(prefix);
+
+    const id = try storage_mod.generateId(allocator, prefix);
+    defer allocator.free(id);
+
+    var ts_buf: [40]u8 = undefined;
+    const now = try formatTimestamp(&ts_buf);
+
+    const issue = Issue{
+        .id = id,
+        .title = title,
+        .description = plan_template,
+        .status = .open,
+        .priority = default_priority,
+        .issue_type = "plan",
+        .assignee = null,
+        .created_at = now,
+        .closed_at = null,
+        .close_reason = null,
+        .blocks = &.{},
+        .scope = scope,
+        .acceptance = acceptance,
+    };
+
+    // Create plan with artifacts folder
+    try storage.createPlanWithArtifacts(issue);
+    try stdout().print("{s}\n", .{id});
+}
+
+fn cmdMilestone(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len < 2) fatal("Usage: dot milestone <plan-id> <title>\n", .{});
+
+    const plan_id_arg = args[0];
+    const title = args[1];
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    // Resolve the plan ID
+    const plan_id = resolveIdOrFatal(&storage, plan_id_arg);
+    defer allocator.free(plan_id);
+
+    // Verify it's a plan
+    const plan = try storage.getIssue(plan_id) orelse fatal("Plan not found: {s}\n", .{plan_id_arg});
+    defer plan.deinit(allocator);
+    if (!std.mem.eql(u8, plan.issue_type, "plan")) {
+        fatal("Error: {s} is not a plan (type: {s})\n", .{ plan_id, plan.issue_type });
+    }
+
+    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
+    defer allocator.free(prefix);
+
+    // Generate milestone ID with m prefix
+    const id = try storage_mod.generateId(allocator, prefix);
+    defer allocator.free(id);
+
+    var ts_buf: [40]u8 = undefined;
+    const now = try formatTimestamp(&ts_buf);
+
+    const issue = Issue{
+        .id = id,
+        .title = title,
+        .description = milestone_template,
+        .status = .open,
+        .priority = default_priority,
+        .issue_type = "milestone",
+        .assignee = null,
+        .created_at = now,
+        .closed_at = null,
+        .close_reason = null,
+        .blocks = &.{},
+        .scope = null,
+        .acceptance = null,
+    };
+
+    try storage.createIssue(issue, plan_id);
+    try stdout().print("{s}\n", .{id});
+}
+
+fn cmdTask(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len < 2) fatal("Usage: dot task <milestone-id> <title>\n", .{});
+
+    const milestone_id_arg = args[0];
+    const title = args[1];
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    // Resolve the milestone ID
+    const milestone_id = resolveIdOrFatal(&storage, milestone_id_arg);
+    defer allocator.free(milestone_id);
+
+    // Verify it's a milestone
+    const milestone = try storage.getIssue(milestone_id) orelse fatal("Milestone not found: {s}\n", .{milestone_id_arg});
+    defer milestone.deinit(allocator);
+    if (!std.mem.eql(u8, milestone.issue_type, "milestone")) {
+        fatal("Error: {s} is not a milestone (type: {s})\n", .{ milestone_id, milestone.issue_type });
+    }
+
+    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
+    defer allocator.free(prefix);
+
+    const id = try storage_mod.generateId(allocator, prefix);
+    defer allocator.free(id);
+
+    var ts_buf: [40]u8 = undefined;
+    const now = try formatTimestamp(&ts_buf);
+
+    const issue = Issue{
+        .id = id,
+        .title = title,
+        .description = task_template,
+        .status = .open,
+        .priority = default_priority,
+        .issue_type = "task",
+        .assignee = null,
+        .created_at = now,
+        .closed_at = null,
+        .close_reason = null,
+        .blocks = &.{},
+        .scope = null,
+        .acceptance = null,
+    };
+
+    try storage.createIssue(issue, milestone_id);
+    try stdout().print("{s}\n", .{id});
+}
+
+fn cmdProgress(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len < 2) fatal("Usage: dot progress <id> <message>\n", .{});
+
+    const id_arg = args[0];
+    const message = args[1];
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    const id = resolveIdOrFatal(&storage, id_arg);
+    defer allocator.free(id);
+
+    var issue = try storage.getIssue(id) orelse fatal("Issue not found: {s}\n", .{id_arg});
+    defer issue.deinit(allocator);
+
+    // Format timestamp for progress entry
+    var ts_buf: [40]u8 = undefined;
+    const now = try formatTimestamp(&ts_buf);
+
+    // Append progress entry to description
+    const progress_entry = try std.fmt.allocPrint(allocator, "\n- [x] ({s}) {s}", .{ now, message });
+    defer allocator.free(progress_entry);
+
+    // Find ## Progress section and append
+    const new_desc = try appendToSection(allocator, issue.description, "## Progress", progress_entry);
+    defer allocator.free(new_desc);
+
+    // Rewrite the file with updated description
+    try updateIssueDescription(&storage, allocator, id, new_desc);
+    try stdout().print("Progress added to {s}\n", .{id});
+}
+
+fn cmdDiscover(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len < 2) fatal("Usage: dot discover <id> <observation>\n", .{});
+
+    const id_arg = args[0];
+    const observation = args[1];
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    const id = resolveIdOrFatal(&storage, id_arg);
+    defer allocator.free(id);
+
+    var issue = try storage.getIssue(id) orelse fatal("Issue not found: {s}\n", .{id_arg});
+    defer issue.deinit(allocator);
+
+    // Format timestamp for discovery entry
+    var ts_buf: [40]u8 = undefined;
+    const now = try formatTimestamp(&ts_buf);
+
+    // Append discovery entry to description
+    const entry = try std.fmt.allocPrint(allocator, "\n- Observation ({s}): {s}\n  Evidence: [TODO]", .{ now, observation });
+    defer allocator.free(entry);
+
+    // Find ## Surprises & Discoveries section and append
+    const new_desc = try appendToSection(allocator, issue.description, "## Surprises & Discoveries", entry);
+    defer allocator.free(new_desc);
+
+    try updateIssueDescription(&storage, allocator, id, new_desc);
+    try stdout().print("Discovery added to {s}\n", .{id});
+}
+
+fn cmdDecide(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len < 2) fatal("Usage: dot decide <id> <decision>\n", .{});
+
+    const id_arg = args[0];
+    const decision = args[1];
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    const id = resolveIdOrFatal(&storage, id_arg);
+    defer allocator.free(id);
+
+    var issue = try storage.getIssue(id) orelse fatal("Issue not found: {s}\n", .{id_arg});
+    defer issue.deinit(allocator);
+
+    // Format timestamp for decision entry
+    var ts_buf: [40]u8 = undefined;
+    const now = try formatTimestamp(&ts_buf);
+
+    // Append decision entry to description
+    const entry = try std.fmt.allocPrint(allocator, "\n- Decision ({s}): {s}\n  Rationale: [TODO]", .{ now, decision });
+    defer allocator.free(entry);
+
+    // Find ## Decision Log section and append
+    const new_desc = try appendToSection(allocator, issue.description, "## Decision Log", entry);
+    defer allocator.free(new_desc);
+
+    try updateIssueDescription(&storage, allocator, id, new_desc);
+    try stdout().print("Decision added to {s}\n", .{id});
+}
+
+fn cmdBacklog(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len == 0) fatal("Usage: dot backlog <id>\n", .{});
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    const id = resolveIdOrFatal(&storage, args[0]);
+    defer allocator.free(id);
+
+    // Verify it's a plan
+    const issue = try storage.getIssue(id) orelse fatal("Issue not found: {s}\n", .{args[0]});
+    defer issue.deinit(allocator);
+    if (!std.mem.eql(u8, issue.issue_type, "plan")) {
+        fatal("Error: only plans can be moved to backlog\n", .{});
+    }
+
+    // Move to backlog directory
+    try storage.moveToBacklog(id);
+    try stdout().print("Moved {s} to backlog\n", .{id});
+}
+
+fn cmdActivate(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len == 0) fatal("Usage: dot activate <id>\n", .{});
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    const id = resolveIdOrFatal(&storage, args[0]);
+    defer allocator.free(id);
+
+    // Activate from backlog
+    try storage.activateFromBacklog(id);
+    try stdout().print("Activated {s} from backlog\n", .{id});
+}
+
+// Helper to append content to a markdown section
+fn appendToSection(allocator: Allocator, description: []const u8, section: []const u8, content: []const u8) ![]u8 {
+    // Find the section
+    const section_idx = std.mem.indexOf(u8, description, section);
+    if (section_idx == null) {
+        // Section not found, append it with content
+        return std.fmt.allocPrint(allocator, "{s}\n\n{s}\n{s}", .{ description, section, content });
+    }
+
+    const idx = section_idx.?;
+    // Find the end of the section (next ## or end of file)
+    const after_section = description[idx + section.len ..];
+    const next_section_idx = std.mem.indexOf(u8, after_section, "\n## ");
+
+    if (next_section_idx) |next_idx| {
+        // Insert content before the next section
+        const insert_point = idx + section.len + next_idx;
+        return std.fmt.allocPrint(allocator, "{s}{s}\n{s}", .{
+            description[0..insert_point],
+            content,
+            description[insert_point..],
+        });
+    } else {
+        // Append to end of description
+        return std.fmt.allocPrint(allocator, "{s}{s}", .{ description, content });
+    }
+}
+
+// Helper to update issue description by rewriting the file
+fn updateIssueDescription(storage: *Storage, allocator: Allocator, id: []const u8, new_description: []const u8) !void {
+    const issue = try storage.getIssue(id) orelse return error.IssueNotFound;
+    defer issue.deinit(allocator);
+
+    // Create updated issue with new description
+    const updated = Issue{
+        .id = issue.id,
+        .title = issue.title,
+        .description = new_description,
+        .status = issue.status,
+        .priority = issue.priority,
+        .issue_type = issue.issue_type,
+        .assignee = issue.assignee,
+        .created_at = issue.created_at,
+        .closed_at = issue.closed_at,
+        .close_reason = issue.close_reason,
+        .blocks = issue.blocks,
+        .scope = issue.scope,
+        .acceptance = issue.acceptance,
+        .parent = issue.parent,
+    };
+
+    try storage.updateIssue(updated);
+}
+
 // Claude Code hook handlers
 fn cmdHook(allocator: Allocator, args: []const []const u8) !void {
     if (args.len == 0) fatal("Usage: dot hook <session|sync>\n", .{});
@@ -622,23 +1067,74 @@ fn hookSession(allocator: Allocator) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    const active = try storage.listIssues(.active);
-    defer storage_mod.freeIssues(allocator, active);
+    const all_issues = try storage.listIssues(null);
+    defer storage_mod.freeIssues(allocator, all_issues);
 
-    const ready = try storage.getReadyIssues();
-    defer storage_mod.freeIssues(allocator, ready);
+    // Separate by type and status
+    var active_plans: std.ArrayList(Issue) = .{};
+    defer active_plans.deinit(allocator);
+    var active_tasks: std.ArrayList(Issue) = .{};
+    defer active_tasks.deinit(allocator);
+    var ready_tasks: std.ArrayList(Issue) = .{};
+    defer ready_tasks.deinit(allocator);
 
-    if (active.len == 0 and ready.len == 0) return;
+    // Build status map for blocking check
+    var status_by_id = std.StringHashMap(Status).init(allocator);
+    defer status_by_id.deinit();
+    for (all_issues) |issue| {
+        try status_by_id.put(issue.id, issue.status);
+    }
+
+    for (all_issues) |issue| {
+        if (issue.status == .closed) continue;
+
+        const is_plan = std.mem.eql(u8, issue.issue_type, "plan");
+        const is_active = issue.status == .active;
+
+        if (is_plan and (is_active or issue.status == .open)) {
+            try active_plans.append(allocator, issue);
+        } else if (is_active) {
+            try active_tasks.append(allocator, issue);
+        } else if (issue.status == .open) {
+            // Check if blocked
+            var blocked = false;
+            for (issue.blocks) |blocker_id| {
+                const status = status_by_id.get(blocker_id) orelse continue;
+                if (status == .open or status == .active) {
+                    blocked = true;
+                    break;
+                }
+            }
+            if (!blocked) {
+                try ready_tasks.append(allocator, issue);
+            }
+        }
+    }
+
+    if (active_plans.items.len == 0 and active_tasks.items.len == 0 and ready_tasks.items.len == 0) return;
 
     const w = stdout();
     try w.writeAll("--- DOTS ---\n");
-    if (active.len > 0) {
-        try w.writeAll("ACTIVE:\n");
-        for (active) |d| try w.print("  [{s}] {s}\n", .{ d.id, d.title });
+
+    // Show active plans first
+    if (active_plans.items.len > 0) {
+        try w.writeAll("PLANS:\n");
+        for (active_plans.items) |p| {
+            const status_char = p.status.char();
+            try w.print("  [{s}] {c} {s}\n", .{ p.id, status_char, p.title });
+        }
     }
-    if (ready.len > 0) {
+
+    // Show active tasks
+    if (active_tasks.items.len > 0) {
+        try w.writeAll("ACTIVE:\n");
+        for (active_tasks.items) |d| try w.print("  [{s}] {s}\n", .{ d.id, d.title });
+    }
+
+    // Show ready tasks
+    if (ready_tasks.items.len > 0) {
         try w.writeAll("READY:\n");
-        for (ready) |d| try w.print("  [{s}] {s}\n", .{ d.id, d.title });
+        for (ready_tasks.items) |d| try w.print("  [{s}] {s}\n", .{ d.id, d.title });
     }
 }
 
