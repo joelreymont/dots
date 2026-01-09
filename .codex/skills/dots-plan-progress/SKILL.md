@@ -1,3 +1,8 @@
+---
+name: dots-plan-progress
+description: Use when checking plan status or when user says "/progress", "plan status", "what's done", "show progress" - reports completion percentages, blockers, and next actions
+---
+
 # dots-plan-progress
 
 Trigger: /progress, plan status, show progress, what's done

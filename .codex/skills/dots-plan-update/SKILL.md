@@ -1,3 +1,8 @@
+---
+name: dots-plan-update
+description: Use when modifying ExecPlans or when user says "/update-plan", "modify plan", "change plan", "reprioritize" - updates priorities, adds/removes milestones and tasks
+---
+
 # dots-plan-update
 
 Trigger: /update-plan, modify plan, change plan, reprioritize

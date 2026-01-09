@@ -1,3 +1,8 @@
+---
+name: dots-plan-create
+description: Use when creating ExecPlans or when user says "create plan", "/plan", "new plan", "dots plan" - creates hierarchical execution plans with milestones and tasks in .dots/
+---
+
 # dots-plan-create
 
 Trigger: /plan, create plan, new plan, start plan

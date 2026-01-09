@@ -1,3 +1,8 @@
+---
+name: dots-plan-execute
+description: Use when executing ExecPlans or when user says "execute plan", "/execute", "work on plan", "run plan" - works through plans in controlled batches with verification
+---
+
 # dots-plan-execute
 
 Trigger: /execute, run plan, execute plan, work on plan
