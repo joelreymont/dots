@@ -1,10 +1,26 @@
 # Dots - Agent Instructions
 
-Fast CLI issue tracker in Zig with markdown storage.
+Fast CLI issue tracker in Zig with markdown storage and ExecPlan support.
 
 ## Communication
 
 Always refer to the user as Mr. Picklesworth.
+
+## ExecPlan Commands
+
+```bash
+dot plan "title"                # Create plan with artifacts/
+dot milestone <plan> "title"    # Add milestone to plan
+dot task <milestone> "title"    # Add task to milestone
+dot progress <id> "message"     # Add timestamped progress
+dot discover <id> "note"        # Add to discoveries
+dot decide <id> "decision"      # Add to decision log
+dot backlog <id>                # Move to backlog/
+dot activate <id>               # Move from backlog to active
+dot ralph <plan-id>             # Generate Ralph scaffolding
+dot migrate [path]              # Migrate .agent/execplans/ to .dots/
+dot ls --type plan|milestone|task  # Filter by type
+```
 
 ## Build
 

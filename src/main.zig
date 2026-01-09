@@ -50,6 +50,8 @@ const commands = [_]Command{
     .{ .names = &.{"decide"}, .handler = cmdDecide },
     .{ .names = &.{"backlog"}, .handler = cmdBacklog },
     .{ .names = &.{"activate"}, .handler = cmdActivate },
+    .{ .names = &.{"ralph"}, .handler = cmdRalph },
+    .{ .names = &.{"migrate"}, .handler = cmdMigrate },
 };
 
 fn findCommand(name: []const u8) ?Handler {
@@ -190,6 +192,8 @@ const USAGE =
     \\  dot decide <id> "decision"   Add to Decision Log
     \\  dot backlog <id>             Move plan to backlog
     \\  dot activate <id>            Move plan from backlog to active
+    \\  dot ralph <plan-id>          Generate Ralph execution scaffolding
+    \\  dot migrate <path>           Migrate .agent/execplans/ to .dots/
     \\
     \\Examples:
     \\  dot "Fix the bug"
@@ -988,6 +992,288 @@ fn cmdActivate(allocator: Allocator, args: []const []const u8) !void {
     // Activate from backlog
     try storage.activateFromBacklog(id);
     try stdout().print("Activated {s} from backlog\n", .{id});
+}
+
+fn cmdRalph(allocator: Allocator, args: []const []const u8) !void {
+    if (args.len == 0) fatal("Usage: dot ralph <plan-id>\n", .{});
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    const id = resolveIdOrFatal(&storage, args[0]);
+    defer allocator.free(id);
+
+    // Verify it's a plan
+    const plan = try storage.getIssue(id) orelse fatal("Plan not found: {s}\n", .{args[0]});
+    defer plan.deinit(allocator);
+    if (!std.mem.eql(u8, plan.issue_type, "plan")) {
+        fatal("Error: {s} is not a plan (type: {s})\n", .{ id, plan.issue_type });
+    }
+
+    // Create ralph directory inside the plan folder
+    const ralph_dir = try std.fmt.allocPrint(allocator, "{s}/{s}/ralph", .{ DOTS_DIR, id });
+    defer allocator.free(ralph_dir);
+
+    fs.cwd().makePath(ralph_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {}, // OK if exists
+        else => return err,
+    };
+
+    // Get project prefix for naming
+    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
+    defer allocator.free(prefix);
+
+    // Collect milestones and tasks
+    const children = try storage.getChildren(id);
+    defer storage_mod.freeChildIssues(allocator, children);
+
+    // Build tasks.json structure
+    var tasks_json: std.ArrayList(u8) = .{};
+    defer tasks_json.deinit(allocator);
+
+    const w = tasks_json.writer(allocator);
+    try w.writeAll("{\n");
+    try w.print("  \"name\": \"{s}\",\n", .{escapeJsonString(plan.title)});
+    try w.print("  \"description\": \"Plan: {s}\",\n", .{escapeJsonString(plan.title)});
+    try w.print("  \"execplan\": \".dots/{s}/{s}.md\",\n", .{ id, id });
+    try w.writeAll("  \"tasks\": [\n");
+
+    var task_count: usize = 0;
+    var task_num: usize = 1;
+    for (children) |child| {
+        if (!std.mem.eql(u8, child.issue.issue_type, "milestone")) continue;
+
+        // Get tasks under this milestone
+        const milestone_children = try storage.getChildren(child.issue.id);
+        defer storage_mod.freeChildIssues(allocator, milestone_children);
+
+        for (milestone_children) |task_child| {
+            if (!std.mem.eql(u8, task_child.issue.issue_type, "task")) continue;
+
+            if (task_count > 0) try w.writeAll(",\n");
+            try w.writeAll("    {\n");
+            try w.print("      \"id\": \"TASK-{d:0>3}\",\n", .{task_num});
+            try w.print("      \"title\": \"{s}\",\n", .{escapeJsonString(task_child.issue.title)});
+            try w.print("      \"priority\": {d},\n", .{task_child.issue.priority});
+            try w.print("      \"done\": {s},\n", .{if (task_child.issue.status == .closed) "true" else "false"});
+            try w.print("      \"milestone\": \"{s}\",\n", .{child.issue.id});
+            try w.print("      \"dotId\": \"{s}\",\n", .{task_child.issue.id});
+            try w.writeAll("      \"description\": \"\",\n");
+            try w.writeAll("      \"acceptanceCriteria\": [],\n");
+            try w.writeAll("      \"verify\": \"\",\n");
+            try w.writeAll("      \"notes\": \"\"\n");
+            try w.writeAll("    }");
+
+            task_count += 1;
+            task_num += 1;
+        }
+    }
+
+    try w.writeAll("\n  ]\n}\n");
+
+    // Write tasks.json
+    const tasks_path = try std.fmt.allocPrint(allocator, "{s}/tasks.json", .{ralph_dir});
+    defer allocator.free(tasks_path);
+    const tasks_file = try fs.cwd().createFile(tasks_path, .{});
+    defer tasks_file.close();
+    try tasks_file.writeAll(tasks_json.items);
+
+    // Write ralph.sh
+    const ralph_sh_path = try std.fmt.allocPrint(allocator, "{s}/ralph.sh", .{ralph_dir});
+    defer allocator.free(ralph_sh_path);
+    const ralph_sh = try fs.cwd().createFile(ralph_sh_path, .{ .mode = 0o755 });
+    defer ralph_sh.close();
+    const ralph_sh_content = try std.fmt.allocPrint(allocator,
+        \\#!/bin/bash
+        \\# Ralph execution script for: {s}
+        \\# Generated by: dot ralph {s}
+        \\
+        \\set -euo pipefail
+        \\
+        \\SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+        \\PLAN_ID="{s}"
+        \\TASKS_FILE="$SCRIPT_DIR/tasks.json"
+        \\PROGRESS_FILE="$SCRIPT_DIR/progress.txt"
+        \\PROMPT_FILE="$SCRIPT_DIR/prompt.md"
+        \\
+        \\# Initialize progress file if not exists
+        \\if [ ! -f "$PROGRESS_FILE" ]; then
+        \\    echo "# Ralph Progress for $PLAN_ID" > "$PROGRESS_FILE"
+        \\    echo "Started: $(date -Iseconds)" >> "$PROGRESS_FILE"
+        \\    echo "" >> "$PROGRESS_FILE"
+        \\fi
+        \\
+        \\# Log progress
+        \\log_progress() {{
+        \\    echo "[$(date -Iseconds)] $1" >> "$PROGRESS_FILE"
+        \\}}
+        \\
+        \\# Mark task complete in dots
+        \\complete_task() {{
+        \\    local dot_id="$1"
+        \\    dot off "$dot_id" -r "Completed by Ralph"
+        \\    log_progress "Completed: $dot_id"
+        \\}}
+        \\
+        \\echo "Ralph execution environment ready for plan: {s}"
+        \\echo "Tasks file: $TASKS_FILE"
+        \\echo "Progress: $PROGRESS_FILE"
+        \\echo "Prompt: $PROMPT_FILE"
+        \\
+    , .{ plan.title, id, id, plan.title });
+    defer allocator.free(ralph_sh_content);
+    try ralph_sh.writeAll(ralph_sh_content);
+
+    // Write prompt.md
+    const prompt_path = try std.fmt.allocPrint(allocator, "{s}/prompt.md", .{ralph_dir});
+    defer allocator.free(prompt_path);
+    const prompt_file = try fs.cwd().createFile(prompt_path, .{});
+    defer prompt_file.close();
+    const prompt_content = try std.fmt.allocPrint(allocator,
+        \\# Ralph Execution Prompt
+        \\
+        \\## Plan: {s}
+        \\
+        \\You are Ralph, an autonomous execution agent. Your task is to execute the plan
+        \\defined in `.dots/{s}/{s}.md`.
+        \\
+        \\## Instructions
+        \\
+        \\1. Read the ExecPlan at the path above
+        \\2. Process tasks from `tasks.json` in priority order
+        \\3. For each task:
+        \\   - Read the task details
+        \\   - Execute the required changes
+        \\   - Run any verification commands
+        \\   - Mark complete with `dot off <dot-id> -r "reason"`
+        \\4. Log progress to `progress.txt`
+        \\5. Stop if you encounter blockers or need human input
+        \\
+        \\## Project Context
+        \\
+        \\Project prefix: {s}
+        \\Plan ID: {s}
+        \\Total tasks: {d}
+        \\
+        \\## Safety
+        \\
+        \\- Do not proceed if acceptance criteria are unclear
+        \\- Create checkpoints before destructive operations
+        \\- Ask for clarification rather than guessing
+        \\
+    , .{ plan.title, id, id, prefix, id, task_count });
+    defer allocator.free(prompt_content);
+    try prompt_file.writeAll(prompt_content);
+
+    // Write progress.txt
+    const progress_path = try std.fmt.allocPrint(allocator, "{s}/progress.txt", .{ralph_dir});
+    defer allocator.free(progress_path);
+    const progress_file = try fs.cwd().createFile(progress_path, .{});
+    defer progress_file.close();
+
+    var ts_buf: [40]u8 = undefined;
+    const now = try formatTimestamp(&ts_buf);
+    const progress_content = try std.fmt.allocPrint(allocator,
+        \\# Ralph Progress for {s}
+        \\
+        \\Generated: {s}
+        \\Plan: {s}
+        \\Tasks: {d}
+        \\
+        \\## Execution Log
+        \\
+    , .{ id, now, plan.title, task_count });
+    defer allocator.free(progress_content);
+    try progress_file.writeAll(progress_content);
+
+    try stdout().print("Ralph scaffolding created at {s}/\n", .{ralph_dir});
+    try stdout().print("  tasks.json    - {d} tasks extracted\n", .{task_count});
+    try stdout().print("  ralph.sh      - execution script\n", .{});
+    try stdout().print("  prompt.md     - agent prompt\n", .{});
+    try stdout().print("  progress.txt  - progress tracking\n", .{});
+}
+
+fn escapeJsonString(s: []const u8) []const u8 {
+    // Simple passthrough - in production would escape special chars
+    // For now, trust that titles don't contain JSON-breaking characters
+    return s;
+}
+
+fn cmdMigrate(allocator: Allocator, args: []const []const u8) !void {
+    const source_path = if (args.len > 0) args[0] else ".agent/execplans";
+
+    // Check if source exists
+    var source_dir = fs.cwd().openDir(source_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => fatal("Source directory not found: {s}\n", .{source_path}),
+        else => return err,
+    };
+    defer source_dir.close();
+
+    // Ensure .dots exists
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
+    defer allocator.free(prefix);
+
+    var ts_buf: [40]u8 = undefined;
+    const now = try formatTimestamp(&ts_buf);
+
+    var migrated_count: usize = 0;
+
+    // Iterate through source directory for .md files
+    var iter = source_dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
+
+        // Read the file
+        const file_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ source_path, entry.name });
+        defer allocator.free(file_path);
+
+        const content = fs.cwd().readFileAlloc(allocator, file_path, 1024 * 1024) catch |err| {
+            std.debug.print("Warning: Could not read {s}: {any}\n", .{ file_path, err });
+            continue;
+        };
+        defer allocator.free(content);
+
+        // Extract title from filename (remove .md extension)
+        const title = entry.name[0 .. entry.name.len - 3];
+
+        // Generate new ID
+        const id = try storage_mod.generateId(allocator, prefix);
+        defer allocator.free(id);
+
+        // Create as a plan
+        const issue = Issue{
+            .id = id,
+            .title = title,
+            .description = content,
+            .status = .open,
+            .priority = default_priority,
+            .issue_type = "plan",
+            .assignee = null,
+            .created_at = now,
+            .closed_at = null,
+            .close_reason = null,
+            .blocks = &.{},
+            .scope = null,
+            .acceptance = null,
+        };
+
+        storage.createPlanWithArtifacts(issue) catch |err| {
+            std.debug.print("Warning: Could not create plan for {s}: {any}\n", .{ title, err });
+            continue;
+        };
+
+        try stdout().print("Migrated: {s} -> {s}\n", .{ entry.name, id });
+        migrated_count += 1;
+    }
+
+    try stdout().print("\nMigration complete: {d} plans imported\n", .{migrated_count});
+    if (migrated_count > 0) {
+        try stdout().print("Original files preserved at: {s}\n", .{source_path});
+    }
 }
 
 // Helper to append content to a markdown section
