@@ -732,7 +732,17 @@ fn serializeFrontmatter(allocator: Allocator, issue: Issue) ![]u8 {
     return buf.toOwnedSlice(allocator);
 }
 
-// ID generation - {prefix}-{16 random hex chars}
+// Generate standalone task ID: t{n}-{slug}
+// Used for flat tasks created via `dot add` or hook sync
+pub fn generateStandaloneTaskId(allocator: Allocator, dots_dir: fs.Dir, title: []const u8) ![]u8 {
+    const next_num = try getNextId(dots_dir, "t");
+    const slug = try slugify(allocator, title);
+    defer allocator.free(slug);
+    return std.fmt.allocPrint(allocator, "t{d}-{s}", .{ next_num, slug });
+}
+
+// Legacy ID generation - {prefix}-{16 random hex chars}
+// Deprecated: Use generateStandaloneTaskId for new tasks
 pub fn generateId(allocator: Allocator, prefix: []const u8) ![]u8 {
     var rand_bytes: [8]u8 = undefined;
     std.crypto.random.bytes(&rand_bytes);
@@ -2091,6 +2101,12 @@ pub const Storage = struct {
     /// Generate a hierarchical ID for a plan
     pub fn generatePlanId(self: *Self, title: []const u8) ![]u8 {
         return generateHierarchicalId(self.allocator, self.dots_dir, "plan", title);
+    }
+
+    /// Generate a standalone task ID: t{n}-{slug}
+    /// Used for flat tasks created via `dot add` or hook sync
+    pub fn generateStandaloneId(self: *Self, title: []const u8) ![]u8 {
+        return generateStandaloneTaskId(self.allocator, self.dots_dir, title);
     }
 
     /// Generate a hierarchical ID for a milestone within a plan

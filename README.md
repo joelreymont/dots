@@ -21,19 +21,47 @@ A CLI task tracker with **zero dependencies** — tasks are plain markdown files
 
 ## Installation
 
+### One-command install (recommended)
+
+Builds dots and installs the binary and skills:
+
+```bash
+git clone https://github.com/joelreymont/dots.git
+cd dots
+./install.sh
+```
+
+This installs:
+- Binary to `~/.local/bin/dot`
+- Skills to `~/.claude/skills/` and `~/.codex/skills/`
+
+Safe to run multiple times to update existing installations.
+
 ### Homebrew
 
 ```bash
 brew install joelreymont/tap/dots
 ```
 
-### From source (requires Zig 0.15+)
+Note: Homebrew installs the binary only. Run `./install.sh --skills` after cloning for Claude Code skill integration.
+
+### Manual install (binary only)
 
 ```bash
 git clone https://github.com/joelreymont/dots.git
 cd dots
 zig build -Doptimize=ReleaseSmall
 cp zig-out/bin/dot ~/.local/bin/
+```
+
+### Install options
+
+```bash
+./install.sh           # Full install (binary + skills)
+./install.sh --binary  # Only build and install binary
+./install.sh --skills  # Only install skills
+./install.sh --hooks   # Configure TodoWrite sync hooks (optional)
+./install.sh --uninstall  # Remove everything
 ```
 
 ### Verify installation

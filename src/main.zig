@@ -264,10 +264,8 @@ fn cmdAdd(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
-
-    const id = try storage_mod.generateId(allocator, prefix);
+    // Generate standalone task ID: t{n}-{slug}
+    const id = try storage.generateStandaloneId(title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -1250,9 +1248,6 @@ fn cmdMigrate(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
-
     var ts_buf: [40]u8 = undefined;
     const now = try formatTimestamp(&ts_buf);
 
@@ -1277,8 +1272,8 @@ fn cmdMigrate(allocator: Allocator, args: []const []const u8) !void {
         // Extract title from filename (remove .md extension)
         const title = entry.name[0 .. entry.name.len - 3];
 
-        // Generate new ID
-        const id = try storage_mod.generateId(allocator, prefix);
+        // Generate hierarchical plan ID: p{n}-{slug}
+        const id = try storage.generatePlanId(title);
         defer allocator.free(id);
 
         // Create as a plan
@@ -1796,10 +1791,6 @@ fn hookSync(allocator: Allocator) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    // Get prefix for ID generation
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
-
     // Load mapping
     var mapping = try loadMapping(allocator);
     defer mapping_util.deinit(allocator, &mapping);
@@ -1825,8 +1816,8 @@ fn hookSync(allocator: Allocator) !void {
             const new_status: Status = if (std.mem.eql(u8, status, "in_progress")) .active else .open;
             try storage.updateStatus(dot_id, new_status, null, null);
         } else {
-            // Create new dot
-            const id = try storage_mod.generateId(allocator, prefix);
+            // Create new dot with standalone task ID: t{n}-{slug}
+            const id = try storage.generateStandaloneId(content);
             defer allocator.free(id);
             const desc = todo.activeForm orelse "";
             const priority: i64 = if (std.mem.eql(u8, status, "in_progress")) 1 else default_priority;
