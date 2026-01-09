@@ -48,7 +48,7 @@ Note: Homebrew installs the binary only. Run `./install.sh --skills` after cloni
 ### Manual install (binary only)
 
 ```bash
-git clone https://github.com/joelreymont/dots.git
+git clone https://github.com/leonardsellem/dots.git
 cd dots
 zig build -Doptimize=ReleaseSmall
 cp zig-out/bin/dot ~/.local/bin/
