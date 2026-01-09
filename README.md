@@ -26,7 +26,7 @@ A CLI task tracker with **zero dependencies** — tasks are plain markdown files
 Builds dots and installs the binary and skills:
 
 ```bash
-git clone https://github.com/joelreymont/dots.git
+git clone https://github.com/leonardsellem/dots.git
 cd dots
 ./install.sh
 ```
