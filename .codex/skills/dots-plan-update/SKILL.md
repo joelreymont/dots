@@ -50,13 +50,18 @@ Priority scale: 0=critical, 1=high, 2=normal, 3=low, 4=backlog
 
 #### To add new milestone:
 ```bash
-dot milestone <plan-id> "New milestone title"
+dot milestone <plan-id> "New milestone title" -g "<goal - what will exist at the end>"
 ```
+- `-g`: Goal - what will exist at the end of this milestone
+- Parent plan's `## Milestones` section auto-updates
 
 #### To add new task:
 ```bash
-dot task <milestone-id> "New task title"
+dot task <milestone-id> "New task title" -d "<description>" -a "<criterion 1>" -a "<criterion 2>"
 ```
+- `-d`: Description - concrete steps, expected output
+- `-a`: Acceptance criteria (can specify multiple times)
+- Parent milestone's `## Tasks` section auto-updates
 
 #### To remove task/milestone:
 ```bash
@@ -103,7 +108,7 @@ dot progress <plan-id> "Reprioritized <task> to critical due to <reason>"
 ### Add tasks discovered during work
 When new work is identified:
 ```bash
-dot task <milestone-id> "Newly discovered: <task>"
+dot task <milestone-id> "Newly discovered: <task>" -d "<what to do>" -a "<criterion>"
 dot discover <plan-id> "Found additional work needed: <detail>"
 ```
 
@@ -118,37 +123,39 @@ dot decide <plan-id> "Deferred <task> to backlog: <reason>"
 When a task is too big:
 ```bash
 dot rm <large-task-id>
-dot task <milestone-id> "Part 1: <first part>"
-dot task <milestone-id> "Part 2: <second part>"
+dot task <milestone-id> "Part 1: <first part>" -d "<what to do>" -a "<criterion>"
+dot task <milestone-id> "Part 2: <second part>" -d "<what to do>" -a "<criterion>"
 dot decide <plan-id> "Split <task> into smaller parts for clarity"
 ```
 
 ## Example
 
 ```
-User: /update-plan dots-abc123
+User: /update-plan p1-user-auth
 User: The auth task is too big, split it up
 
 Agent: Looking at the current structure...
 
 Current task:
-- [dots-task5] Implement full authentication
+- [t5-implement-auth] Implement full authentication
 
 I'll split this into smaller tasks:
 
-$ dot rm dots-task5
-$ dot task dots-m2 "Add login endpoint"
-dots-task6
-$ dot task dots-m2 "Add logout endpoint"
-dots-task7
-$ dot task dots-m2 "Add token refresh endpoint"
-dots-task8
+$ dot rm t5
+$ dot task m2 "Add login endpoint" -d "POST /api/login with email/password" -a "Returns JWT on success"
+t6-add-login-endpoint
+$ dot task m2 "Add logout endpoint" -d "POST /api/logout invalidates token" -a "Token blacklisted"
+t7-add-logout-endpoint
+$ dot task m2 "Add token refresh endpoint" -d "POST /api/refresh returns new token" -a "New token valid"
+t8-add-token-refresh-endpoint
 
-$ dot decide dots-abc123 "Split auth task into 3 endpoint-specific tasks"
+$ dot decide p1 "Split auth task into 3 endpoint-specific tasks"
 
 Updated structure:
 - Milestone 2: Core implementation
-  - [ ] Add login endpoint
-  - [ ] Add logout endpoint
-  - [ ] Add token refresh endpoint
+  - [ ] t6-add-login-endpoint - Add login endpoint
+  - [ ] t7-add-logout-endpoint - Add logout endpoint
+  - [ ] t8-add-token-refresh-endpoint - Add token refresh endpoint
+
+(The milestone's ## Tasks section was auto-updated with each new task)
 ```

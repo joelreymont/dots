@@ -10,9 +10,25 @@ Always refer to the user as Mr. Picklesworth.
 
 ```bash
 # Create hierarchical items (IDs are auto-generated: p1-slug, m1-slug, t1-slug)
-dot plan "title"                # Create plan → p1-user-auth
-dot milestone p1 "title"        # Add milestone → m1-backend-setup
-dot task m1 "title"             # Add task → t1-create-model
+# Content flags populate document sections instead of placeholders
+
+dot plan "title" -s "scope" -a "acceptance" -p "purpose" -c "context"
+# Creates plan with:
+#   -s: scope (frontmatter)
+#   -a: acceptance criteria (frontmatter)
+#   -p: Purpose / Big Picture section content
+#   -c: Context and Orientation section content
+
+dot milestone p1 "title" -g "goal"
+# Creates milestone with:
+#   -g: Goal section content (what will exist at the end)
+# Auto-updates parent plan's ## Milestones section
+
+dot task m1 "title" -d "description" -a "criterion1" -a "criterion2"
+# Creates task with:
+#   -d: Description section content
+#   -a: Acceptance criteria (repeatable for multiple)
+# Auto-updates parent milestone's ## Tasks section
 
 # Progress tracking
 dot progress <id> "message"     # Add timestamped progress
@@ -23,6 +39,7 @@ dot decide <id> "decision"      # Add to decision log
 dot backlog p1                  # Move plan to backlog/ (plans only)
 dot activate p1                 # Move plan from backlog to active
 dot off t1                      # Complete task (moves to done/ subfolder)
+dot off m1                      # Complete milestone (auto-updates plan's ## Progress)
 
 # Viewing
 dot tree                        # Show 3-level hierarchy (plan → milestone → task)

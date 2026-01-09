@@ -821,22 +821,23 @@ test "cli: purge removes archived dots" {
     const test_dir = setupTestDirOrPanic(allocator);
     defer cleanupTestDirAndFree(allocator, test_dir);
 
-    _ = runDot(allocator, &.{"init"}, test_dir) catch |err| {
+    const init_result = runDot(allocator, &.{"init"}, test_dir) catch |err| {
         std.debug.panic("init: {}", .{err});
     };
+    defer init_result.deinit(allocator);
 
     // Add and close an issue to archive it
     const add = runDot(allocator, &.{ "add", "To archive" }, test_dir) catch |err| {
         std.debug.panic("add: {}", .{err});
     };
-    defer allocator.free(add.stdout);
-    defer allocator.free(add.stderr);
+    defer add.deinit(allocator);
 
     const id = trimNewline(add.stdout);
 
-    _ = runDot(allocator, &.{ "off", id }, test_dir) catch |err| {
+    const off_result = runDot(allocator, &.{ "off", id }, test_dir) catch |err| {
         std.debug.panic("off: {}", .{err});
     };
+    defer off_result.deinit(allocator);
 
     // Verify archive has content
     const archive_path = std.fmt.allocPrint(allocator, "{s}/.dots/archive", .{test_dir}) catch |err| {
@@ -860,8 +861,7 @@ test "cli: purge removes archived dots" {
     const purge = runDot(allocator, &.{"purge"}, test_dir) catch |err| {
         std.debug.panic("purge: {}", .{err});
     };
-    defer allocator.free(purge.stdout);
-    defer allocator.free(purge.stderr);
+    defer purge.deinit(allocator);
 
     try std.testing.expect(isExitCode(purge.term, 0));
 

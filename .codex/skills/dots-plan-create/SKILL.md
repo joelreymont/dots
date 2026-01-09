@@ -36,35 +36,42 @@ Creates a new ExecPlan in `.dots/` using the dots CLI. The plan follows the Spec
 
 ### Phase 3: Create the Plan
 
-1. Create the plan using dots:
+1. Create the plan using dots with content flags:
    ```bash
-   dot plan "<title>" -s "<scope summary>" -a "<acceptance criteria>"
+   dot plan "<title>" -s "<scope summary>" -a "<acceptance criteria>" \
+       -p "<purpose/big picture>" -c "<context and orientation>"
    ```
+   - `-p`: Purpose / Big Picture - what someone gains after this change
+   - `-c`: Context - current state of codebase, key files, definitions
 
-2. Note the generated plan ID (e.g., `dots-abc123`)
+2. Note the generated plan ID (e.g., `p1-user-auth`)
 
-3. Add milestones for major phases:
+3. Add milestones for major phases with goals:
    ```bash
-   dot milestone <plan-id> "Setup and infrastructure"
-   dot milestone <plan-id> "Core implementation"
-   dot milestone <plan-id> "Testing and validation"
+   dot milestone <plan-id> "Setup and infrastructure" -g "<goal - what will exist at the end>"
+   dot milestone <plan-id> "Core implementation" -g "<goal>"
+   dot milestone <plan-id> "Testing and validation" -g "<goal>"
    ```
+   - `-g`: Goal - what will exist at the end of this milestone
+   - Parent plan's `## Milestones` section auto-updates with `- [ ] m1-slug - Title`
 
-4. Add tasks to each milestone:
+4. Add tasks to each milestone with specs:
    ```bash
-   dot task <milestone-id> "Write failing test for X"
-   dot task <milestone-id> "Implement X"
-   dot task <milestone-id> "Verify X works"
+   dot task <milestone-id> "Write failing test for X" \
+       -d "<description of what to do>" \
+       -a "<acceptance criterion 1>" \
+       -a "<acceptance criterion 2>"
    ```
+   - `-d`: Description - concrete steps, expected output
+   - `-a`: Acceptance criteria (can specify multiple times)
+   - Parent milestone's `## Tasks` section auto-updates with `- [ ] t1-slug - Title`
 
-### Phase 4: Document the Plan
+### Phase 4: Review and Refine
 
-1. Open the plan file at `.dots/<plan-id>/<plan-id>.md`
-2. Fill in:
-   - Purpose / Big Picture
-   - Context and Orientation (from Phase 2)
-   - Plan of Work (narrative for each milestone)
-   - Validation and Acceptance criteria
+1. Review the generated plan file at `.dots/<plan-id>/_plan.md`
+2. Add any additional narrative to:
+   - Plan of Work (sequence of edits)
+   - Validation and Acceptance (how to verify success)
 
 ### Phase 5: Review
 
@@ -87,15 +94,23 @@ Agent: I'll create an ExecPlan for user authentication. Let me ask a few questio
 
 Agent: Creating the plan structure:
 
-$ dot plan "Add user authentication" -s "JWT auth with login/logout" -a "All auth tests pass"
-dots-abc123
+$ dot plan "Add user authentication" -s "JWT auth with login/logout" -a "All auth tests pass" \
+    -p "Enable secure user authentication using JWT tokens" \
+    -c "Express.js backend, no existing auth. User model exists in models/user.js"
+p1-user-auth
 
-$ dot milestone dots-abc123 "Setup auth infrastructure"
-dots-def456
+$ dot milestone p1 "Setup auth infrastructure" -g "JWT middleware and dependencies configured"
+m1-setup-auth-infrastructure
 
-$ dot task dots-def456 "Add JWT dependencies"
-dots-ghi789
+$ dot task m1 "Add JWT dependencies" \
+    -d "Install jsonwebtoken and bcrypt packages" \
+    -a "Packages in package.json" \
+    -a "Package lock updated"
+t1-add-jwt-dependencies
 
 Created plan with 1 milestone and 1 task.
-Plan file: .dots/dots-abc123/dots-abc123.md
+Plan file: .dots/p1-user-auth/_plan.md
+
+The plan's ## Milestones section now shows: - [ ] m1-setup-auth-infrastructure - Setup auth infrastructure
+The milestone's ## Tasks section now shows: - [ ] t1-add-jwt-dependencies - Add JWT dependencies
 ```

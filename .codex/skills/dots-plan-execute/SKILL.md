@@ -89,6 +89,8 @@ When all tasks in a milestone are done:
    ```bash
    dot off <milestone-id>
    ```
+   - **Auto-progress**: The parent plan's `## Progress` section automatically gets:
+     `- [x] YYYY-MM-DD: m1-slug - Milestone Title (completed)`
 4. Move to next milestone
 
 ### Phase 5: Plan Completion
@@ -113,7 +115,7 @@ When all milestones are done:
 ## Example
 
 ```
-User: /execute dots-abc123
+User: /execute p1-user-auth
 
 Agent: Loading plan "Add user authentication"...
 
@@ -124,10 +126,10 @@ Current status:
 Starting batch (3 tasks)...
 
 [Task 1: Add JWT middleware]
-$ dot on dots-task1
+$ dot on t1
 [Does the work]
-$ dot progress dots-abc123 "Added JWT middleware to Express app"
-$ dot off dots-task1
+$ dot progress p1 "Added JWT middleware to Express app"
+$ dot off t1
 
 [After 3 tasks]
 
@@ -137,4 +139,11 @@ Batch complete. Completed:
 - Added password hashing
 
 Should I continue to the next batch?
+
+[After completing all tasks in milestone]
+
+$ dot off m1
+
+Plan's ## Progress section now shows:
+- [x] 2026-01-09: m1-setup-infrastructure - Setup infrastructure (completed)
 ```

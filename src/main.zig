@@ -460,6 +460,24 @@ fn cmdOff(allocator: Allocator, args: []const []const u8) !void {
             error.ChildrenNotClosed => fatal("Cannot close {s}: children are not all closed\n", .{id}),
             else => return err,
         };
+
+        // If this is a milestone, update parent plan's Progress section
+        const issue = try storage.getIssue(id) orelse continue;
+        defer issue.deinit(allocator);
+
+        if (std.mem.eql(u8, issue.issue_type, "milestone")) {
+            if (issue.parent) |plan_id| {
+                const plan = try storage.getIssue(plan_id) orelse continue;
+                defer plan.deinit(allocator);
+
+                const progress_entry = try std.fmt.allocPrint(allocator, "\n- [x] {s}: {s} - {s} (completed)", .{ now[0..10], id, issue.title });
+                defer allocator.free(progress_entry);
+
+                const new_desc = try appendToSection(allocator, plan.description, "## Progress", progress_entry);
+                defer allocator.free(new_desc);
+                try updateIssueDescription(&storage, allocator, plan_id, new_desc);
+            }
+        }
     }
 }
 
@@ -750,12 +768,104 @@ const task_template =
     \\[Filled at completion]
 ;
 
+fn buildPlanDescription(allocator: Allocator, purpose: ?[]const u8, context: ?[]const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\## Purpose / Big Picture
+        \\
+        \\{s}
+        \\
+        \\## Milestones
+        \\
+        \\[Auto-populated as milestones are added]
+        \\
+        \\## Progress
+        \\
+        \\## Surprises & Discoveries
+        \\
+        \\## Decision Log
+        \\
+        \\## Context and Orientation
+        \\
+        \\{s}
+        \\
+        \\## Plan of Work
+        \\
+        \\[Narrative describing the sequence of edits]
+        \\
+        \\## Validation and Acceptance
+        \\
+        \\[How to verify success]
+        \\
+        \\## Idempotence and Recovery
+        \\
+        \\[Safe retry/rollback paths]
+        \\
+        \\## Outcomes & Retrospective
+        \\
+        \\[Filled at completion]
+    , .{
+        purpose orelse "[What someone gains after this change]",
+        context orelse "[Current state, key files, definitions]",
+    });
+}
+
+fn buildMilestoneDescription(allocator: Allocator, goal: ?[]const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\## Goal
+        \\
+        \\{s}
+        \\
+        \\## Tasks
+        \\
+        \\[Auto-populated as tasks are added]
+        \\
+        \\## Notes
+        \\
+        \\## Outcomes & Retrospective
+        \\
+        \\[Filled at completion]
+    , .{goal orelse "[What will exist at the end of this milestone]"});
+}
+
+fn buildTaskDescription(allocator: Allocator, desc: ?[]const u8, criteria: []const []const u8) ![]u8 {
+    // Build acceptance criteria text
+    var criteria_buf = std.ArrayList(u8){};
+    defer criteria_buf.deinit(allocator);
+
+    if (criteria.len > 0) {
+        for (criteria) |c| {
+            try criteria_buf.appendSlice(allocator, "\n- [ ] ");
+            try criteria_buf.appendSlice(allocator, c);
+        }
+    } else {
+        try criteria_buf.appendSlice(allocator, "\n- [ ] [Criterion 1]\n- [ ] [Criterion 2]");
+    }
+
+    return std.fmt.allocPrint(allocator,
+        \\## Description
+        \\
+        \\{s}
+        \\
+        \\## Acceptance Criteria
+        \\{s}
+        \\
+        \\## Outcomes & Retrospective
+        \\
+        \\[Filled at completion]
+    , .{
+        desc orelse "[What to do, concrete steps, expected output]",
+        criteria_buf.items,
+    });
+}
+
 fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
-    if (args.len == 0) fatal("Usage: dot plan <title> [-s scope] [-a acceptance]\n", .{});
+    if (args.len == 0) fatal("Usage: dot plan <title> [-s scope] [-a acceptance] [-p purpose] [-c context]\n", .{});
 
     var title: []const u8 = "";
     var scope: ?[]const u8 = null;
     var acceptance: ?[]const u8 = null;
+    var purpose: ?[]const u8 = null;
+    var context: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -763,6 +873,10 @@ fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
             scope = v;
         } else if (getArg(args, &i, "-a")) |v| {
             acceptance = v;
+        } else if (getArg(args, &i, "-p")) |v| {
+            purpose = v;
+        } else if (getArg(args, &i, "-c")) |v| {
+            context = v;
         } else if (title.len == 0 and args[i].len > 0 and args[i][0] != '-') {
             title = args[i];
         }
@@ -780,10 +894,14 @@ fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
     var ts_buf: [40]u8 = undefined;
     const now = try formatTimestamp(&ts_buf);
 
+    // Build description with provided content or placeholders
+    const description = try buildPlanDescription(allocator, purpose, context);
+    defer allocator.free(description);
+
     const issue = Issue{
         .id = id,
         .title = title,
-        .description = plan_template,
+        .description = description,
         .status = .open,
         .priority = default_priority,
         .issue_type = "plan",
@@ -802,36 +920,56 @@ fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
 }
 
 fn cmdMilestone(allocator: Allocator, args: []const []const u8) !void {
-    if (args.len < 2) fatal("Usage: dot milestone <plan-id> <title>\n", .{});
+    if (args.len < 2) fatal("Usage: dot milestone <plan-id> <title> [-g goal]\n", .{});
 
-    const plan_id_arg = args[0];
-    const title = args[1];
+    var plan_id_arg: ?[]const u8 = null;
+    var title: ?[]const u8 = null;
+    var goal: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (getArg(args, &i, "-g")) |v| {
+            goal = v;
+        } else if (plan_id_arg == null and args[i].len > 0 and args[i][0] != '-') {
+            plan_id_arg = args[i];
+        } else if (title == null and args[i].len > 0 and args[i][0] != '-') {
+            title = args[i];
+        }
+    }
+
+    if (plan_id_arg == null or title == null) {
+        fatal("Usage: dot milestone <plan-id> <title> [-g goal]\n", .{});
+    }
 
     var storage = try openStorage(allocator);
     defer storage.close();
 
     // Resolve the plan ID
-    const plan_id = resolveIdOrFatal(&storage, plan_id_arg);
+    const plan_id = resolveIdOrFatal(&storage, plan_id_arg.?);
     defer allocator.free(plan_id);
 
     // Verify it's a plan
-    const plan = try storage.getIssue(plan_id) orelse fatal("Plan not found: {s}\n", .{plan_id_arg});
+    const plan = try storage.getIssue(plan_id) orelse fatal("Plan not found: {s}\n", .{plan_id_arg.?});
     defer plan.deinit(allocator);
     if (!std.mem.eql(u8, plan.issue_type, "plan")) {
         fatal("Error: {s} is not a plan (type: {s})\n", .{ plan_id, plan.issue_type });
     }
 
     // Generate hierarchical milestone ID: m{n}-{slug}
-    const id = try storage.generateMilestoneId(plan_id, title);
+    const id = try storage.generateMilestoneId(plan_id, title.?);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
     const now = try formatTimestamp(&ts_buf);
 
+    // Build description with provided goal or placeholder
+    const description = try buildMilestoneDescription(allocator, goal);
+    defer allocator.free(description);
+
     const issue = Issue{
         .id = id,
-        .title = title,
-        .description = milestone_template,
+        .title = title.?,
+        .description = description,
         .status = .open,
         .priority = default_priority,
         .issue_type = "milestone",
@@ -846,24 +984,52 @@ fn cmdMilestone(allocator: Allocator, args: []const []const u8) !void {
 
     // Create milestone folder within plan
     try storage.createMilestoneWithFolder(issue, plan_id);
+
+    // Update parent plan's Milestones section
+    const entry = try std.fmt.allocPrint(allocator, "- [ ] {s} - {s}", .{ id, title.? });
+    defer allocator.free(entry);
+    const new_desc = try updateChildrenSection(allocator, plan.description, "## Milestones", entry, "[Auto-populated as milestones are added]");
+    defer allocator.free(new_desc);
+    try updateIssueDescription(&storage, allocator, plan_id, new_desc);
+
     try stdout().print("{s}\n", .{id});
 }
 
 fn cmdTask(allocator: Allocator, args: []const []const u8) !void {
-    if (args.len < 2) fatal("Usage: dot task <milestone-id> <title>\n", .{});
+    if (args.len < 2) fatal("Usage: dot task <milestone-id> <title> [-d description] [-a criterion]...\n", .{});
 
-    const milestone_id_arg = args[0];
-    const title = args[1];
+    var milestone_id_arg: ?[]const u8 = null;
+    var title: ?[]const u8 = null;
+    var desc: ?[]const u8 = null;
+    var criteria: std.ArrayList([]const u8) = .{};
+    defer criteria.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (getArg(args, &i, "-d")) |v| {
+            desc = v;
+        } else if (getArg(args, &i, "-a")) |v| {
+            try criteria.append(allocator, v);
+        } else if (milestone_id_arg == null and args[i].len > 0 and args[i][0] != '-') {
+            milestone_id_arg = args[i];
+        } else if (title == null and args[i].len > 0 and args[i][0] != '-') {
+            title = args[i];
+        }
+    }
+
+    if (milestone_id_arg == null or title == null) {
+        fatal("Usage: dot task <milestone-id> <title> [-d description] [-a criterion]...\n", .{});
+    }
 
     var storage = try openStorage(allocator);
     defer storage.close();
 
     // Resolve the milestone ID
-    const milestone_id = resolveIdOrFatal(&storage, milestone_id_arg);
+    const milestone_id = resolveIdOrFatal(&storage, milestone_id_arg.?);
     defer allocator.free(milestone_id);
 
     // Verify it's a milestone and get its parent plan
-    const milestone = try storage.getIssue(milestone_id) orelse fatal("Milestone not found: {s}\n", .{milestone_id_arg});
+    const milestone = try storage.getIssue(milestone_id) orelse fatal("Milestone not found: {s}\n", .{milestone_id_arg.?});
     defer milestone.deinit(allocator);
     if (!std.mem.eql(u8, milestone.issue_type, "milestone")) {
         fatal("Error: {s} is not a milestone (type: {s})\n", .{ milestone_id, milestone.issue_type });
@@ -873,16 +1039,20 @@ fn cmdTask(allocator: Allocator, args: []const []const u8) !void {
     const plan_id = milestone.parent orelse fatal("Milestone {s} has no parent plan\n", .{milestone_id});
 
     // Generate hierarchical task ID: t{n}-{slug}
-    const id = try storage.generateTaskId(plan_id, milestone_id, title);
+    const id = try storage.generateTaskId(plan_id, milestone_id, title.?);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
     const now = try formatTimestamp(&ts_buf);
 
+    // Build description with provided content or placeholders
+    const description = try buildTaskDescription(allocator, desc, criteria.items);
+    defer allocator.free(description);
+
     const issue = Issue{
         .id = id,
-        .title = title,
-        .description = task_template,
+        .title = title.?,
+        .description = description,
         .status = .open,
         .priority = default_priority,
         .issue_type = "task",
@@ -897,6 +1067,14 @@ fn cmdTask(allocator: Allocator, args: []const []const u8) !void {
 
     // Create task file within milestone folder
     try storage.createTaskInMilestone(issue, plan_id, milestone_id);
+
+    // Update parent milestone's Tasks section
+    const entry = try std.fmt.allocPrint(allocator, "- [ ] {s} - {s}", .{ id, title.? });
+    defer allocator.free(entry);
+    const new_desc = try updateChildrenSection(allocator, milestone.description, "## Tasks", entry, "[Auto-populated as tasks are added]");
+    defer allocator.free(new_desc);
+    try updateIssueDescription(&storage, allocator, milestone_id, new_desc);
+
     try stdout().print("{s}\n", .{id});
 }
 
@@ -1561,6 +1739,27 @@ fn appendToSection(allocator: Allocator, description: []const u8, section: []con
         // Append to end of description
         return std.fmt.allocPrint(allocator, "{s}{s}", .{ description, content });
     }
+}
+
+// Helper to add child entry to a section, replacing placeholder if present
+fn updateChildrenSection(
+    allocator: Allocator,
+    description: []const u8,
+    section: []const u8,
+    entry: []const u8,
+    placeholder: []const u8,
+) ![]u8 {
+    // Check if placeholder exists and replace it
+    if (std.mem.indexOf(u8, description, placeholder)) |idx| {
+        const end = idx + placeholder.len;
+        return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
+            description[0..idx],
+            entry,
+            description[end..],
+        });
+    }
+    // No placeholder, use appendToSection
+    return appendToSection(allocator, description, section, entry);
 }
 
 // Helper to update issue description by rewriting the file

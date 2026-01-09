@@ -2,3 +2,4 @@
 zig-out/
 SESSION.md
 .agent/
+.dots/

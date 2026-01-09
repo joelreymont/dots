@@ -1217,24 +1217,37 @@ pub const Storage = struct {
     /// - Milestones: {plan}/m1-*/ → {plan}/done/m1-*/
     /// - Plans: p1-*/ → done/p1-*/
     fn moveToDone(self: *Self, _: []const u8, path: []const u8) !void {
-        // Don't move if already in done
+        // Don't move if already in done or archive
         if (std.mem.indexOf(u8, path, "/done/") != null) return;
         if (std.mem.startsWith(u8, path, "done/")) return;
+        if (std.mem.indexOf(u8, path, "/archive/") != null) return;
+        if (std.mem.startsWith(u8, path, "archive/")) return;
 
         // Determine what type of item this is and construct done path
         var done_path_buf: [MAX_PATH_LEN]u8 = undefined;
 
         // Check if this is a task (file directly in milestone folder)
-        // Path format: p1-*/m1-*/t1-*.md
+        // Path format: p1-*/m1-*/t1-*.md (not in archive/, done/, or backlog/)
         const filename = fs.path.basename(path);
-        if (std.mem.startsWith(u8, filename, "t") and std.mem.endsWith(u8, filename, ".md")) {
+        const parent_dir = fs.path.dirname(path);
+        // Only treat as task if it has a parent directory that's a milestone (starts with m)
+        // and is not in archive/done/backlog
+        const is_in_milestone = if (parent_dir) |pd|
+            (std.mem.startsWith(u8, fs.path.basename(pd), "m") and
+                !std.mem.eql(u8, pd, "archive") and
+                !std.mem.eql(u8, pd, "done") and
+                !std.mem.eql(u8, pd, "backlog"))
+        else
+            false;
+        if (is_in_milestone and
+            std.mem.startsWith(u8, filename, "t") and std.mem.endsWith(u8, filename, ".md"))
+        {
             // Task: move file to milestone's done/ folder
-            const parent_dir = fs.path.dirname(path) orelse return StorageError.IoError;
-            const done_path = std.fmt.bufPrint(&done_path_buf, "{s}/done/{s}", .{ parent_dir, filename }) catch return StorageError.IoError;
+            const done_path = std.fmt.bufPrint(&done_path_buf, "{s}/done/{s}", .{ parent_dir.?, filename }) catch return StorageError.IoError;
 
             // Ensure done/ subfolder exists
             var parent_path_buf: [MAX_PATH_LEN]u8 = undefined;
-            const done_dir_path = std.fmt.bufPrint(&parent_path_buf, "{s}/done", .{parent_dir}) catch return StorageError.IoError;
+            const done_dir_path = std.fmt.bufPrint(&parent_path_buf, "{s}/done", .{parent_dir.?}) catch return StorageError.IoError;
             self.dots_dir.makeDir(done_dir_path) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
