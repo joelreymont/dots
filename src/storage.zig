@@ -8,6 +8,7 @@ const ARCHIVE_DIR = ".dots/archive";
 // Buffer size constants
 const MAX_PATH_LEN = 512; // Maximum path length for file operations
 const MAX_ID_LEN = 128; // Maximum ID length (validated in validateId)
+const MAX_SLUG_LEN = 40; // Maximum slug length for human-readable IDs
 
 // Errors
 pub const StorageError = error{
@@ -38,6 +39,133 @@ pub fn validateId(id: []const u8) StorageError!void {
         if (c < 0x20 or c == 0x7F) return StorageError.InvalidId;
         if (c == '#' or c == ':' or c == '\'' or c == '"') return StorageError.InvalidId;
     }
+}
+
+/// Convert a title to a URL-safe slug
+/// - Lowercase, replace spaces with hyphens
+/// - Remove special characters except hyphens
+/// - Collapse multiple hyphens
+/// - Truncate to MAX_SLUG_LEN chars at word boundary
+pub fn slugify(allocator: Allocator, title: []const u8) ![]u8 {
+    if (title.len == 0) {
+        return allocator.dupe(u8, "untitled");
+    }
+
+    var result: std.ArrayList(u8) = .{};
+    errdefer result.deinit(allocator);
+
+    var last_was_hyphen = true; // Start true to skip leading hyphens
+
+    for (title) |c| {
+        const lower = std.ascii.toLower(c);
+
+        if (std.ascii.isAlphanumeric(lower)) {
+            try result.append(allocator, lower);
+            last_was_hyphen = false;
+        } else if (c == ' ' or c == '-' or c == '_') {
+            if (!last_was_hyphen) {
+                try result.append(allocator, '-');
+                last_was_hyphen = true;
+            }
+        }
+        // Skip all other characters
+
+        // Check length - truncate at word boundary
+        if (result.items.len >= MAX_SLUG_LEN) {
+            // Find last hyphen for word boundary
+            var truncate_at = result.items.len;
+            if (truncate_at > MAX_SLUG_LEN) {
+                truncate_at = MAX_SLUG_LEN;
+                // Look for word boundary (hyphen) to truncate cleanly
+                var i: usize = truncate_at;
+                while (i > MAX_SLUG_LEN - 10 and i > 0) : (i -= 1) {
+                    if (result.items[i - 1] == '-') {
+                        truncate_at = i - 1; // Don't include the hyphen
+                        break;
+                    }
+                }
+            }
+            result.shrinkRetainingCapacity(truncate_at);
+            break;
+        }
+    }
+
+    // Remove trailing hyphen
+    while (result.items.len > 0 and result.items[result.items.len - 1] == '-') {
+        result.shrinkRetainingCapacity(result.items.len - 1);
+    }
+
+    if (result.items.len == 0) {
+        result.deinit(allocator);
+        return allocator.dupe(u8, "untitled");
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Get the next incremental ID number for a given type prefix in a directory
+/// Scans for existing {prefix}{n}-* entries and returns max(n) + 1, or 1 if none exist
+pub fn getNextId(dir: fs.Dir, type_prefix: []const u8) !u32 {
+    var max_id: u32 = 0;
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        // Check if entry starts with the type prefix
+        if (!std.mem.startsWith(u8, entry.name, type_prefix)) continue;
+
+        // Extract the number after the prefix
+        const after_prefix = entry.name[type_prefix.len..];
+        // Find where the number ends (at the hyphen)
+        const hyphen_idx = std.mem.indexOf(u8, after_prefix, "-") orelse continue;
+        const num_str = after_prefix[0..hyphen_idx];
+
+        const num = std.fmt.parseInt(u32, num_str, 10) catch continue;
+        if (num > max_id) {
+            max_id = num;
+        }
+    }
+
+    return max_id + 1;
+}
+
+/// Issue type prefixes for hierarchical IDs
+pub const IssueTypePrefix = enum {
+    plan,
+    milestone,
+    task,
+
+    const map = std.StaticStringMap(IssueTypePrefix).initComptime(.{
+        .{ "plan", .plan },
+        .{ "milestone", .milestone },
+        .{ "task", .task },
+    });
+
+    pub fn fromString(s: []const u8) ?IssueTypePrefix {
+        return map.get(s);
+    }
+
+    pub fn prefix(self: IssueTypePrefix) []const u8 {
+        return switch (self) {
+            .plan => "p",
+            .milestone => "m",
+            .task => "t",
+        };
+    }
+};
+
+/// Generate a hierarchical ID: {type_prefix}{n}-{slug}
+/// For plans: p1-user-auth, p2-api-rate-limiting
+/// For milestones: m1-backend-setup, m2-frontend
+/// For tasks: t1-create-user-model, t2-add-password-hashing
+pub fn generateHierarchicalId(allocator: Allocator, dir: fs.Dir, issue_type: []const u8, title: []const u8) ![]u8 {
+    const type_prefix_enum = IssueTypePrefix.fromString(issue_type);
+    const type_prefix = if (type_prefix_enum) |tp| tp.prefix() else "d"; // default prefix for unknown types
+
+    const next_num = try getNextId(dir, type_prefix);
+    const slug = try slugify(allocator, title);
+    defer allocator.free(slug);
+
+    return std.fmt.allocPrint(allocator, "{s}{d}-{s}", .{ type_prefix, next_num, slug });
 }
 
 /// Write content to file atomically (write to .tmp, sync, rename)
@@ -1673,3 +1801,208 @@ pub const Storage = struct {
         try self.dots_dir.rename(src, file_name);
     }
 };
+
+// ============================================================================
+// Unit Tests for slugify and ID generation
+// ============================================================================
+
+test "slugify: basic title conversion" {
+    const allocator = std.testing.allocator;
+
+    const slug = try slugify(allocator, "Hello World");
+    defer allocator.free(slug);
+    try std.testing.expectEqualStrings("hello-world", slug);
+}
+
+test "slugify: removes special characters" {
+    const allocator = std.testing.allocator;
+
+    const slug = try slugify(allocator, "Fix bug! @user: it's broken!!!");
+    defer allocator.free(slug);
+    try std.testing.expectEqualStrings("fix-bug-user-its-broken", slug);
+}
+
+test "slugify: collapses multiple hyphens" {
+    const allocator = std.testing.allocator;
+
+    const slug = try slugify(allocator, "foo - - bar --- baz");
+    defer allocator.free(slug);
+    try std.testing.expectEqualStrings("foo-bar-baz", slug);
+}
+
+test "slugify: trims leading and trailing hyphens" {
+    const allocator = std.testing.allocator;
+
+    const slug = try slugify(allocator, "   Hello World   ");
+    defer allocator.free(slug);
+    try std.testing.expectEqualStrings("hello-world", slug);
+}
+
+test "slugify: handles empty string" {
+    const allocator = std.testing.allocator;
+
+    const slug = try slugify(allocator, "");
+    defer allocator.free(slug);
+    try std.testing.expectEqualStrings("untitled", slug);
+}
+
+test "slugify: handles all special characters" {
+    const allocator = std.testing.allocator;
+
+    const slug = try slugify(allocator, "!@#$%^&*()");
+    defer allocator.free(slug);
+    try std.testing.expectEqualStrings("untitled", slug);
+}
+
+test "slugify: truncates long titles" {
+    const allocator = std.testing.allocator;
+
+    const long_title = "This is a very long title that should be truncated at a word boundary to stay within the limit";
+    const slug = try slugify(allocator, long_title);
+    defer allocator.free(slug);
+
+    // Should be <= MAX_SLUG_LEN (40 characters)
+    try std.testing.expect(slug.len <= MAX_SLUG_LEN);
+    // Should not end with hyphen
+    try std.testing.expect(slug[slug.len - 1] != '-');
+}
+
+test "slugify: preserves numbers" {
+    const allocator = std.testing.allocator;
+
+    const slug = try slugify(allocator, "Fix bug #123");
+    defer allocator.free(slug);
+    try std.testing.expectEqualStrings("fix-bug-123", slug);
+}
+
+test "slugify: handles underscores" {
+    const allocator = std.testing.allocator;
+
+    const slug = try slugify(allocator, "fix_authentication_bug");
+    defer allocator.free(slug);
+    try std.testing.expectEqualStrings("fix-authentication-bug", slug);
+}
+
+test "getNextId: empty directory returns 1" {
+    // Create temp directory
+    var tmp_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp_dir.cleanup();
+
+    const next = try getNextId(tmp_dir.dir, "t");
+    try std.testing.expectEqual(@as(u32, 1), next);
+}
+
+test "getNextId: returns max + 1" {
+    var tmp_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp_dir.cleanup();
+
+    // Create some files with prefixed names
+    const files_to_create = [_][]const u8{ "t1-task.md", "t2-task.md", "t5-task.md" };
+    for (files_to_create) |name| {
+        const file = try tmp_dir.dir.createFile(name, .{});
+        file.close();
+    }
+
+    const next = try getNextId(tmp_dir.dir, "t");
+    try std.testing.expectEqual(@as(u32, 6), next);
+}
+
+test "getNextId: ignores other prefixes" {
+    var tmp_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp_dir.cleanup();
+
+    // Create files with different prefixes
+    const files_to_create = [_][]const u8{ "t1-task.md", "m1-milestone.md", "p1-plan.md" };
+    for (files_to_create) |name| {
+        const file = try tmp_dir.dir.createFile(name, .{});
+        file.close();
+    }
+
+    const next_t = try getNextId(tmp_dir.dir, "t");
+    try std.testing.expectEqual(@as(u32, 2), next_t);
+
+    const next_m = try getNextId(tmp_dir.dir, "m");
+    try std.testing.expectEqual(@as(u32, 2), next_m);
+
+    const next_p = try getNextId(tmp_dir.dir, "p");
+    try std.testing.expectEqual(@as(u32, 2), next_p);
+}
+
+test "getNextId: handles directories" {
+    var tmp_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp_dir.cleanup();
+
+    // Create directories (folders for plans/milestones)
+    try tmp_dir.dir.makeDir("p1-first-plan");
+    try tmp_dir.dir.makeDir("p3-third-plan");
+
+    const next = try getNextId(tmp_dir.dir, "p");
+    try std.testing.expectEqual(@as(u32, 4), next);
+}
+
+test "generateHierarchicalId: creates correct format" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp_dir.cleanup();
+
+    const id = try generateHierarchicalId(allocator, tmp_dir.dir, "task", "Fix authentication bug");
+    defer allocator.free(id);
+
+    // Should be t1-fix-authentication-bug
+    try std.testing.expectEqualStrings("t1-fix-authentication-bug", id);
+}
+
+test "generateHierarchicalId: increments correctly" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp_dir.cleanup();
+
+    // Create a task file
+    const file = try tmp_dir.dir.createFile("t1-existing.md", .{});
+    file.close();
+
+    const id = try generateHierarchicalId(allocator, tmp_dir.dir, "task", "New task");
+    defer allocator.free(id);
+
+    // Should be t2-new-task (after t1)
+    try std.testing.expectEqualStrings("t2-new-task", id);
+}
+
+test "generateHierarchicalId: handles plan type" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp_dir.cleanup();
+
+    const id = try generateHierarchicalId(allocator, tmp_dir.dir, "plan", "User Authentication");
+    defer allocator.free(id);
+
+    try std.testing.expectEqualStrings("p1-user-authentication", id);
+}
+
+test "generateHierarchicalId: handles milestone type" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp_dir.cleanup();
+
+    const id = try generateHierarchicalId(allocator, tmp_dir.dir, "milestone", "Backend Setup");
+    defer allocator.free(id);
+
+    try std.testing.expectEqualStrings("m1-backend-setup", id);
+}
+
+test "IssueTypePrefix: maps correctly" {
+    try std.testing.expectEqual(IssueTypePrefix.plan, IssueTypePrefix.fromString("plan").?);
+    try std.testing.expectEqual(IssueTypePrefix.milestone, IssueTypePrefix.fromString("milestone").?);
+    try std.testing.expectEqual(IssueTypePrefix.task, IssueTypePrefix.fromString("task").?);
+    try std.testing.expectEqual(@as(?IssueTypePrefix, null), IssueTypePrefix.fromString("unknown"));
+}
+
+test "IssueTypePrefix: returns correct prefix" {
+    try std.testing.expectEqualStrings("p", IssueTypePrefix.plan.prefix());
+    try std.testing.expectEqualStrings("m", IssueTypePrefix.milestone.prefix());
+    try std.testing.expectEqualStrings("t", IssueTypePrefix.task.prefix());
+}
