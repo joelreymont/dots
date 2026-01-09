@@ -330,19 +330,32 @@ fn cmdAdd(allocator: Allocator, args: []const []const u8) !void {
 fn cmdList(allocator: Allocator, args: []const []const u8) !void {
     var filter_status: ?Status = null;
     var filter_type: ?[]const u8 = null;
+    var include_done = false;
+    var include_backlog = false;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (getArg(args, &i, "--status")) |v| {
             filter_status = parseStatusArg(v);
         } else if (getArg(args, &i, "--type")) |v| {
             filter_type = v;
+        } else if (std.mem.eql(u8, args[i], "--include-done")) {
+            include_done = true;
+        } else if (std.mem.eql(u8, args[i], "--include-backlog")) {
+            include_backlog = true;
+        } else if (std.mem.eql(u8, args[i], "--all")) {
+            include_done = true;
+            include_backlog = true;
         }
     }
 
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    const all_issues = try storage.listIssues(filter_status);
+    const all_issues = try storage.listIssuesWithOptions(.{
+        .status_filter = filter_status,
+        .include_done = include_done,
+        .include_backlog = include_backlog,
+    });
     defer storage_mod.freeIssues(allocator, all_issues);
 
     // Filter by type if specified
@@ -356,9 +369,12 @@ fn cmdList(allocator: Allocator, args: []const []const u8) !void {
             }
         }
 
-        try writeIssueList(filtered.items, filter_status == null, hasFlag(args, "--json"));
+        // skip_done: if include_done is explicitly set, don't skip; otherwise skip closed unless filtering by status
+        const skip_done = !include_done and filter_status == null;
+        try writeIssueList(filtered.items, skip_done, hasFlag(args, "--json"));
     } else {
-        try writeIssueList(all_issues, filter_status == null, hasFlag(args, "--json"));
+        const skip_done = !include_done and filter_status == null;
+        try writeIssueList(all_issues, skip_done, hasFlag(args, "--json"));
     }
 }
 
