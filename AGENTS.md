@@ -9,17 +9,48 @@ Always refer to the user as Mr. Picklesworth.
 ## ExecPlan Commands
 
 ```bash
-dot plan "title"                # Create plan with artifacts/
-dot milestone <plan> "title"    # Add milestone to plan
-dot task <milestone> "title"    # Add task to milestone
+# Create hierarchical items (IDs are auto-generated: p1-slug, m1-slug, t1-slug)
+dot plan "title"                # Create plan → p1-user-auth
+dot milestone p1 "title"        # Add milestone → m1-backend-setup
+dot task m1 "title"             # Add task → t1-create-model
+
+# Progress tracking
 dot progress <id> "message"     # Add timestamped progress
 dot discover <id> "note"        # Add to discoveries
 dot decide <id> "decision"      # Add to decision log
-dot backlog <id>                # Move to backlog/
-dot activate <id>               # Move from backlog to active
+
+# Workflow
+dot backlog p1                  # Move plan to backlog/ (plans only)
+dot activate p1                 # Move plan from backlog to active
+dot off t1                      # Complete task (moves to done/ subfolder)
+
+# Viewing
+dot tree                        # Show 3-level hierarchy (plan → milestone → task)
+dot ls                          # List active items (excludes done)
+dot ls --include-done           # Include completed items
+dot ls --include-backlog        # Include backlog plans
+dot ls --type plan|milestone|task  # Filter by type
+
+# Tools
 dot ralph <plan-id>             # Generate Ralph scaffolding
 dot migrate [path]              # Migrate .agent/execplans/ to .dots/
-dot ls --type plan|milestone|task  # Filter by type
+dot restructure [--dry-run]     # Convert legacy hash IDs to hierarchical format
+```
+
+## Directory Structure
+
+```
+.dots/
+  p1-user-auth/                 # Plan folder
+    _plan.md                    # Plan document
+    artifacts/
+    done/                       # Completed milestones
+    m1-backend/                 # Milestone folder
+      _milestone.md
+      done/                     # Completed tasks
+      t1-create-model.md        # Task file
+  backlog/                      # Plans not yet started
+  done/                         # Completed plans
 ```
 
 ## Build

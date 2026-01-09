@@ -52,6 +52,7 @@ const commands = [_]Command{
     .{ .names = &.{"activate"}, .handler = cmdActivate },
     .{ .names = &.{"ralph"}, .handler = cmdRalph },
     .{ .names = &.{"migrate"}, .handler = cmdMigrate },
+    .{ .names = &.{"restructure"}, .handler = cmdRestructure },
 };
 
 fn findCommand(name: []const u8) ?Handler {
@@ -194,6 +195,7 @@ const USAGE =
     \\  dot activate <id>            Move plan from backlog to active
     \\  dot ralph <plan-id>          Generate Ralph execution scaffolding
     \\  dot migrate <path>           Migrate .agent/execplans/ to .dots/
+    \\  dot restructure [--dry-run]  Convert legacy hash IDs to hierarchical format
     \\
     \\Examples:
     \\  dot "Fix the bug"
@@ -330,19 +332,32 @@ fn cmdAdd(allocator: Allocator, args: []const []const u8) !void {
 fn cmdList(allocator: Allocator, args: []const []const u8) !void {
     var filter_status: ?Status = null;
     var filter_type: ?[]const u8 = null;
+    var include_done = false;
+    var include_backlog = false;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (getArg(args, &i, "--status")) |v| {
             filter_status = parseStatusArg(v);
         } else if (getArg(args, &i, "--type")) |v| {
             filter_type = v;
+        } else if (std.mem.eql(u8, args[i], "--include-done")) {
+            include_done = true;
+        } else if (std.mem.eql(u8, args[i], "--include-backlog")) {
+            include_backlog = true;
+        } else if (std.mem.eql(u8, args[i], "--all")) {
+            include_done = true;
+            include_backlog = true;
         }
     }
 
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    const all_issues = try storage.listIssues(filter_status);
+    const all_issues = try storage.listIssuesWithOptions(.{
+        .status_filter = filter_status,
+        .include_done = include_done,
+        .include_backlog = include_backlog,
+    });
     defer storage_mod.freeIssues(allocator, all_issues);
 
     // Filter by type if specified
@@ -356,9 +371,12 @@ fn cmdList(allocator: Allocator, args: []const []const u8) !void {
             }
         }
 
-        try writeIssueList(filtered.items, filter_status == null, hasFlag(args, "--json"));
+        // skip_done: if include_done is explicitly set, don't skip; otherwise skip closed unless filtering by status
+        const skip_done = !include_done and filter_status == null;
+        try writeIssueList(filtered.items, skip_done, hasFlag(args, "--json"));
     } else {
-        try writeIssueList(all_issues, filter_status == null, hasFlag(args, "--json"));
+        const skip_done = !include_done and filter_status == null;
+        try writeIssueList(all_issues, skip_done, hasFlag(args, "--json"));
     }
 }
 
@@ -497,18 +515,39 @@ fn cmdTree(allocator: Allocator, _: []const []const u8) !void {
     defer storage_mod.freeIssues(allocator, roots);
 
     const w = stdout();
-    for (roots) |root| {
+    for (roots, 0..) |root, root_idx| {
         try w.print("[{s}] {s} {s}\n", .{ root.id, root.status.symbol(), root.title });
 
         const children = try storage.getChildren(root.id);
         defer storage_mod.freeChildIssues(allocator, children);
 
-        for (children) |child| {
+        const is_last_root = (root_idx == roots.len - 1);
+
+        for (children, 0..) |child, child_idx| {
             const blocked_msg: []const u8 = if (child.blocked) " (blocked)" else "";
+            const is_last_child = (child_idx == children.len - 1);
+            const child_prefix: []const u8 = if (is_last_child) "  └─" else "  ├─";
             try w.print(
-                "  └─ [{s}] {s} {s}{s}\n",
-                .{ child.issue.id, child.issue.status.symbol(), child.issue.title, blocked_msg },
+                "{s} [{s}] {s} {s}{s}\n",
+                .{ child_prefix, child.issue.id, child.issue.status.symbol(), child.issue.title, blocked_msg },
             );
+
+            // Show grandchildren (tasks under milestones)
+            const grandchildren = try storage.getChildren(child.issue.id);
+            defer storage_mod.freeChildIssues(allocator, grandchildren);
+
+            const continuation: []const u8 = if (is_last_child) "   " else "  │";
+            _ = is_last_root;
+
+            for (grandchildren, 0..) |grandchild, gc_idx| {
+                const gc_blocked_msg: []const u8 = if (grandchild.blocked) " (blocked)" else "";
+                const is_last_gc = (gc_idx == grandchildren.len - 1);
+                const gc_prefix: []const u8 = if (is_last_gc) "  └─" else "  ├─";
+                try w.print(
+                    "{s}{s} [{s}] {s} {s}{s}\n",
+                    .{ continuation, gc_prefix, grandchild.issue.id, grandchild.issue.status.symbol(), grandchild.issue.title, gc_blocked_msg },
+                );
+            }
         }
     }
 }
@@ -736,10 +775,8 @@ fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
-
-    const id = try storage_mod.generateId(allocator, prefix);
+    // Generate hierarchical plan ID: p{n}-{slug}
+    const id = try storage.generatePlanId(title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -761,7 +798,7 @@ fn cmdPlan(allocator: Allocator, args: []const []const u8) !void {
         .acceptance = acceptance,
     };
 
-    // Create plan with artifacts folder
+    // Create plan with artifacts folder and done subfolder
     try storage.createPlanWithArtifacts(issue);
     try stdout().print("{s}\n", .{id});
 }
@@ -786,11 +823,8 @@ fn cmdMilestone(allocator: Allocator, args: []const []const u8) !void {
         fatal("Error: {s} is not a plan (type: {s})\n", .{ plan_id, plan.issue_type });
     }
 
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
-
-    // Generate milestone ID with m prefix
-    const id = try storage_mod.generateId(allocator, prefix);
+    // Generate hierarchical milestone ID: m{n}-{slug}
+    const id = try storage.generateMilestoneId(plan_id, title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -812,7 +846,8 @@ fn cmdMilestone(allocator: Allocator, args: []const []const u8) !void {
         .acceptance = null,
     };
 
-    try storage.createIssue(issue, plan_id);
+    // Create milestone folder within plan
+    try storage.createMilestoneWithFolder(issue, plan_id);
     try stdout().print("{s}\n", .{id});
 }
 
@@ -829,17 +864,18 @@ fn cmdTask(allocator: Allocator, args: []const []const u8) !void {
     const milestone_id = resolveIdOrFatal(&storage, milestone_id_arg);
     defer allocator.free(milestone_id);
 
-    // Verify it's a milestone
+    // Verify it's a milestone and get its parent plan
     const milestone = try storage.getIssue(milestone_id) orelse fatal("Milestone not found: {s}\n", .{milestone_id_arg});
     defer milestone.deinit(allocator);
     if (!std.mem.eql(u8, milestone.issue_type, "milestone")) {
         fatal("Error: {s} is not a milestone (type: {s})\n", .{ milestone_id, milestone.issue_type });
     }
 
-    const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
-    defer allocator.free(prefix);
+    // Get the parent plan ID from milestone
+    const plan_id = milestone.parent orelse fatal("Milestone {s} has no parent plan\n", .{milestone_id});
 
-    const id = try storage_mod.generateId(allocator, prefix);
+    // Generate hierarchical task ID: t{n}-{slug}
+    const id = try storage.generateTaskId(plan_id, milestone_id, title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -861,7 +897,8 @@ fn cmdTask(allocator: Allocator, args: []const []const u8) !void {
         .acceptance = null,
     };
 
-    try storage.createIssue(issue, milestone_id);
+    // Create task file within milestone folder
+    try storage.createTaskInMilestone(issue, plan_id, milestone_id);
     try stdout().print("{s}\n", .{id});
 }
 
@@ -1274,6 +1311,233 @@ fn cmdMigrate(allocator: Allocator, args: []const []const u8) !void {
     if (migrated_count > 0) {
         try stdout().print("Original files preserved at: {s}\n", .{source_path});
     }
+}
+
+/// Restructure flat .dots/ directory to hierarchical format
+/// Migrates: {hash-id}/{hash-id}.md -> p{n}-{slug}/_plan.md (and children)
+fn cmdRestructure(allocator: Allocator, args: []const []const u8) !void {
+    const dry_run = hasFlag(args, "--dry-run");
+
+    // Check if .dots exists
+    var dots_dir = fs.cwd().openDir(DOTS_DIR, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => fatal("No .dots directory found\n", .{}),
+        else => return err,
+    };
+    defer dots_dir.close();
+
+    if (dry_run) {
+        try stdout().print("=== DRY RUN - No changes will be made ===\n\n", .{});
+    } else {
+        // Create backup before restructuring
+        try stdout().print("Creating backup at .dots.bak/...\n", .{});
+        fs.cwd().deleteTree(".dots.bak") catch {};
+        const argv = [_][]const u8{ "cp", "-r", ".dots", ".dots.bak" };
+        var backup_result = std.process.Child.init(&argv, allocator);
+        _ = try backup_result.spawn();
+        _ = try backup_result.wait();
+    }
+
+    var storage = try openStorage(allocator);
+    defer storage.close();
+
+    // Get all issues with legacy hash IDs
+    const all_issues = try storage.listIssues(null);
+    defer storage_mod.freeIssues(allocator, all_issues);
+
+    // Build parent-child relationships
+    var children_map = std.StringHashMap(std.ArrayList(Issue)).init(allocator);
+    defer {
+        var it = children_map.valueIterator();
+        while (it.next()) |list| {
+            list.deinit(allocator);
+        }
+        children_map.deinit();
+    }
+
+    var root_issues: std.ArrayList(Issue) = .{};
+    defer root_issues.deinit(allocator);
+
+    for (all_issues) |issue| {
+        if (issue.parent) |parent_id| {
+            var gop = try children_map.getOrPut(parent_id);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .{};
+            }
+            try gop.value_ptr.append(allocator, issue);
+        } else {
+            try root_issues.append(allocator, issue);
+        }
+    }
+
+    // Track ID mappings: old hash ID -> new hierarchical ID
+    var id_mapping = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var it = id_mapping.valueIterator();
+        while (it.next()) |v| allocator.free(v.*);
+        id_mapping.deinit();
+    }
+
+    var plan_count: usize = 0;
+    var milestone_count: usize = 0;
+    var task_count: usize = 0;
+
+    // Process root issues (plans or standalone items)
+    for (root_issues.items) |issue| {
+        // Check if this looks like a legacy hash ID (contains only hex after prefix)
+        if (!isLegacyHashId(issue.id)) {
+            try stdout().print("Skipping (already new format): {s}\n", .{issue.id});
+            continue;
+        }
+
+        const issue_type = issue.issue_type;
+        if (std.mem.eql(u8, issue_type, "plan")) {
+            // Create new plan with hierarchical ID
+            const new_id = try storage_mod.generateHierarchicalId(allocator, storage.dots_dir, "plan", issue.title);
+            defer allocator.free(new_id);
+
+            try id_mapping.put(issue.id, try allocator.dupe(u8, new_id));
+            plan_count += 1;
+
+            try stdout().print("Plan: {s} -> {s} ({s})\n", .{ issue.id, new_id, issue.title });
+
+            if (!dry_run) {
+                // Create new plan structure
+                const new_issue = Issue{
+                    .id = new_id,
+                    .title = issue.title,
+                    .description = issue.description,
+                    .status = issue.status,
+                    .priority = issue.priority,
+                    .issue_type = "plan",
+                    .assignee = issue.assignee,
+                    .created_at = issue.created_at,
+                    .closed_at = issue.closed_at,
+                    .close_reason = issue.close_reason,
+                    .blocks = issue.blocks,
+                    .scope = issue.scope,
+                    .acceptance = issue.acceptance,
+                    .parent = null,
+                };
+                try storage.createPlanWithArtifacts(new_issue);
+
+                // Process milestones (children of plan)
+                if (children_map.get(issue.id)) |milestones| {
+                    for (milestones.items) |ms| {
+                        const ms_new_id = try storage_mod.generateHierarchicalIdInDir(
+                            allocator,
+                            storage.dots_dir,
+                            new_id,
+                            .milestone,
+                            ms.title,
+                        );
+                        defer allocator.free(ms_new_id);
+
+                        try id_mapping.put(ms.id, try allocator.dupe(u8, ms_new_id));
+                        milestone_count += 1;
+
+                        try stdout().print("  Milestone: {s} -> {s} ({s})\n", .{ ms.id, ms_new_id, ms.title });
+
+                        const ms_issue = Issue{
+                            .id = ms_new_id,
+                            .title = ms.title,
+                            .description = ms.description,
+                            .status = ms.status,
+                            .priority = ms.priority,
+                            .issue_type = "milestone",
+                            .assignee = ms.assignee,
+                            .created_at = ms.created_at,
+                            .closed_at = ms.closed_at,
+                            .close_reason = ms.close_reason,
+                            .blocks = ms.blocks,
+                            .scope = ms.scope,
+                            .acceptance = ms.acceptance,
+                            .parent = new_id,
+                        };
+                        try storage.createMilestoneWithFolder(ms_issue, new_id);
+
+                        // Process tasks (children of milestone)
+                        if (children_map.get(ms.id)) |tasks| {
+                            for (tasks.items) |t| {
+                                // Build milestone dir path
+                                var ms_dir_buf: [512]u8 = undefined;
+                                const ms_dir_path = std.fmt.bufPrint(&ms_dir_buf, "{s}/{s}", .{ new_id, ms_new_id }) catch continue;
+
+                                const t_new_id = try storage_mod.generateHierarchicalIdInDir(
+                                    allocator,
+                                    storage.dots_dir,
+                                    ms_dir_path,
+                                    .task,
+                                    t.title,
+                                );
+                                defer allocator.free(t_new_id);
+
+                                try id_mapping.put(t.id, try allocator.dupe(u8, t_new_id));
+                                task_count += 1;
+
+                                try stdout().print("    Task: {s} -> {s} ({s})\n", .{ t.id, t_new_id, t.title });
+
+                                const t_issue = Issue{
+                                    .id = t_new_id,
+                                    .title = t.title,
+                                    .description = t.description,
+                                    .status = t.status,
+                                    .priority = t.priority,
+                                    .issue_type = "task",
+                                    .assignee = t.assignee,
+                                    .created_at = t.created_at,
+                                    .closed_at = t.closed_at,
+                                    .close_reason = t.close_reason,
+                                    .blocks = t.blocks,
+                                    .scope = t.scope,
+                                    .acceptance = t.acceptance,
+                                    .parent = ms_new_id,
+                                };
+                                try storage.createTaskInMilestone(t_issue, new_id, ms_new_id);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Non-plan root item - treat as standalone
+            try stdout().print("Standalone: {s} (type: {s}) - skipping\n", .{ issue.id, issue_type });
+        }
+    }
+
+    try stdout().print("\n", .{});
+    if (dry_run) {
+        try stdout().print("=== DRY RUN COMPLETE ===\n", .{});
+        try stdout().print("Would restructure: {d} plans, {d} milestones, {d} tasks\n", .{ plan_count, milestone_count, task_count });
+        try stdout().print("Run without --dry-run to apply changes\n", .{});
+    } else {
+        try stdout().print("Restructure complete: {d} plans, {d} milestones, {d} tasks\n", .{ plan_count, milestone_count, task_count });
+        try stdout().print("Backup saved at .dots.bak/\n", .{});
+        try stdout().print("\nNote: Old hash-ID files are still present. After verifying the migration,\n", .{});
+        try stdout().print("you can manually delete them or run: rm -rf .dots.bak\n", .{});
+    }
+}
+
+/// Check if an ID looks like a legacy hash ID (prefix-16hexchars)
+fn isLegacyHashId(id: []const u8) bool {
+    // Legacy format: {prefix}-{16 hex chars}
+    // New format: p{n}-{slug}, m{n}-{slug}, t{n}-{slug}
+    if (id.len < 18) return false; // Minimum: x-1234567890abcdef
+
+    // Find the dash
+    const dash_idx = std.mem.indexOf(u8, id, "-") orelse return false;
+    if (dash_idx == 0) return false;
+
+    const suffix = id[dash_idx + 1 ..];
+
+    // Legacy IDs have exactly 16 hex chars after the dash
+    if (suffix.len != 16) return false;
+
+    // Check if all chars are hex
+    for (suffix) |c| {
+        if (!std.ascii.isHex(c)) return false;
+    }
+
+    return true;
 }
 
 // Helper to append content to a markdown section
