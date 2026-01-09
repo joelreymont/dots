@@ -168,6 +168,28 @@ pub fn generateHierarchicalId(allocator: Allocator, dir: fs.Dir, issue_type: []c
     return std.fmt.allocPrint(allocator, "{s}{d}-{s}", .{ type_prefix, next_num, slug });
 }
 
+/// Generate a hierarchical ID in a subdirectory specified by path
+/// Used for migration when creating milestones/tasks in specific locations
+pub fn generateHierarchicalIdInDir(allocator: Allocator, base_dir: fs.Dir, subdir_path: []const u8, issue_type: IssueTypePrefix, title: []const u8) ![]u8 {
+    var subdir = base_dir.openDir(subdir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => {
+            // Directory doesn't exist yet, start at 1
+            const slug = try slugify(allocator, title);
+            defer allocator.free(slug);
+            return std.fmt.allocPrint(allocator, "{s}1-{s}", .{ issue_type.prefix(), slug });
+        },
+        else => return err,
+    };
+    defer subdir.close();
+
+    const type_prefix = issue_type.prefix();
+    const next_num = try getNextId(subdir, type_prefix);
+    const slug = try slugify(allocator, title);
+    defer allocator.free(slug);
+
+    return std.fmt.allocPrint(allocator, "{s}{d}-{s}", .{ type_prefix, next_num, slug });
+}
+
 /// Write content to file atomically (write to .tmp, sync, rename)
 fn writeFileAtomic(dir: fs.Dir, path: []const u8, content: []const u8) !void {
     var tmp_path_buf: [MAX_PATH_LEN + 4]u8 = undefined; // +4 for ".tmp" suffix
@@ -2118,7 +2140,18 @@ pub const Storage = struct {
             else => return err,
         };
 
-        // Check if it's a folder (parent with children)
+        // New hierarchical format: plans are p{n}-{slug}/_plan.md
+        // Extract plan folder and move the entire folder
+        if (std.mem.endsWith(u8, path, "/_plan.md")) {
+            // Path is like "p1-my-plan/_plan.md" - extract folder name
+            const folder_name = path[0 .. path.len - "/_plan.md".len];
+            var dest_path_buf: [MAX_PATH_LEN]u8 = undefined;
+            const dest_path = std.fmt.bufPrint(&dest_path_buf, "backlog/{s}", .{folder_name}) catch return StorageError.IoError;
+            try self.dots_dir.rename(folder_name, dest_path);
+            return;
+        }
+
+        // Legacy format: Check if it's a folder (parent with children)
         if (std.mem.indexOf(u8, path, "/")) |slash_idx| {
             const folder_name = path[0..slash_idx];
             const filename = std.fs.path.basename(path);
