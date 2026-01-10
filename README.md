@@ -338,6 +338,14 @@ dot restructure [--dry-run]
 
 Converts legacy hash-based IDs (`dots-a3f2b1c8d9e04a7b`) to the new hierarchical format (`p1-user-auth`). Creates a backup at `.dots.bak/` before making changes. Use `--dry-run` to preview what would be migrated.
 
+### Fix YAML Escaping
+
+```bash
+dot fix-yaml [--dry-run]
+```
+
+Repairs files with over-escaped YAML frontmatter values (timestamps, scope, etc.). This fixes a historical bug where quoted values would accumulate escape characters on each read-write cycle. Use `--dry-run` to preview which files would be fixed.
+
 ### List Options
 
 ```bash

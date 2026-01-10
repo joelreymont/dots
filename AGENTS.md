@@ -52,6 +52,7 @@ dot ls --type plan|milestone|task  # Filter by type
 dot ralph <plan-id>             # Generate Ralph scaffolding
 dot migrate [path]              # Migrate .agent/execplans/ to .dots/
 dot restructure [--dry-run]     # Convert legacy hash IDs to hierarchical format
+dot fix-yaml [--dry-run]        # Fix over-escaped YAML values (timestamps, etc.)
 ```
 
 ## Directory Structure
