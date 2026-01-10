@@ -3,7 +3,6 @@ const fs = std.fs;
 const Allocator = std.mem.Allocator;
 
 const DOTS_DIR = ".dots";
-const ARCHIVE_DIR = ".dots/archive";
 
 // Buffer size constants
 const MAX_PATH_LEN = 512; // Maximum path length for file operations
@@ -858,12 +857,6 @@ pub const Storage = struct {
             else => return err,
         };
 
-        // Create archive directory if needed
-        fs.cwd().makeDir(ARCHIVE_DIR) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
-
         const dots_dir = try fs.cwd().openDir(DOTS_DIR, .{ .iterate = true });
 
         return Self{
@@ -884,18 +877,8 @@ pub const Storage = struct {
             matches.deinit(self.allocator);
         }
 
-        // Search in .dots and .dots/archive
+        // Search in .dots directory
         try self.findMatchingIds(self.dots_dir, prefix, &matches);
-
-        const archive_dir = self.dots_dir.openDir("archive", .{ .iterate = true }) catch |err| switch (err) {
-            error.FileNotFound => null,
-            else => return err,
-        };
-        if (archive_dir) |*dir| {
-            var d = dir.*;
-            defer d.close();
-            try self.findMatchingIds(d, prefix, &matches);
-        }
 
         if (matches.items.len == 0) return StorageError.IssueNotFound;
         if (matches.items.len > 1) return StorageError.AmbiguousId;
@@ -926,7 +909,6 @@ pub const Storage = struct {
                 }
             } else if (entry.kind == .directory) {
                 // Skip special directories
-                if (std.mem.eql(u8, entry.name, "archive")) continue;
                 if (std.mem.eql(u8, entry.name, "artifacts")) continue;
                 if (!include_done_backlog) {
                     if (std.mem.eql(u8, entry.name, "done")) continue;
@@ -976,18 +958,6 @@ pub const Storage = struct {
         const folder_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.md", .{ id, id }) catch return StorageError.IoError;
         if (self.dots_dir.statFile(folder_path)) |_| {
             return self.allocator.dupe(u8, folder_path);
-        } else |_| {}
-
-        // Try in archive: .dots/archive/{id}.md
-        const archive_path = std.fmt.bufPrint(&path_buf, "archive/{s}.md", .{id}) catch return StorageError.IoError;
-        if (self.dots_dir.statFile(archive_path)) |_| {
-            return self.allocator.dupe(u8, archive_path);
-        } else |_| {}
-
-        // Try archive folder: .dots/archive/{id}/{id}.md
-        const archive_folder_path = std.fmt.bufPrint(&path_buf, "archive/{s}/{s}.md", .{ id, id }) catch return StorageError.IoError;
-        if (self.dots_dir.statFile(archive_folder_path)) |_| {
-            return self.allocator.dupe(u8, archive_folder_path);
         } else |_| {}
 
         // Try in done: .dots/done/{id}/_plan.md or .dots/done/{id}/{id}.md
@@ -1042,16 +1012,14 @@ pub const Storage = struct {
                 } else |_| {}
             }
 
-            // Recurse into subdirectories (but not archive at root level)
-            if (!std.mem.eql(u8, entry.name, "archive")) {
-                if (try self.searchForIssue(subdir, id)) |path| {
-                    const full_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ entry.name, path }) catch |err| {
-                        self.allocator.free(path);
-                        return err;
-                    };
+            // Recurse into subdirectories
+            if (try self.searchForIssue(subdir, id)) |path| {
+                const full_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ entry.name, path }) catch |err| {
                     self.allocator.free(path);
-                    return full_path;
-                }
+                    return err;
+                };
+                self.allocator.free(path);
+                return full_path;
             }
         }
         return null;
@@ -1155,16 +1123,6 @@ pub const Storage = struct {
         const slash_idx = std.mem.indexOf(u8, path, "/");
         if (slash_idx) |idx| {
             const potential_parent = path[0..idx];
-            // Skip "archive" directory
-            if (std.mem.eql(u8, potential_parent, "archive")) {
-                // Check for archive/parent/child pattern
-                const rest = path[idx + 1 ..];
-                const next_slash = std.mem.indexOf(u8, rest, "/");
-                if (next_slash) |next_idx| {
-                    return try self.allocator.dupe(u8, rest[0..next_idx]);
-                }
-                return null;
-            }
             // Check if this is parent/parent.md (self) or parent/child.md
             const filename = std.fs.path.basename(path);
             const file_id = filename[0 .. filename.len - 3]; // strip .md
@@ -1283,7 +1241,7 @@ pub const Storage = struct {
     }
 
     /// Move an issue to done/ by ID (for migration of already-closed issues)
-    pub fn archiveIssue(self: *Self, id: []const u8) !void {
+    pub fn moveToDoneById(self: *Self, id: []const u8) !void {
         const path = self.findIssuePath(id) catch |err| switch (err) {
             StorageError.IssueNotFound => return StorageError.IssueNotFound,
             else => return err,
@@ -1297,24 +1255,21 @@ pub const Storage = struct {
     /// - Milestones: {plan}/m1-*/ → {plan}/done/m1-*/
     /// - Plans: p1-*/ → done/p1-*/
     fn moveToDone(self: *Self, _: []const u8, path: []const u8) !void {
-        // Don't move if already in done or archive
+        // Don't move if already in done
         if (std.mem.indexOf(u8, path, "/done/") != null) return;
         if (std.mem.startsWith(u8, path, "done/")) return;
-        if (std.mem.indexOf(u8, path, "/archive/") != null) return;
-        if (std.mem.startsWith(u8, path, "archive/")) return;
 
         // Determine what type of item this is and construct done path
         var done_path_buf: [MAX_PATH_LEN]u8 = undefined;
 
         // Check if this is a task (file directly in milestone folder)
-        // Path format: p1-*/m1-*/t1-*.md (not in archive/, done/, or backlog/)
+        // Path format: p1-*/m1-*/t1-*.md (not in done/ or backlog/)
         const filename = fs.path.basename(path);
         const parent_dir = fs.path.dirname(path);
         // Only treat as task if it has a parent directory that's a milestone (starts with m)
-        // and is not in archive/done/backlog
+        // and is not in done/backlog
         const is_in_milestone = if (parent_dir) |pd|
             (std.mem.startsWith(u8, fs.path.basename(pd), "m") and
-                !std.mem.eql(u8, pd, "archive") and
                 !std.mem.eql(u8, pd, "done") and
                 !std.mem.eql(u8, pd, "backlog"))
         else
@@ -1388,31 +1343,31 @@ pub const Storage = struct {
         }
 
         // Legacy: simple file or folder in root (old structure)
-        // Move to archive/ for backwards compatibility
+        // Move to done/ folder
         if (std.mem.indexOf(u8, path, "/")) |slash_idx| {
             // Folder-based item
             const folder_name = path[0..slash_idx];
-            var archive_path_buf: [MAX_PATH_LEN]u8 = undefined;
-            const archive_path = std.fmt.bufPrint(&archive_path_buf, "archive/{s}", .{folder_name}) catch return StorageError.IoError;
+            var legacy_done_path_buf: [MAX_PATH_LEN]u8 = undefined;
+            const legacy_done_path = std.fmt.bufPrint(&legacy_done_path_buf, "done/{s}", .{folder_name}) catch return StorageError.IoError;
 
-            self.dots_dir.makeDir("archive") catch |err| switch (err) {
+            self.dots_dir.makeDir("done") catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
             };
-            self.dots_dir.rename(folder_name, archive_path) catch |err| switch (err) {
+            self.dots_dir.rename(folder_name, legacy_done_path) catch |err| switch (err) {
                 error.FileNotFound => return StorageError.IssueNotFound,
                 else => return err,
             };
         } else {
             // Simple file
-            var archive_path_buf: [MAX_PATH_LEN]u8 = undefined;
-            const archive_path = std.fmt.bufPrint(&archive_path_buf, "archive/{s}", .{path}) catch return StorageError.IoError;
+            var legacy_done_path_buf: [MAX_PATH_LEN]u8 = undefined;
+            const legacy_done_path = std.fmt.bufPrint(&legacy_done_path_buf, "done/{s}", .{path}) catch return StorageError.IoError;
 
-            self.dots_dir.makeDir("archive") catch |err| switch (err) {
+            self.dots_dir.makeDir("done") catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
             };
-            self.dots_dir.rename(path, archive_path) catch |err| switch (err) {
+            self.dots_dir.rename(path, legacy_done_path) catch |err| switch (err) {
                 error.FileNotFound => return StorageError.IssueNotFound,
                 else => return err,
             };
@@ -1446,8 +1401,8 @@ pub const Storage = struct {
     /// Remove all references to the given ID from other issues' blocks arrays
     /// Optimized: uses already-loaded issues instead of re-reading from disk
     fn removeDependencyReferences(self: *Self, deleted_id: []const u8) !void {
-        // Get all issues (including archived)
-        const issues = try self.listAllIssuesIncludingArchived();
+        // Get all issues (including done)
+        const issues = try self.listAllIssuesIncludingDone();
         defer freeIssues(self.allocator, issues);
 
         for (issues) |issue| {
@@ -1493,7 +1448,7 @@ pub const Storage = struct {
         }
     }
 
-    fn listAllIssuesIncludingArchived(self: *Self) ![]Issue {
+    fn listAllIssuesIncludingDone(self: *Self) ![]Issue {
         var issues: std.ArrayList(Issue) = .{};
         errdefer {
             for (issues.items) |*iss| iss.deinit(self.allocator);
@@ -1503,16 +1458,6 @@ pub const Storage = struct {
         // Collect from main dots dir (including done and backlog)
         const all_options = ListOptions{ .include_done = true, .include_backlog = true };
         try self.collectIssuesFromDir(self.dots_dir, "", all_options, &issues);
-
-        // Also collect from archive (legacy)
-        if (self.dots_dir.openDir("archive", .{ .iterate = true })) |archive_dir| {
-            var ad = archive_dir;
-            defer ad.close();
-            try self.collectIssuesFromDir(ad, "archive", all_options, &issues);
-        } else |err| switch (err) {
-            error.FileNotFound => {}, // Archive doesn't exist yet, that's fine
-            else => return err,
-        }
 
         return issues.toOwnedSlice(self.allocator);
     }
@@ -1585,7 +1530,6 @@ pub const Storage = struct {
                 };
             } else if (entry.kind == .directory) {
                 // Skip special directories unless explicitly included
-                if (std.mem.eql(u8, entry.name, "archive")) continue;
                 if (std.mem.eql(u8, entry.name, "artifacts")) continue;
                 if (std.mem.eql(u8, entry.name, "done") and !options.include_done) continue;
                 if (std.mem.eql(u8, entry.name, "backlog") and !options.include_backlog) continue;
@@ -1666,7 +1610,7 @@ pub const Storage = struct {
             issues.deinit(self.allocator);
         }
 
-        // Only collect from root level of .dots (not archive, not subdirs for children)
+        // Only collect from root level of .dots (not subdirs for children)
         var iter = self.dots_dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
@@ -1683,7 +1627,6 @@ pub const Storage = struct {
                 }
             } else if (entry.kind == .directory) {
                 // Skip special directories
-                if (std.mem.eql(u8, entry.name, "archive")) continue;
                 if (std.mem.eql(u8, entry.name, "done")) continue;
                 if (std.mem.eql(u8, entry.name, "backlog")) continue;
 
@@ -1823,7 +1766,6 @@ pub const Storage = struct {
         var iter = dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind != .directory) continue;
-            if (std.mem.eql(u8, entry.name, "archive")) continue;
             if (std.mem.eql(u8, entry.name, "artifacts")) continue;
             if (std.mem.eql(u8, entry.name, "done")) continue;
             if (std.mem.eql(u8, entry.name, "backlog")) continue;
@@ -1989,17 +1931,6 @@ pub const Storage = struct {
         }
 
         return false;
-    }
-
-    pub fn purgeArchive(self: *Self) !void {
-        // deleteTree succeeds silently if the directory doesn't exist
-        try self.dots_dir.deleteTree("archive");
-
-        // Recreate empty archive directory (handle race if another process recreated it)
-        self.dots_dir.makeDir("archive") catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
     }
 
     // Config stored in .dots/config as simple key=value lines

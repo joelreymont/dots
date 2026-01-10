@@ -815,70 +815,6 @@ test "cli: add creates markdown file" {
     try std.testing.expect(stat.kind == .file);
 }
 
-test "cli: purge removes archived dots" {
-    const allocator = std.testing.allocator;
-
-    const test_dir = setupTestDirOrPanic(allocator);
-    defer cleanupTestDirAndFree(allocator, test_dir);
-
-    const init_result = runDot(allocator, &.{"init"}, test_dir) catch |err| {
-        std.debug.panic("init: {}", .{err});
-    };
-    defer init_result.deinit(allocator);
-
-    // Add and close an issue to archive it
-    const add = runDot(allocator, &.{ "add", "To archive" }, test_dir) catch |err| {
-        std.debug.panic("add: {}", .{err});
-    };
-    defer add.deinit(allocator);
-
-    const id = trimNewline(add.stdout);
-
-    const off_result = runDot(allocator, &.{ "off", id }, test_dir) catch |err| {
-        std.debug.panic("off: {}", .{err});
-    };
-    defer off_result.deinit(allocator);
-
-    // Verify archive has content
-    const archive_path = std.fmt.allocPrint(allocator, "{s}/.dots/archive", .{test_dir}) catch |err| {
-        std.debug.panic("path: {}", .{err});
-    };
-    defer allocator.free(archive_path);
-
-    var archive_dir = fs.cwd().openDir(archive_path, .{ .iterate = true }) catch |err| {
-        std.debug.panic("open archive: {}", .{err});
-    };
-    defer archive_dir.close();
-
-    var count: usize = 0;
-    var iter = archive_dir.iterate();
-    while (iter.next() catch null) |_| {
-        count += 1;
-    }
-    try std.testing.expect(count > 0);
-
-    // Purge
-    const purge = runDot(allocator, &.{"purge"}, test_dir) catch |err| {
-        std.debug.panic("purge: {}", .{err});
-    };
-    defer purge.deinit(allocator);
-
-    try std.testing.expect(isExitCode(purge.term, 0));
-
-    // Verify archive is empty
-    var archive_dir2 = fs.cwd().openDir(archive_path, .{ .iterate = true }) catch |err| {
-        std.debug.panic("open archive2: {}", .{err});
-    };
-    defer archive_dir2.close();
-
-    var count2: usize = 0;
-    var iter2 = archive_dir2.iterate();
-    while (iter2.next() catch null) |_| {
-        count2 += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 0), count2);
-}
-
 test "cli: parent creates folder structure" {
     const allocator = std.testing.allocator;
 
@@ -1142,7 +1078,7 @@ test "prop: hook sync updates mapping and statuses" {
     }.property, .{ .iterations = 40, .seed = 0xB00B });
 }
 
-test "cli: jsonl hydration imports issues and archives closed" {
+test "cli: jsonl hydration imports issues and moves closed to done" {
     const allocator = std.testing.allocator;
 
     const test_dir = setupTestDirOrPanic(allocator);
@@ -1375,7 +1311,7 @@ const LifecycleOracle = struct {
     statuses: [MAX_ISSUES]Status = [_]Status{.open} ** MAX_ISSUES,
     priorities: [MAX_ISSUES]u3 = [_]u3{2} ** MAX_ISSUES,
     has_closed_at: [MAX_ISSUES]bool = [_]bool{false} ** MAX_ISSUES,
-    archived: [MAX_ISSUES]bool = [_]bool{false} ** MAX_ISSUES, // Closed root issues get archived
+    moved_to_done: [MAX_ISSUES]bool = [_]bool{false} ** MAX_ISSUES, // Closed root issues get moved to done/
     parents: [MAX_ISSUES]?usize = [_]?usize{null} ** MAX_ISSUES,
     // deps[i][j] = true means i depends on j (j blocks i)
     deps: [MAX_ISSUES][MAX_ISSUES]bool = [_][MAX_ISSUES]bool{[_]bool{false} ** MAX_ISSUES} ** MAX_ISSUES,
@@ -1385,13 +1321,13 @@ const LifecycleOracle = struct {
         self.statuses[idx] = .open;
         self.priorities[idx] = priority;
         self.has_closed_at[idx] = false;
-        self.archived[idx] = false;
+        self.moved_to_done[idx] = false;
         self.parents[idx] = parent;
     }
 
     fn delete(self: *LifecycleOracle, idx: usize) void {
         self.exists[idx] = false;
-        self.archived[idx] = false;
+        self.moved_to_done[idx] = false;
         // Remove all dependencies involving this issue
         for (0..MAX_ISSUES) |i| {
             self.deps[idx][i] = false;
@@ -1402,11 +1338,11 @@ const LifecycleOracle = struct {
     fn setStatus(self: *LifecycleOracle, idx: usize, status: Status) void {
         self.statuses[idx] = status;
         self.has_closed_at[idx] = (status == .closed);
-        // Root issues (no parent) get archived when closed
+        // Root issues (no parent) get moved to done/ when closed
         if (status == .closed and self.parents[idx] == null) {
-            self.archived[idx] = true;
+            self.moved_to_done[idx] = true;
         } else if (status != .closed) {
-            self.archived[idx] = false;
+            self.moved_to_done[idx] = false;
         }
     }
 
@@ -1457,15 +1393,15 @@ const LifecycleOracle = struct {
     }
 
     fn isReady(self: *LifecycleOracle, idx: usize) bool {
-        // Archived issues are not in ready list
-        return self.exists[idx] and !self.archived[idx] and self.statuses[idx] == .open and !self.isBlocked(idx);
+        // Issues moved to done/ are not in ready list
+        return self.exists[idx] and !self.moved_to_done[idx] and self.statuses[idx] == .open and !self.isBlocked(idx);
     }
 
     fn countByStatus(self: *LifecycleOracle, status: Status) usize {
         var count: usize = 0;
         for (0..MAX_ISSUES) |i| {
-            // Archived issues are not in listIssues (only in archive dir)
-            if (self.exists[i] and !self.archived[i] and self.statuses[i] == status) count += 1;
+            // Issues moved to done/ are not in listIssues (only in done/ dir)
+            if (self.exists[i] and !self.moved_to_done[i] and self.statuses[i] == status) count += 1;
         }
         return count;
     }
@@ -1591,9 +1527,9 @@ test "prop: lifecycle simulation maintains invariants" {
                 if (issues.len != oracle.countByStatus(status)) return false;
             }
 
-            // 3. Each existing non-archived issue has correct status
+            // 3. Each existing issue not moved to done/ has correct status
             for (0..LifecycleOracle.MAX_ISSUES) |i| {
-                if (oracle.exists[i] and !oracle.archived[i]) {
+                if (oracle.exists[i] and !oracle.moved_to_done[i]) {
                     const maybe_issue = ts.storage.getIssue(ids[i].?) catch return false;
                     const issue = maybe_issue orelse return false;
                     defer issue.deinit(allocator);

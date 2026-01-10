@@ -36,7 +36,6 @@ const commands = [_]Command{
     .{ .names = &.{"find"}, .handler = cmdFind },
     .{ .names = &.{"update"}, .handler = cmdUpdate },
     .{ .names = &.{"close"}, .handler = cmdClose },
-    .{ .names = &.{"purge"}, .handler = cmdPurge },
     .{ .names = &.{"hook"}, .handler = cmdHook },
     .{ .names = &.{"init"}, .handler = cmdInitWrapper },
     .{ .names = &.{ "help", "--help", "-h" }, .handler = cmdHelp },
@@ -182,7 +181,6 @@ const USAGE =
     \\  dot ready [--json]           Show unblocked dots
     \\  dot tree                     Show hierarchy
     \\  dot find "query"             Search dots
-    \\  dot purge                    Delete archived dots
     \\  dot init                     Initialize .dots directory
     \\
     \\ExecPlan Commands:
@@ -633,14 +631,6 @@ fn cmdClose(allocator: Allocator, args: []const []const u8) !void {
         error.ChildrenNotClosed => fatal("Cannot close: children are not all closed\n", .{}),
         else => return err,
     };
-}
-
-fn cmdPurge(allocator: Allocator, _: []const []const u8) !void {
-    var storage = try openStorage(allocator);
-    defer storage.close();
-
-    try storage.purgeArchive();
-    try stdout().writeAll("Archive purged\n");
 }
 
 fn formatTimestamp(buf: []u8) ![]const u8 {
@@ -2226,15 +2216,15 @@ fn hydrateFromJsonl(allocator: Allocator, storage: *Storage, jsonl_path: []const
         count += 1;
     }
 
-    // Second pass: archive all closed issues (after all imports, so parent-child relationships are complete)
+    // Second pass: move all closed issues to done/ (after all imports, so parent-child relationships are complete)
     const all_issues = try storage.listIssues(null);
     defer storage_mod.freeIssues(allocator, all_issues);
     for (all_issues) |iss| {
         if (iss.status == .closed) {
-            storage.archiveIssue(iss.id) catch |err| switch (err) {
+            storage.moveToDoneById(iss.id) catch |err| switch (err) {
                 // ChildrenNotClosed is expected if parent closed but children aren't
                 error.ChildrenNotClosed => {},
-                // IssueNotFound can happen if already archived by parent move
+                // IssueNotFound can happen if already moved by parent move
                 error.IssueNotFound => {},
                 else => return err,
             };
@@ -2349,7 +2339,6 @@ fn fixYamlInDir(allocator: Allocator, dir: fs.Dir, prefix: []const u8, dry_run: 
             }
         } else if (entry.kind == .directory) {
             // Skip special directories
-            if (std.mem.eql(u8, entry.name, "archive")) continue;
             if (std.mem.eql(u8, entry.name, "artifacts")) continue;
 
             // Recursively process subdirectory
