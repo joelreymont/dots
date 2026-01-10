@@ -458,15 +458,29 @@ fn cmdOff(allocator: Allocator, args: []const []const u8) !void {
     const now = try formatTimestamp(&ts_buf);
 
     for (resolved_ids.items) |id| {
+        // Step 1: Get issue BEFORE closing (need to access it before it moves to done/)
+        const issue = try storage.getIssue(id) orelse continue;
+        defer issue.deinit(allocator);
+
+        // Step 2: Generate Outcomes & Retrospective content
+        const outcomes = try generateOutcomesContent(allocator, &storage, issue, now);
+        defer allocator.free(outcomes);
+
+        // Step 3: Update issue's description with outcomes
+        const updated_desc = try replaceOutcomesSection(allocator, issue.description, outcomes);
+        defer allocator.free(updated_desc);
+        try updateIssueDescription(&storage, allocator, id, updated_desc);
+
+        // Step 4: Update status to closed (this moves to done/ folder)
         storage.updateStatus(id, .closed, now, reason) catch |err| switch (err) {
             error.ChildrenNotClosed => fatal("Cannot close {s}: children are not all closed\n", .{id}),
             else => return err,
         };
 
-        // If this is a milestone, update parent plan's Progress section
-        const issue = try storage.getIssue(id) orelse continue;
-        defer issue.deinit(allocator);
+        // Step 5: Check checkbox in parent's section
+        try checkParentCheckbox(allocator, &storage, id, issue);
 
+        // Step 6: If milestone, also add progress entry to parent plan's Progress section
         if (std.mem.eql(u8, issue.issue_type, "milestone")) {
             if (issue.parent) |plan_id| {
                 const plan = try storage.getIssue(plan_id) orelse continue;
@@ -1741,6 +1755,125 @@ fn appendToSection(allocator: Allocator, description: []const u8, section: []con
         // Append to end of description
         return std.fmt.allocPrint(allocator, "{s}{s}", .{ description, content });
     }
+}
+
+/// Generate content for the Outcomes & Retrospective section when completing an item
+fn generateOutcomesContent(allocator: Allocator, storage: *Storage, issue: storage_mod.Issue, timestamp: []const u8) ![]u8 {
+    var content: std.ArrayList(u8) = .{};
+    errdefer content.deinit(allocator);
+
+    // Add completion timestamp (date only)
+    const date = timestamp[0..10];
+    const completion_line = try std.fmt.allocPrint(allocator, "Completed: {s}\n\n", .{date});
+    defer allocator.free(completion_line);
+    try content.appendSlice(allocator, completion_line);
+
+    // Add summary based on issue type
+    try content.appendSlice(allocator, "### Summary\n\n");
+
+    if (std.mem.eql(u8, issue.issue_type, "task")) {
+        try content.appendSlice(allocator, "All acceptance criteria completed.\n");
+    } else if (std.mem.eql(u8, issue.issue_type, "milestone")) {
+        // Count completed tasks
+        const children = try storage.getChildren(issue.id);
+        defer storage_mod.freeChildIssues(allocator, children);
+
+        var completed: usize = 0;
+        for (children) |child| {
+            if (child.issue.status == .closed) completed += 1;
+        }
+
+        const summary = try std.fmt.allocPrint(allocator, "{d}/{d} tasks completed.\n", .{ completed, children.len });
+        defer allocator.free(summary);
+        try content.appendSlice(allocator, summary);
+    } else if (std.mem.eql(u8, issue.issue_type, "plan")) {
+        // Count completed milestones
+        const children = try storage.getChildren(issue.id);
+        defer storage_mod.freeChildIssues(allocator, children);
+
+        var completed: usize = 0;
+        for (children) |child| {
+            if (child.issue.status == .closed) completed += 1;
+        }
+
+        const summary = try std.fmt.allocPrint(allocator, "{d}/{d} milestones completed.\n", .{ completed, children.len });
+        defer allocator.free(summary);
+        try content.appendSlice(allocator, summary);
+    }
+
+    return content.toOwnedSlice(allocator);
+}
+
+/// Replace the placeholder in Outcomes & Retrospective section with generated content
+fn replaceOutcomesSection(allocator: Allocator, description: []const u8, outcomes: []const u8) ![]u8 {
+    const section = "## Outcomes & Retrospective";
+    const placeholder = "[Filled at completion]";
+
+    // Find the section
+    const section_idx = std.mem.indexOf(u8, description, section) orelse {
+        // Section doesn't exist, append it
+        return std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n{s}", .{ description, section, outcomes });
+    };
+
+    // Check if placeholder exists in the section
+    const after_section = description[section_idx + section.len ..];
+    const next_section_idx = std.mem.indexOf(u8, after_section, "\n## ");
+    const section_content = if (next_section_idx) |idx| after_section[0..idx] else after_section;
+
+    if (std.mem.indexOf(u8, section_content, placeholder)) |placeholder_rel_idx| {
+        // Found placeholder, replace it
+        const placeholder_abs_idx = section_idx + section.len + placeholder_rel_idx;
+        return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
+            description[0..placeholder_abs_idx],
+            outcomes,
+            description[placeholder_abs_idx + placeholder.len ..],
+        });
+    }
+
+    // No placeholder found, append after section header
+    if (next_section_idx) |next_idx| {
+        const insert_point = section_idx + section.len + next_idx;
+        return std.fmt.allocPrint(allocator, "{s}\n\n{s}{s}", .{
+            description[0..insert_point],
+            outcomes,
+            description[insert_point..],
+        });
+    } else {
+        return std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ description, outcomes });
+    }
+}
+
+/// Check the checkbox for a completed item in its parent's child list section
+fn checkParentCheckbox(allocator: Allocator, storage: *Storage, id: []const u8, issue: storage_mod.Issue) !void {
+    const parent_id = issue.parent orelse return; // No parent, nothing to check
+
+    const parent = try storage.getIssue(parent_id) orelse return;
+    defer parent.deinit(allocator);
+
+    // Determine which section to search based on issue type
+    // Tasks are listed in "## Tasks", Milestones are listed in "## Milestones"
+    // The checkbox pattern is "- [ ] {id}" that needs to become "- [x] {id}"
+
+    // Build the unchecked pattern
+    const unchecked_pattern = try std.fmt.allocPrint(allocator, "- [ ] {s}", .{id});
+    defer allocator.free(unchecked_pattern);
+
+    // Check if pattern exists in parent's description
+    const pattern_idx = std.mem.indexOf(u8, parent.description, unchecked_pattern) orelse return;
+
+    // Build the checked replacement
+    const checked_replacement = try std.fmt.allocPrint(allocator, "- [x] {s}", .{id});
+    defer allocator.free(checked_replacement);
+
+    // Replace unchecked with checked
+    const new_desc = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
+        parent.description[0..pattern_idx],
+        checked_replacement,
+        parent.description[pattern_idx + unchecked_pattern.len ..],
+    });
+    defer allocator.free(new_desc);
+
+    try updateIssueDescription(storage, allocator, parent_id, new_desc);
 }
 
 // Helper to add child entry to a section, replacing placeholder if present
