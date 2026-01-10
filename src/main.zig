@@ -53,6 +53,7 @@ const commands = [_]Command{
     .{ .names = &.{"ralph"}, .handler = cmdRalph },
     .{ .names = &.{"migrate"}, .handler = cmdMigrate },
     .{ .names = &.{"restructure"}, .handler = cmdRestructure },
+    .{ .names = &.{"fix-yaml"}, .handler = cmdFixYaml },
 };
 
 fn findCommand(name: []const u8) ?Handler {
@@ -196,6 +197,7 @@ const USAGE =
     \\  dot ralph <plan-id>          Generate Ralph execution scaffolding
     \\  dot migrate <path>           Migrate .agent/execplans/ to .dots/
     \\  dot restructure [--dry-run]  Convert legacy hash IDs to hierarchical format
+    \\  dot fix-yaml [--dry-run]     Fix over-escaped YAML values (timestamps, etc.)
     \\
     \\Examples:
     \\  dot "Fix the bug"
@@ -2240,4 +2242,192 @@ fn hydrateFromJsonl(allocator: Allocator, storage: *Storage, jsonl_path: []const
     }
 
     return count;
+}
+
+/// Fix over-escaped YAML frontmatter values (timestamps, scope, acceptance, etc.)
+/// This repairs files that were corrupted by the quote-escaping bug.
+fn cmdFixYaml(allocator: Allocator, args: []const []const u8) !void {
+    const dry_run = hasFlag(args, "--dry-run");
+
+    // Check if .dots exists
+    var dots_dir = fs.cwd().openDir(DOTS_DIR, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => fatal("No .dots directory found\n", .{}),
+        else => return err,
+    };
+    defer dots_dir.close();
+
+    if (dry_run) {
+        try stdout().print("=== DRY RUN - No changes will be made ===\n\n", .{});
+    }
+
+    var fixed_count: usize = 0;
+    var scanned_count: usize = 0;
+
+    // Recursively scan .dots for .md files
+    try fixYamlInDir(allocator, dots_dir, "", dry_run, &fixed_count, &scanned_count);
+
+    try stdout().print("\n", .{});
+    if (dry_run) {
+        try stdout().print("=== DRY RUN COMPLETE ===\n", .{});
+        try stdout().print("Would fix: {d} of {d} files\n", .{ fixed_count, scanned_count });
+        try stdout().print("Run without --dry-run to apply changes\n", .{});
+    } else {
+        try stdout().print("Fixed: {d} of {d} files\n", .{ fixed_count, scanned_count });
+    }
+}
+
+fn fixYamlInDir(allocator: Allocator, dir: fs.Dir, prefix: []const u8, dry_run: bool, fixed_count: *usize, scanned_count: *usize) !void {
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
+            scanned_count.* += 1;
+
+            // Build full path for display
+            var path_buf: [512]u8 = undefined;
+            const display_path = if (prefix.len > 0)
+                std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ prefix, entry.name }) catch entry.name
+            else
+                entry.name;
+
+            // Read file content
+            const content = dir.readFileAlloc(allocator, entry.name, 1024 * 1024) catch |err| {
+                try stdout().print("Error reading {s}: {}\n", .{ display_path, err });
+                continue;
+            };
+            defer allocator.free(content);
+
+            // Check if this file has over-escaped values
+            // Over-escaped pattern: "\"... indicates nested escaping
+            const has_escaped = std.mem.indexOf(u8, content, "\"\\\"") != null;
+
+            if (has_escaped) {
+                try stdout().print("Fixing: {s}\n", .{display_path});
+                fixed_count.* += 1;
+
+                if (!dry_run) {
+                    // Extract the timestamp pattern from over-escaped YAML values
+                    var result: std.ArrayList(u8) = .{};
+                    defer result.deinit(allocator);
+
+                    // Process line by line
+                    var lines = std.mem.splitScalar(u8, content, '\n');
+                    var first_line = true;
+                    while (lines.next()) |line| {
+                        if (!first_line) {
+                            try result.append(allocator, '\n');
+                        }
+                        first_line = false;
+
+                        // Look for timestamp pattern (YYYY-MM-DDTHH:MM:SS) buried in escaped quotes
+                        if (findTimestamp(line)) |ts_info| {
+                            // Found a timestamp - extract key and write clean value
+                            const colon_idx = std.mem.indexOf(u8, line, ":") orelse {
+                                try result.appendSlice(allocator, line);
+                                continue;
+                            };
+                            try result.appendSlice(allocator, line[0 .. colon_idx + 1]);
+                            try result.appendSlice(allocator, " \"");
+                            try result.appendSlice(allocator, ts_info.timestamp);
+                            try result.append(allocator, '"');
+                        } else {
+                            try result.appendSlice(allocator, line);
+                        }
+                    }
+
+                    // Write the fixed content
+                    const file = dir.createFile(entry.name, .{}) catch |err| {
+                        try stdout().print("  Error creating file: {}\n", .{err});
+                        continue;
+                    };
+                    defer file.close();
+
+                    file.writeAll(result.items) catch |err| {
+                        try stdout().print("  Error writing: {}\n", .{err});
+                        continue;
+                    };
+                }
+            }
+        } else if (entry.kind == .directory) {
+            // Skip special directories
+            if (std.mem.eql(u8, entry.name, "archive")) continue;
+            if (std.mem.eql(u8, entry.name, "artifacts")) continue;
+
+            // Recursively process subdirectory
+            var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
+            defer subdir.close();
+
+            var subprefix_buf: [512]u8 = undefined;
+            const subprefix = if (prefix.len > 0)
+                std.fmt.bufPrint(&subprefix_buf, "{s}/{s}", .{ prefix, entry.name }) catch entry.name
+            else
+                entry.name;
+
+            try fixYamlInDir(allocator, subdir, subprefix, dry_run, fixed_count, scanned_count);
+        }
+    }
+}
+
+/// Find an ISO 8601 timestamp pattern in a line with over-escaped quotes
+/// Returns the clean timestamp if found within the line, null otherwise
+const TimestampInfo = struct {
+    timestamp: []const u8,
+};
+
+fn findTimestamp(line: []const u8) ?TimestampInfo {
+    // Only process lines that look like they have over-escaped content
+    if (std.mem.indexOf(u8, line, "\"\\\"") == null and
+        std.mem.indexOf(u8, line, "\"\"") == null)
+    {
+        return null;
+    }
+
+    // Look for timestamp pattern: YYYY-MM-DDTHH:MM:SS
+    // Search for "20" followed by digits (year pattern like 2024, 2025, 2026)
+    var pos: usize = 0;
+    while (pos + 26 <= line.len) : (pos += 1) {
+        // Check for year pattern (20XX)
+        if (line[pos] == '2' and line[pos + 1] == '0' and
+            std.ascii.isDigit(line[pos + 2]) and std.ascii.isDigit(line[pos + 3]) and
+            line[pos + 4] == '-')
+        {
+            // Found potential year, verify full ISO 8601 pattern
+            // YYYY-MM-DDTHH:MM:SS.UUUUUU+HH:MM (32 chars)
+            if (pos + 32 <= line.len) {
+                const candidate = line[pos..];
+                // Validate month (01-12)
+                if (!std.ascii.isDigit(candidate[5]) or !std.ascii.isDigit(candidate[6])) continue;
+                if (candidate[7] != '-') continue;
+                // Validate day
+                if (!std.ascii.isDigit(candidate[8]) or !std.ascii.isDigit(candidate[9])) continue;
+                if (candidate[10] != 'T') continue;
+                // Validate time
+                if (!std.ascii.isDigit(candidate[11]) or !std.ascii.isDigit(candidate[12])) continue;
+                if (candidate[13] != ':') continue;
+                if (!std.ascii.isDigit(candidate[14]) or !std.ascii.isDigit(candidate[15])) continue;
+                if (candidate[16] != ':') continue;
+                if (!std.ascii.isDigit(candidate[17]) or !std.ascii.isDigit(candidate[18])) continue;
+
+                // Find the end of the timestamp (look for +/- timezone or end of valid chars)
+                var end_pos = pos + 19; // After HH:MM:SS
+                if (end_pos < line.len and line[end_pos] == '.') {
+                    // Skip microseconds
+                    end_pos += 1;
+                    while (end_pos < line.len and std.ascii.isDigit(line[end_pos])) {
+                        end_pos += 1;
+                    }
+                }
+                if (end_pos < line.len and (line[end_pos] == '+' or line[end_pos] == '-')) {
+                    // Include timezone
+                    end_pos += 1;
+                    // Skip HH:MM
+                    if (end_pos + 5 <= line.len) {
+                        end_pos += 5;
+                    }
+                }
+
+                return TimestampInfo{ .timestamp = line[pos..end_pos] };
+            }
+        }
+    }
+    return null;
 }

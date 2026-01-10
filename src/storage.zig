@@ -432,7 +432,7 @@ pub fn freeChildIssues(allocator: Allocator, issues: []const ChildIssue) void {
 }
 
 // YAML Frontmatter parsing
-const Frontmatter = struct {
+pub const Frontmatter = struct {
     title: []const u8 = "",
     status: Status = .open,
     priority: i64 = 2,
@@ -447,15 +447,29 @@ const Frontmatter = struct {
     acceptance: ?[]const u8 = null,
 };
 
-const ParseResult = struct {
+pub const ParseResult = struct {
     frontmatter: Frontmatter,
     description: []const u8,
     // Track allocated strings for cleanup
     allocated_blocks: [][]const u8,
     allocated_title: ?[]const u8 = null,
+    allocated_issue_type: ?[]const u8 = null,
+    allocated_assignee: ?[]const u8 = null,
+    allocated_created_at: ?[]const u8 = null,
+    allocated_closed_at: ?[]const u8 = null,
+    allocated_close_reason: ?[]const u8 = null,
+    allocated_scope: ?[]const u8 = null,
+    allocated_acceptance: ?[]const u8 = null,
 
     pub fn deinit(self: *const ParseResult, allocator: Allocator) void {
         if (self.allocated_title) |t| allocator.free(t);
+        if (self.allocated_issue_type) |s| allocator.free(s);
+        if (self.allocated_assignee) |s| allocator.free(s);
+        if (self.allocated_created_at) |s| allocator.free(s);
+        if (self.allocated_closed_at) |s| allocator.free(s);
+        if (self.allocated_close_reason) |s| allocator.free(s);
+        if (self.allocated_scope) |s| allocator.free(s);
+        if (self.allocated_acceptance) |s| allocator.free(s);
         for (self.allocated_blocks) |b| allocator.free(b);
         allocator.free(self.allocated_blocks);
     }
@@ -546,7 +560,7 @@ fn parseYamlValue(allocator: Allocator, value: []const u8) !YamlValue {
     return .{ .owned = try result.toOwnedSlice(allocator) };
 }
 
-fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
+pub fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
     // Find YAML delimiters
     if (!std.mem.startsWith(u8, content, "---\n")) {
         return StorageError.InvalidFrontmatter;
@@ -567,8 +581,22 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
     var fm = Frontmatter{};
     var blocks_list: std.ArrayList([]const u8) = .{};
     var allocated_title: ?[]const u8 = null;
+    var allocated_issue_type: ?[]const u8 = null;
+    var allocated_assignee: ?[]const u8 = null;
+    var allocated_created_at: ?[]const u8 = null;
+    var allocated_closed_at: ?[]const u8 = null;
+    var allocated_close_reason: ?[]const u8 = null;
+    var allocated_scope: ?[]const u8 = null;
+    var allocated_acceptance: ?[]const u8 = null;
     errdefer {
         if (allocated_title) |t| allocator.free(t);
+        if (allocated_issue_type) |s| allocator.free(s);
+        if (allocated_assignee) |s| allocator.free(s);
+        if (allocated_created_at) |s| allocator.free(s);
+        if (allocated_closed_at) |s| allocator.free(s);
+        if (allocated_close_reason) |s| allocator.free(s);
+        if (allocated_scope) |s| allocator.free(s);
+        if (allocated_acceptance) |s| allocator.free(s);
         for (blocks_list.items) |b| allocator.free(b);
         blocks_list.deinit(allocator);
     }
@@ -610,15 +638,53 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
             },
             .status => fm.status = Status.parse(value) orelse return StorageError.InvalidStatus,
             .priority => fm.priority = std.fmt.parseInt(i64, value, 10) catch return StorageError.InvalidFrontmatter,
-            .issue_type => fm.issue_type = value,
-            .assignee => fm.assignee = if (value.len > 0) value else null,
-            .created_at => fm.created_at = value,
-            .closed_at => fm.closed_at = if (value.len > 0) value else null,
-            .close_reason => fm.close_reason = if (value.len > 0) value else null,
+            .issue_type => {
+                const parsed = try parseYamlValue(allocator, value);
+                fm.issue_type = parsed.slice();
+                allocated_issue_type = parsed.getOwned();
+            },
+            .assignee => {
+                if (value.len > 0) {
+                    const parsed = try parseYamlValue(allocator, value);
+                    fm.assignee = parsed.slice();
+                    allocated_assignee = parsed.getOwned();
+                }
+            },
+            .created_at => {
+                const parsed = try parseYamlValue(allocator, value);
+                fm.created_at = parsed.slice();
+                allocated_created_at = parsed.getOwned();
+            },
+            .closed_at => {
+                if (value.len > 0) {
+                    const parsed = try parseYamlValue(allocator, value);
+                    fm.closed_at = parsed.slice();
+                    allocated_closed_at = parsed.getOwned();
+                }
+            },
+            .close_reason => {
+                if (value.len > 0) {
+                    const parsed = try parseYamlValue(allocator, value);
+                    fm.close_reason = parsed.slice();
+                    allocated_close_reason = parsed.getOwned();
+                }
+            },
             .blocks => in_blocks = true,
             // ExecPlan extensions
-            .scope => fm.scope = if (value.len > 0) value else null,
-            .acceptance => fm.acceptance = if (value.len > 0) value else null,
+            .scope => {
+                if (value.len > 0) {
+                    const parsed = try parseYamlValue(allocator, value);
+                    fm.scope = parsed.slice();
+                    allocated_scope = parsed.getOwned();
+                }
+            },
+            .acceptance => {
+                if (value.len > 0) {
+                    const parsed = try parseYamlValue(allocator, value);
+                    fm.acceptance = parsed.slice();
+                    allocated_acceptance = parsed.getOwned();
+                }
+            },
         }
     }
 
@@ -630,6 +696,13 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
         .description = description,
         .allocated_blocks = allocated_blocks,
         .allocated_title = allocated_title,
+        .allocated_issue_type = allocated_issue_type,
+        .allocated_assignee = allocated_assignee,
+        .allocated_created_at = allocated_created_at,
+        .allocated_closed_at = allocated_closed_at,
+        .allocated_close_reason = allocated_close_reason,
+        .allocated_scope = allocated_scope,
+        .allocated_acceptance = allocated_acceptance,
     };
 }
 
@@ -666,7 +739,7 @@ fn writeYamlValue(buf: *std.ArrayList(u8), allocator: Allocator, value: []const 
     try buf.append(allocator, '"');
 }
 
-fn serializeFrontmatter(allocator: Allocator, issue: Issue) ![]u8 {
+pub fn serializeFrontmatter(allocator: Allocator, issue: Issue) ![]u8 {
     var buf: std.ArrayList(u8) = .{};
     errdefer buf.deinit(allocator);
 
@@ -1005,8 +1078,15 @@ pub const Storage = struct {
         defer self.allocator.free(content);
 
         const parsed = try parseFrontmatter(self.allocator, content);
-        // Free allocated_title after duping
+        // Free all allocated strings after duping (except blocks which are transferred)
         defer if (parsed.allocated_title) |t| self.allocator.free(t);
+        defer if (parsed.allocated_issue_type) |s| self.allocator.free(s);
+        defer if (parsed.allocated_assignee) |s| self.allocator.free(s);
+        defer if (parsed.allocated_created_at) |s| self.allocator.free(s);
+        defer if (parsed.allocated_closed_at) |s| self.allocator.free(s);
+        defer if (parsed.allocated_close_reason) |s| self.allocator.free(s);
+        defer if (parsed.allocated_scope) |s| self.allocator.free(s);
+        defer if (parsed.allocated_acceptance) |s| self.allocator.free(s);
         // Free allocated_blocks on error (transferred to Issue on success)
         var blocks_transferred = false;
         errdefer if (!blocks_transferred) {
@@ -2438,4 +2518,79 @@ test "IssueTypePrefix: returns correct prefix" {
     try std.testing.expectEqualStrings("p", IssueTypePrefix.plan.prefix());
     try std.testing.expectEqualStrings("m", IssueTypePrefix.milestone.prefix());
     try std.testing.expectEqualStrings("t", IssueTypePrefix.task.prefix());
+}
+
+test "parseFrontmatter/serializeFrontmatter: roundtrip preserves quoted values" {
+    const allocator = std.testing.allocator;
+
+    // Content with timestamp containing colons (requires YAML quoting)
+    const original =
+        \\---
+        \\title: Test Issue
+        \\status: open
+        \\priority: 1
+        \\issue-type: task
+        \\created-at: "2026-01-10T10:30:45.123456+00:00"
+        \\scope: "scope with colons: here"
+        \\---
+        \\
+        \\Description here
+    ;
+
+    // Parse the frontmatter
+    const parsed = try parseFrontmatter(allocator, original);
+    defer parsed.deinit(allocator);
+
+    // Verify parsed values are unquoted
+    try std.testing.expectEqualStrings("2026-01-10T10:30:45.123456+00:00", parsed.frontmatter.created_at);
+    try std.testing.expectEqualStrings("scope with colons: here", parsed.frontmatter.scope.?);
+
+    // Serialize back - create an Issue from the parsed frontmatter
+    const issue = Issue{
+        .id = "test-id",
+        .title = parsed.frontmatter.title,
+        .description = parsed.description,
+        .status = parsed.frontmatter.status,
+        .priority = parsed.frontmatter.priority,
+        .issue_type = parsed.frontmatter.issue_type,
+        .assignee = parsed.frontmatter.assignee,
+        .created_at = parsed.frontmatter.created_at,
+        .closed_at = parsed.frontmatter.closed_at,
+        .close_reason = parsed.frontmatter.close_reason,
+        .blocks = parsed.frontmatter.blocks,
+        .scope = parsed.frontmatter.scope,
+        .acceptance = parsed.frontmatter.acceptance,
+        .parent = null,
+    };
+
+    const serialized = try serializeFrontmatter(allocator, issue);
+    defer allocator.free(serialized);
+
+    // Parse the serialized output
+    const reparsed = try parseFrontmatter(allocator, serialized);
+    defer reparsed.deinit(allocator);
+
+    // Verify values are still correct after roundtrip (not double-escaped)
+    try std.testing.expectEqualStrings("2026-01-10T10:30:45.123456+00:00", reparsed.frontmatter.created_at);
+    try std.testing.expectEqualStrings("scope with colons: here", reparsed.frontmatter.scope.?);
+    try std.testing.expectEqualStrings("Test Issue", reparsed.frontmatter.title);
+}
+
+test "parseYamlValue: strips quotes correctly" {
+    const allocator = std.testing.allocator;
+
+    // Unquoted value (no allocation)
+    const unquoted = try parseYamlValue(allocator, "simple-value");
+    try std.testing.expectEqualStrings("simple-value", unquoted.slice());
+    try std.testing.expectEqual(@as(?[]const u8, null), unquoted.getOwned());
+
+    // Quoted value with colons
+    const quoted = try parseYamlValue(allocator, "\"2026-01-10T10:30:00+00:00\"");
+    defer if (quoted.getOwned()) |s| allocator.free(s);
+    try std.testing.expectEqualStrings("2026-01-10T10:30:00+00:00", quoted.slice());
+
+    // Quoted value with escaped quotes
+    const escaped = try parseYamlValue(allocator, "\"value with \\\"quotes\\\"\"");
+    defer if (escaped.getOwned()) |s| allocator.free(s);
+    try std.testing.expectEqualStrings("value with \"quotes\"", escaped.slice());
 }
