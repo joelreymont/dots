@@ -21,9 +21,9 @@ test "cli: hook command is rejected" {
     const test_dir = setupTestDirOrPanic(allocator);
     defer cleanupTestDirAndFree(allocator, test_dir);
 
-    _ = runDot(allocator, &.{"init"}, test_dir) catch unreachable;
+    _ = try runDot(allocator, &.{"init"}, test_dir);
 
-    const result = runDot(allocator, &.{"hook"}, test_dir) catch unreachable;
+    const result = try runDot(allocator, &.{"hook"}, test_dir);
     defer result.deinit(allocator);
 
     try std.testing.expect(!isExitCode(result.term, 0));
