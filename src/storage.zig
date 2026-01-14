@@ -242,6 +242,43 @@ pub const Issue = struct {
 
 const StatusMap = std.StringHashMap(Status);
 
+pub const ResolveResult = union(enum) {
+    ok: []const u8,
+    not_found,
+    ambiguous,
+};
+
+pub fn freeResolveResults(allocator: Allocator, results: []ResolveResult) void {
+    for (results) |result| {
+        switch (result) {
+            .ok => |id| allocator.free(id),
+            .not_found, .ambiguous => {},
+        }
+    }
+    allocator.free(results);
+}
+
+const ResolveState = struct {
+    prefix: []const u8,
+    match: ?[]const u8 = null,
+    ambig: bool = false,
+
+    fn add(self: *ResolveState, allocator: Allocator, id: []const u8) !void {
+        if (self.ambig) return;
+        if (self.match) |m| {
+            allocator.free(m);
+            self.match = null;
+            self.ambig = true;
+            return;
+        }
+        self.match = try allocator.dupe(u8, id);
+    }
+
+    fn deinit(self: *ResolveState, allocator: Allocator) void {
+        if (self.match) |m| allocator.free(m);
+    }
+};
+
 pub fn freeIssues(allocator: Allocator, issues: []const Issue) void {
     for (issues) |*issue| {
         issue.deinit(allocator);
@@ -414,7 +451,7 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
             if (std.mem.startsWith(u8, trimmed, "- ")) {
                 const block_id = std.mem.trim(u8, trimmed[2..], " ");
                 // Validate block ID to prevent path traversal attacks
-                validateId(block_id) catch continue; // Skip invalid block IDs silently
+                validateId(block_id) catch return StorageError.InvalidFrontmatter;
                 const duped = try allocator.dupe(u8, block_id);
                 try blocks_list.append(allocator, duped);
                 continue;
@@ -845,14 +882,10 @@ pub const Storage = struct {
 
     // Resolve a short ID prefix to full ID
     pub fn resolveId(self: *Self, prefix: []const u8) ![]const u8 {
-        var matches: std.ArrayList([]const u8) = .{};
-        defer {
-            for (matches.items) |m| self.allocator.free(m);
-            matches.deinit(self.allocator);
-        }
+        var states = [_]ResolveState{.{ .prefix = prefix }};
+        errdefer states[0].deinit(self.allocator);
 
-        // Search in .dots and .dots/archive
-        try self.findMatchingIds(self.dots_dir, prefix, &matches);
+        try self.scanResolve(self.dots_dir, states[0..], null);
 
         const archive_dir = self.dots_dir.openDir("archive", .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => null,
@@ -861,20 +894,67 @@ pub const Storage = struct {
         if (archive_dir) |*dir| {
             var d = dir.*;
             defer d.close();
-            try self.findMatchingIds(d, prefix, &matches);
+            try self.scanResolve(d, states[0..], null);
         }
 
-        if (matches.items.len == 0) return StorageError.IssueNotFound;
-        if (matches.items.len > 1) return StorageError.AmbiguousId;
+        if (states[0].ambig) return StorageError.AmbiguousId;
+        if (states[0].match == null) return StorageError.IssueNotFound;
 
-        return self.allocator.dupe(u8, matches.items[0]);
+        return states[0].match.?;
     }
 
-    fn findMatchingIds(self: *Self, dir: fs.Dir, prefix: []const u8, matches: *std.ArrayList([]const u8)) !void {
-        try self.findMatchingIdsInner(dir, prefix, matches, null);
+    pub fn resolveIds(self: *Self, prefixes: []const []const u8) ![]ResolveResult {
+        var states = try self.allocator.alloc(ResolveState, prefixes.len);
+        errdefer {
+            for (states) |*state| state.deinit(self.allocator);
+            self.allocator.free(states);
+        }
+        for (prefixes, 0..) |prefix, i| {
+            states[i] = .{ .prefix = prefix };
+        }
+
+        try self.scanResolve(self.dots_dir, states, null);
+
+        const archive_dir = self.dots_dir.openDir("archive", .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (archive_dir) |*dir| {
+            var d = dir.*;
+            defer d.close();
+            try self.scanResolve(d, states, null);
+        }
+
+        const results = try self.allocator.alloc(ResolveResult, prefixes.len);
+        errdefer freeResolveResults(self.allocator, results);
+
+        for (states, 0..) |*state, i| {
+            if (state.ambig) {
+                results[i] = .ambiguous;
+            } else if (state.match) |m| {
+                results[i] = .{ .ok = m };
+                state.match = null;
+            } else {
+                results[i] = .not_found;
+            }
+        }
+
+        for (states) |*state| state.deinit(self.allocator);
+        self.allocator.free(states);
+
+        return results;
     }
 
-    fn findMatchingIdsInner(self: *Self, dir: fs.Dir, prefix: []const u8, matches: *std.ArrayList([]const u8), parent_folder: ?[]const u8) !void {
+    fn addResolve(self: *Self, states: []ResolveState, id: []const u8) !void {
+        for (states) |*state| {
+            if (state.ambig) continue;
+            if (std.mem.startsWith(u8, id, state.prefix)) {
+                try state.add(self.allocator, id);
+            }
+        }
+    }
+
+    fn scanResolve(self: *Self, dir: fs.Dir, states: []ResolveState, parent_folder: ?[]const u8) !void {
         var iter = dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
@@ -883,20 +963,14 @@ pub const Storage = struct {
                 if (parent_folder) |pf| {
                     if (std.mem.eql(u8, id, pf)) continue;
                 }
-                if (std.mem.startsWith(u8, id, prefix)) {
-                    const duped = try self.allocator.dupe(u8, id);
-                    try matches.append(self.allocator, duped);
-                }
+                try self.addResolve(states, id);
             } else if (entry.kind == .directory and !std.mem.eql(u8, entry.name, "archive")) {
                 // Check folder name as potential ID
-                if (std.mem.startsWith(u8, entry.name, prefix)) {
-                    const duped = try self.allocator.dupe(u8, entry.name);
-                    try matches.append(self.allocator, duped);
-                }
+                try self.addResolve(states, entry.name);
                 // Recurse into folder, passing folder name to skip self-reference
                 var subdir = try dir.openDir(entry.name, .{ .iterate = true });
                 defer subdir.close();
-                try self.findMatchingIdsInner(subdir, prefix, matches, entry.name);
+                try self.scanResolve(subdir, states, entry.name);
             }
         }
     }
@@ -1163,10 +1237,10 @@ pub const Storage = struct {
 
         // If closing, check that all children are closed first
         if (status == .closed) {
-            const children = try self.getChildren(id);
-            defer freeChildIssues(self.allocator, children);
+            const children = try self.getChildIssues(id);
+            defer freeIssues(self.allocator, children);
             for (children) |child| {
-                if (child.issue.status != .closed) {
+                if (child.status != .closed) {
                     return StorageError.ChildrenNotClosed;
                 }
             }
@@ -1364,12 +1438,12 @@ pub const Storage = struct {
             var old_file_in_new_folder_buf: [MAX_PATH_LEN]u8 = undefined;
             const old_file_in_new_folder = std.fmt.bufPrint(&old_file_in_new_folder_buf, "{s}/{s}.md", .{ new_id, old_id }) catch return StorageError.IoError;
 
-            // Delete old file and write new
+            // Write new file before deleting old
+            try writeFileAtomic(self.dots_dir, new_path, content);
             self.dots_dir.deleteFile(old_file_in_new_folder) catch |err| switch (err) {
                 error.FileNotFound => {},
                 else => return err,
             };
-            try writeFileAtomic(self.dots_dir, new_path, content);
         } else {
             // Simple file or child: just rename
             var new_path_buf: [MAX_PATH_LEN]u8 = undefined;
@@ -1568,18 +1642,21 @@ pub const Storage = struct {
         }
     }
 
-    pub fn getReadyIssues(self: *Self) ![]Issue {
-        const all_issues = try self.listIssues(null);
-        defer freeIssues(self.allocator, all_issues);
-
+    pub fn buildStatusMap(self: *Self, issues: []const Issue) !StatusMap {
+        // Caller must keep issue IDs alive while the map is used.
         var status_by_id = StatusMap.init(self.allocator);
-        defer status_by_id.deinit();
-        if (all_issues.len <= std.math.maxInt(u32)) {
-            try status_by_id.ensureTotalCapacity(@intCast(all_issues.len));
+        if (issues.len <= std.math.maxInt(u32)) {
+            try status_by_id.ensureTotalCapacity(@intCast(issues.len));
         }
-        for (all_issues) |issue| {
+        for (issues) |issue| {
             try status_by_id.put(issue.id, issue.status);
         }
+        return status_by_id;
+    }
+
+    pub fn getReadyIssues(self: *Self) ![]Issue {
+        const all_issues = try self.listIssues(null);
+        defer self.allocator.free(all_issues);
 
         var ready: std.ArrayList(Issue) = .{};
         errdefer {
@@ -1587,13 +1664,35 @@ pub const Storage = struct {
             ready.deinit(self.allocator);
         }
 
-        for (all_issues) |issue| {
+        const keep = self.allocator.alloc(bool, all_issues.len) catch |err| {
+            for (all_issues) |*issue| issue.deinit(self.allocator);
+            return err;
+        };
+        defer self.allocator.free(keep);
+        @memset(keep, false);
+        errdefer {
+            for (all_issues, 0..) |*issue, i| {
+                if (!keep[i]) issue.deinit(self.allocator);
+            }
+        }
+
+        var status_by_id = try self.buildStatusMap(all_issues);
+        defer status_by_id.deinit();
+
+        ready.ensureTotalCapacity(self.allocator, all_issues.len) catch |err| {
+            return err;
+        };
+
+        for (all_issues, 0..) |issue, i| {
             if (issue.status != .open) continue;
             if (isBlockedByStatusMap(issue.blocks, &status_by_id)) continue;
 
-            // Clone the issue since we're freeing all_issues
-            const cloned = try self.cloneIssue(issue);
-            try ready.append(self.allocator, cloned);
+            keep[i] = true;
+            ready.appendAssumeCapacity(issue);
+        }
+
+        for (all_issues, 0..) |*issue, i| {
+            if (!keep[i]) issue.deinit(self.allocator);
         }
 
         return ready.toOwnedSlice(self.allocator);
@@ -1605,22 +1704,6 @@ pub const Storage = struct {
             if (status == .open or status == .active) return true;
         }
         return false;
-    }
-
-    fn isBlocked(self: *Self, issue: Issue) !bool {
-        for (issue.blocks) |blocker_id| {
-            const blocker = try self.getIssue(blocker_id) orelse continue;
-            defer blocker.deinit(self.allocator);
-
-            if (blocker.status == .open or blocker.status == .active) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    fn cloneIssue(self: *Self, issue: Issue) !Issue {
-        return issue.clone(self.allocator);
     }
 
     pub fn getRootIssues(self: *Self) ![]Issue {
@@ -1668,8 +1751,8 @@ pub const Storage = struct {
         return issues.toOwnedSlice(self.allocator);
     }
 
-    pub fn getChildren(self: *Self, parent_id: []const u8) ![]ChildIssue {
-        var children: std.ArrayList(ChildIssue) = .{};
+    fn getChildIssues(self: *Self, parent_id: []const u8) ![]Issue {
+        var children: std.ArrayList(Issue) = .{};
         errdefer {
             for (children.items) |*c| c.deinit(self.allocator);
             children.deinit(self.allocator);
@@ -1695,24 +1778,61 @@ pub const Storage = struct {
                     StorageError.InvalidFrontmatter, StorageError.InvalidStatus => continue,
                     else => return err,
                 };
-                const blocked = try self.isBlocked(issue);
-
-                try children.append(self.allocator, .{
-                    .issue = issue,
-                    .blocked = blocked,
-                });
+                children.append(self.allocator, issue) catch |err| {
+                    issue.deinit(self.allocator);
+                    return err;
+                };
             }
         }
 
         // Sort by priority, then created_at
-        std.mem.sort(ChildIssue, children.items, {}, ChildIssue.order);
+        std.mem.sort(Issue, children.items, {}, Issue.order);
+
+        return children.toOwnedSlice(self.allocator);
+    }
+
+    pub fn getChildren(self: *Self, parent_id: []const u8) ![]ChildIssue {
+        const all_issues = try self.listAllIssuesIncludingArchived();
+        defer freeIssues(self.allocator, all_issues);
+
+        var status_by_id = try self.buildStatusMap(all_issues);
+        defer status_by_id.deinit();
+
+        return try self.getChildrenWithStatusMap(parent_id, &status_by_id);
+    }
+
+    pub fn getChildrenWithStatusMap(self: *Self, parent_id: []const u8, status_by_id: *const StatusMap) ![]ChildIssue {
+        const child_issues = try self.getChildIssues(parent_id);
+        var transfer_done = false;
+        errdefer if (!transfer_done) {
+            for (child_issues) |*issue| issue.deinit(self.allocator);
+            self.allocator.free(child_issues);
+        };
+
+        var children: std.ArrayList(ChildIssue) = .{};
+        errdefer {
+            for (children.items) |*c| c.deinit(self.allocator);
+            children.deinit(self.allocator);
+        }
+
+        try children.ensureTotalCapacity(self.allocator, child_issues.len);
+        for (child_issues) |issue| {
+            const blocked = isBlockedByStatusMap(issue.blocks, status_by_id);
+            children.appendAssumeCapacity(.{
+                .issue = issue,
+                .blocked = blocked,
+            });
+        }
+
+        transfer_done = true;
+        self.allocator.free(child_issues);
 
         return children.toOwnedSlice(self.allocator);
     }
 
     pub fn searchIssues(self: *Self, query: []const u8) ![]Issue {
         const all_issues = try self.listIssues(null);
-        defer freeIssues(self.allocator, all_issues);
+        defer self.allocator.free(all_issues);
 
         var matches: std.ArrayList(Issue) = .{};
         errdefer {
@@ -1720,10 +1840,16 @@ pub const Storage = struct {
             matches.deinit(self.allocator);
         }
 
+        matches.ensureTotalCapacity(self.allocator, all_issues.len) catch |err| {
+            for (all_issues) |*issue| issue.deinit(self.allocator);
+            return err;
+        };
+
         for (all_issues) |issue| {
             if (containsIgnoreCase(issue.title, query) or containsIgnoreCase(issue.description, query)) {
-                const cloned = try self.cloneIssue(issue);
-                try matches.append(self.allocator, cloned);
+                matches.appendAssumeCapacity(issue);
+            } else {
+                issue.deinit(self.allocator);
             }
         }
 

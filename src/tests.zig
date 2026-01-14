@@ -2006,6 +2006,32 @@ test "storage: missing required frontmatter fields rejected" {
     try std.testing.expectError(error.InvalidFrontmatter, result2);
 }
 
+test "storage: invalid block id rejected" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    var ts = openTestStorage(allocator, test_dir);
+    defer ts.deinit();
+
+    const bad_blocks =
+        \\---
+        \\title: Bad blocks
+        \\status: open
+        \\priority: 2
+        \\issue-type: task
+        \\created-at: 2024-01-01T00:00:00Z
+        \\blocks:
+        \\  - ../nope
+        \\---
+    ;
+    try ts.storage.dots_dir.writeFile(.{ .sub_path = "bad-blocks.md", .data = bad_blocks });
+
+    const result = ts.storage.getIssue("bad-blocks");
+    try std.testing.expectError(error.InvalidFrontmatter, result);
+}
+
 test "snap: json output format" {
     const allocator = std.testing.allocator;
 
@@ -2100,7 +2126,9 @@ test "snap: tree output format" {
         std.debug.panic("add child1: {}", .{err});
     };
     defer child1.deinit(allocator);
-    const child2 = runDot(allocator, &.{ "add", "Child two", "-P", parent_id }, test_dir) catch |err| {
+    const child1_id = trimNewline(child1.stdout);
+
+    const child2 = runDot(allocator, &.{ "add", "Child two", "-P", parent_id, "-a", child1_id }, test_dir) catch |err| {
         std.debug.panic("add child2: {}", .{err});
     };
     defer child2.deinit(allocator);
@@ -2144,7 +2172,7 @@ test "snap: tree output format" {
         \\[]u8
         \\  "[ID] ○ Parent task
         \\  └─ [ID] ○ Child one
-        \\  └─ [ID] ○ Child two
+        \\  └─ [ID] ○ Child two (blocked)
         \\"
     ).expectEqual(normalized.items);
 }

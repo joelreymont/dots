@@ -132,33 +132,6 @@ fn resolveIdOrFatal(storage: *storage_mod.Storage, id: []const u8) []const u8 {
     };
 }
 
-fn freeResolvedIds(allocator: Allocator, resolved: *std.ArrayList([]const u8)) void {
-    for (resolved.items) |rid| allocator.free(rid);
-    resolved.deinit(allocator);
-}
-
-fn resolveIds(allocator: Allocator, storage: *Storage, ids: []const []const u8) std.ArrayList([]const u8) {
-    var resolved: std.ArrayList([]const u8) = .{};
-
-    for (ids) |id| {
-        const resolved_id = storage.resolveId(id) catch |err| {
-            freeResolvedIds(allocator, &resolved);
-            switch (err) {
-                error.IssueNotFound => fatal("Issue not found: {s}\n", .{id}),
-                error.AmbiguousId => fatal("Ambiguous ID: {s}\n", .{id}),
-                else => fatal("Error resolving ID: {s}\n", .{id}),
-            }
-        };
-        resolved.append(allocator, resolved_id) catch {
-            allocator.free(resolved_id);
-            freeResolvedIds(allocator, &resolved);
-            fatal("Out of memory\n", .{});
-        };
-    }
-
-    return resolved;
-}
-
 // Status parsing helper
 fn parseStatusArg(status_str: []const u8) Status {
     return Status.parse(status_str) orelse fatal("Invalid status: {s}\n", .{status_str});
@@ -397,14 +370,15 @@ fn cmdOn(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    var resolved_ids = resolveIds(allocator, &storage, args);
-    defer {
-        for (resolved_ids.items) |id| allocator.free(id);
-        resolved_ids.deinit(allocator);
-    }
+    const results = try storage.resolveIds(args);
+    defer storage_mod.freeResolveResults(allocator, results);
 
-    for (resolved_ids.items) |id| {
-        try storage.updateStatus(id, .active, null, null);
+    for (results, 0..) |result, i| {
+        switch (result) {
+            .ok => |id| try storage.updateStatus(id, .active, null, null),
+            .not_found => fatal("Issue not found: {s}\n", .{args[i]}),
+            .ambiguous => fatal("Ambiguous ID: {s}\n", .{args[i]}),
+        }
     }
 }
 
@@ -429,20 +403,21 @@ fn cmdOff(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    var resolved_ids = resolveIds(allocator, &storage, ids.items);
-    defer {
-        for (resolved_ids.items) |id| allocator.free(id);
-        resolved_ids.deinit(allocator);
-    }
+    const results = try storage.resolveIds(ids.items);
+    defer storage_mod.freeResolveResults(allocator, results);
 
     var ts_buf: [40]u8 = undefined;
     const now = try formatTimestamp(&ts_buf);
 
-    for (resolved_ids.items) |id| {
-        storage.updateStatus(id, .closed, now, reason) catch |err| switch (err) {
-            error.ChildrenNotClosed => fatal("Cannot close {s}: children are not all closed\n", .{id}),
-            else => return err,
-        };
+    for (results, 0..) |result, idx| {
+        switch (result) {
+            .ok => |id| storage.updateStatus(id, .closed, now, reason) catch |err| switch (err) {
+                error.ChildrenNotClosed => fatal("Cannot close {s}: children are not all closed\n", .{id}),
+                else => return err,
+            },
+            .not_found => fatal("Issue not found: {s}\n", .{ids.items[idx]}),
+            .ambiguous => fatal("Ambiguous ID: {s}\n", .{ids.items[idx]}),
+        }
     }
 }
 
@@ -452,14 +427,15 @@ fn cmdRm(allocator: Allocator, args: []const []const u8) !void {
     var storage = try openStorage(allocator);
     defer storage.close();
 
-    var resolved_ids = resolveIds(allocator, &storage, args);
-    defer {
-        for (resolved_ids.items) |id| allocator.free(id);
-        resolved_ids.deinit(allocator);
-    }
+    const results = try storage.resolveIds(args);
+    defer storage_mod.freeResolveResults(allocator, results);
 
-    for (resolved_ids.items) |id| {
-        try storage.deleteIssue(id);
+    for (results, 0..) |result, i| {
+        switch (result) {
+            .ok => |id| try storage.deleteIssue(id),
+            .not_found => fatal("Issue not found: {s}\n", .{args[i]}),
+            .ambiguous => fatal("Ambiguous ID: {s}\n", .{args[i]}),
+        }
     }
 }
 
@@ -495,11 +471,17 @@ fn cmdTree(allocator: Allocator, _: []const []const u8) !void {
     const roots = try storage.getRootIssues();
     defer storage_mod.freeIssues(allocator, roots);
 
+    const all_issues = try storage.listAllIssuesIncludingArchived();
+    defer storage_mod.freeIssues(allocator, all_issues);
+
+    var status_by_id = try storage.buildStatusMap(all_issues);
+    defer status_by_id.deinit();
+
     const w = stdout();
     for (roots) |root| {
         try w.print("[{s}] {s} {s}\n", .{ root.id, root.status.symbol(), root.title });
 
-        const children = try storage.getChildren(root.id);
+        const children = try storage.getChildrenWithStatusMap(root.id, &status_by_id);
         defer storage_mod.freeChildIssues(allocator, children);
 
         for (children) |child| {
