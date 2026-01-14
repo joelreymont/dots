@@ -8,7 +8,7 @@ Minimal task tracker for AI coding agents.
 
 | | beads (SQLite) | dots (markdown) |
 |---|---:|---:|
-| Binary | 25 MB | **233 KB** (107x smaller) |
+| Binary | 25 MB | **200 KB** (125x smaller) |
 | Lines of code | 115,000 | **2,800** (41x less) |
 | Dependencies | Go, SQLite/Wasm | None |
 | Portability | Rebuild per platform | Copy `.dots/` anywhere |
@@ -38,7 +38,7 @@ cp zig-out/bin/dot ~/.local/bin/
 
 ```bash
 dot --version
-# Output: dots 0.6.1
+# Output: dots 0.6.2
 ```
 
 ## Quick Start

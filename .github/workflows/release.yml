@@ -99,7 +99,7 @@ jobs:
             ## What's New
 
             Major rewrite: SQLite replaced with plain markdown files.
-            - **107x smaller binary** (25MB → 233KB)
+            - **125x smaller binary** (25MB → 200KB)
             - **41x less code** (115k → 2.8k LOC)
             - **Zero dependencies** - no database, no runtime requirements
             - **Portable storage** - copy `.dots/` folder anywhere

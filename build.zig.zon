@@ -1,6 +1,6 @@
 .{
     .name = .dots,
-    .version = "0.5.3",
+    .version = "0.6.2",
     .dependencies = .{
         .ohsnap = .{
             .path = "deps/ohsnap",
