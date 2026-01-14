@@ -143,7 +143,9 @@ fn runDotWithInput(
     }
 
     const stdout = try child.stdout.?.readToEndAlloc(allocator, max_output_bytes);
+    errdefer allocator.free(stdout);
     const stderr = try child.stderr.?.readToEndAlloc(allocator, max_output_bytes);
+    errdefer allocator.free(stderr);
     const term = try child.wait();
 
     return RunResult{ .stdout = stdout, .stderr = stderr, .term = term };
@@ -203,9 +205,12 @@ const MultiProcess = struct {
     /// Wait for all processes and return results
     fn waitAll(self: *MultiProcess) ![MAX_PROCS]?RunResult {
         var results: [MAX_PROCS]?RunResult = [_]?RunResult{null} ** MAX_PROCS;
+        errdefer self.freeResults(&results);
         for (0..self.count) |i| {
             const stdout = try self.children[i].stdout.?.readToEndAlloc(self.allocator, max_output_bytes);
+            errdefer self.allocator.free(stdout);
             const stderr = try self.children[i].stderr.?.readToEndAlloc(self.allocator, max_output_bytes);
+            errdefer self.allocator.free(stderr);
             const term = try self.children[i].wait();
             results[i] = .{ .stdout = stdout, .stderr = stderr, .term = term };
         }
@@ -723,6 +728,51 @@ test "storage: delete cascade unblocks dependents" {
     defer storage_mod.freeIssues(allocator, ready2);
     try std.testing.expectEqual(@as(usize, 1), ready2.len);
     try std.testing.expectEqualStrings("dependent", ready2[0].id);
+}
+
+test "storage: delete parent cleans up child dependency refs" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    var ts = openTestStorage(allocator, test_dir);
+    defer ts.deinit();
+
+    // Create parent with child
+    const parent = makeTestIssue("parent", .open);
+    try ts.storage.createIssue(parent, null);
+
+    const child = makeTestIssue("child", .open);
+    try ts.storage.createIssue(child, "parent");
+
+    // Create external issue that depends on the child
+    const external = makeTestIssue("external", .open);
+    try ts.storage.createIssue(external, null);
+    try ts.storage.addDependency("external", "child", "blocks");
+
+    // Verify external is blocked
+    const ready1 = try ts.storage.getReadyIssues();
+    defer storage_mod.freeIssues(allocator, ready1);
+    var external_ready = false;
+    for (ready1) |r| {
+        if (std.mem.eql(u8, r.id, "external")) external_ready = true;
+    }
+    try std.testing.expect(!external_ready);
+
+    // Delete parent (which deletes child too)
+    try ts.storage.deleteIssue("parent");
+
+    // Verify external is now unblocked (child ref was cleaned up)
+    const ready2 = try ts.storage.getReadyIssues();
+    defer storage_mod.freeIssues(allocator, ready2);
+    try std.testing.expectEqual(@as(usize, 1), ready2.len);
+    try std.testing.expectEqualStrings("external", ready2[0].id);
+
+    // Verify external's blocks array is now empty
+    const ext = try ts.storage.getIssue("external") orelse return error.TestUnexpectedResult;
+    defer ext.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), ext.blocks.len);
 }
 
 test "prop: invalid dependency rejected" {
@@ -1914,6 +1964,46 @@ test "snap: markdown frontmatter format" {
         \\This is a description
         \\"
     ).expectEqual(normalized.items);
+}
+
+test "storage: missing required frontmatter fields rejected" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    var ts = openTestStorage(allocator, test_dir);
+    defer ts.deinit();
+
+    // Write file with missing title
+    const no_title =
+        \\---
+        \\status: open
+        \\priority: 2
+        \\issue-type: task
+        \\created-at: 2024-01-01T00:00:00Z
+        \\---
+    ;
+    try ts.storage.dots_dir.writeFile(.{ .sub_path = "no-title.md", .data = no_title });
+
+    // Should fail to read
+    const result1 = ts.storage.getIssue("no-title");
+    try std.testing.expectError(error.InvalidFrontmatter, result1);
+
+    // Write file with missing created-at
+    const no_created =
+        \\---
+        \\title: Has title
+        \\status: open
+        \\priority: 2
+        \\issue-type: task
+        \\---
+    ;
+    try ts.storage.dots_dir.writeFile(.{ .sub_path = "no-created.md", .data = no_created });
+
+    // Should fail to read
+    const result2 = ts.storage.getIssue("no-created");
+    try std.testing.expectError(error.InvalidFrontmatter, result2);
 }
 
 test "snap: json output format" {

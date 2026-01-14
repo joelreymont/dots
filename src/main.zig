@@ -649,7 +649,7 @@ fn slugifyIssue(allocator: Allocator, storage: *Storage, prefix: []const u8, old
     }
 
     // Check if new ID already exists (collision)
-    if (storage.issueExists(new_id)) {
+    if (try storage.issueExists(new_id)) {
         try stderr().print("Skipping {s}: new ID {s} already exists\n", .{ old_id, new_id });
         return false;
     }

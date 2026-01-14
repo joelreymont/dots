@@ -452,6 +452,18 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
     const allocated_blocks = try blocks_list.toOwnedSlice(allocator);
     fm.blocks = allocated_blocks;
 
+    // Validate required fields
+    if (fm.title.len == 0 or fm.created_at.len == 0) {
+        // Clean up allocations on validation failure
+        for (allocated_blocks) |b| allocator.free(b);
+        allocator.free(allocated_blocks);
+        if (allocated_title) |t| {
+            allocator.free(t);
+            allocated_title = null; // Prevent errdefer double-free
+        }
+        return StorageError.InvalidFrontmatter;
+    }
+
     return ParseResult{
         .frontmatter = fm,
         .description = description,
@@ -889,8 +901,11 @@ pub const Storage = struct {
         }
     }
 
-    pub fn issueExists(self: *Self, id: []const u8) bool {
-        const path = self.findIssuePath(id) catch return false;
+    pub fn issueExists(self: *Self, id: []const u8) !bool {
+        const path = self.findIssuePath(id) catch |err| switch (err) {
+            StorageError.IssueNotFound => return false,
+            else => return err,
+        };
         self.allocator.free(path);
         return true;
     }
@@ -1079,7 +1094,7 @@ pub const Storage = struct {
         // Prevent overwriting existing issues
         // Note: TOCTOU race exists here - concurrent creates may both pass this check.
         // The atomic write ensures no corruption, but last writer wins.
-        if (self.issueExists(issue.id)) {
+        if (try self.issueExists(issue.id)) {
             return StorageError.IssueAlreadyExists;
         }
 
@@ -1243,21 +1258,53 @@ pub const Storage = struct {
         // Clean up dangling dependency references before deleting
         try self.removeDependencyReferences(id);
 
+        // Determine the effective path (skip archive/ prefix if present)
+        const effective_path = if (std.mem.startsWith(u8, path, "archive/"))
+            path["archive/".len..]
+        else
+            path;
+
         // Check if it's a folder (has children)
-        if (std.mem.indexOf(u8, path, "/")) |slash_idx| {
-            const folder_name = path[0..slash_idx];
-            const filename = std.fs.path.basename(path);
+        if (std.mem.indexOf(u8, effective_path, "/")) |slash_idx| {
+            const folder_name = effective_path[0..slash_idx];
+            const filename = std.fs.path.basename(effective_path);
             const file_id = filename[0 .. filename.len - 3];
 
             // If deleting parent, delete entire folder
             if (std.mem.eql(u8, file_id, folder_name)) {
-                try self.dots_dir.deleteTree(folder_name);
+                // Clean up dependency references for all children before deleting
+                // Use full path for archived folders
+                const full_folder = if (std.mem.startsWith(u8, path, "archive/"))
+                    path[0 .. "archive/".len + slash_idx]
+                else
+                    folder_name;
+                try self.removeChildDependencyReferences(full_folder);
+                try self.dots_dir.deleteTree(full_folder);
                 return;
             }
         }
 
         // Simple file deletion
         try self.dots_dir.deleteFile(path);
+    }
+
+    /// Remove dependency references for all children in a folder
+    fn removeChildDependencyReferences(self: *Self, folder_name: []const u8) !void {
+        var folder = self.dots_dir.openDir(folder_name, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return err,
+        };
+        defer folder.close();
+
+        var it = folder.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
+            const child_id = entry.name[0 .. entry.name.len - 3];
+            // Skip parent file (same name as folder)
+            if (std.mem.eql(u8, child_id, folder_name)) continue;
+            try self.removeDependencyReferences(child_id);
+        }
     }
 
     /// Rename an issue to a new ID, updating all dependency references
@@ -1268,7 +1315,7 @@ pub const Storage = struct {
         if (std.mem.eql(u8, old_id, new_id)) return; // No-op if same
 
         // Check new ID doesn't already exist
-        if (self.issueExists(new_id)) {
+        if (try self.issueExists(new_id)) {
             return StorageError.IssueAlreadyExists;
         }
 
@@ -1708,8 +1755,17 @@ pub const Storage = struct {
         try validateId(depends_on_id);
 
         // Verify the dependency target exists
-        if (!self.issueExists(depends_on_id)) {
+        if (!try self.issueExists(depends_on_id)) {
             return StorageError.DependencyNotFound;
+        }
+
+        // Validate dependency type
+        const valid_dep_types = std.StaticStringMap(void).initComptime(.{
+            .{ "blocks", {} },
+            .{ "parent-child", {} },
+        });
+        if (valid_dep_types.get(dep_type) == null) {
+            return StorageError.InvalidFrontmatter;
         }
 
         // For "blocks" type, add to the issue's blocks array
