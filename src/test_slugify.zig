@@ -444,3 +444,53 @@ test "cli: slugify includes closed/archived issues" {
     try std.testing.expect(std.mem.indexOf(u8, slugify.stdout, "open-task") != null);
     try std.testing.expect(std.mem.indexOf(u8, slugify.stdout, "closed-task") != null);
 }
+
+test "cli: slugify handles archived parent with children" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    var ts = openTestStorage(allocator, test_dir);
+    try ts.storage.setConfig("prefix", "");
+
+    const parent_issue = Issue{
+        .id = "proj-parent-11111111",
+        .title = "Parent feature",
+        .description = "",
+        .status = .open,
+        .priority = 1,
+        .issue_type = "task",
+        .assignee = "",
+        .created_at = fixed_timestamp,
+        .closed_at = null,
+        .close_reason = null,
+        .blocks = &.{},
+    };
+    try ts.storage.createIssue(parent_issue, null);
+
+    const child_issue = Issue{
+        .id = "proj-child-22222222",
+        .title = "Child task",
+        .description = "",
+        .status = .open,
+        .priority = 2,
+        .issue_type = "task",
+        .assignee = "",
+        .created_at = fixed_timestamp,
+        .closed_at = null,
+        .close_reason = null,
+        .blocks = &.{},
+    };
+    try ts.storage.createIssue(child_issue, "proj-parent-11111111");
+
+    try ts.storage.updateStatus("proj-child-22222222", .closed, fixed_timestamp, "done");
+    try ts.storage.updateStatus("proj-parent-11111111", .closed, fixed_timestamp, "done");
+    try ts.storage.archiveIssue("proj-parent-11111111");
+    ts.deinit();
+
+    const slugify = try runDot(allocator, &.{"slugify"}, test_dir);
+    defer slugify.deinit(allocator);
+    try std.testing.expect(isExitCode(slugify.term, 0));
+    try std.testing.expect(std.mem.indexOf(u8, slugify.stdout, "Slugified 2") != null);
+}
