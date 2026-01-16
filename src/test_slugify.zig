@@ -14,6 +14,54 @@ const setupTestDirOrPanic = h.setupTestDirOrPanic;
 const cleanupTestDirAndFree = h.cleanupTestDirAndFree;
 const openTestStorage = h.openTestStorage;
 
+test "generateIdWithTitle: empty prefix with title" {
+    const allocator = std.testing.allocator;
+
+    const id = try storage_mod.generateIdWithTitle(allocator, "", "Fix authentication bug");
+    defer allocator.free(id);
+
+    // Should be slug-hex (no leading hyphen)
+    try std.testing.expect(std.mem.startsWith(u8, id, "fix-auth"));
+    try std.testing.expect(id[0] != '-');
+    // Should have 8 hex chars at end
+    try std.testing.expectEqual(@as(usize, 8), id.len - std.mem.lastIndexOf(u8, id, "-").? - 1);
+}
+
+test "generateIdWithTitle: empty prefix without title" {
+    const allocator = std.testing.allocator;
+
+    const id = try storage_mod.generateIdWithTitle(allocator, "", null);
+    defer allocator.free(id);
+
+    // Should be just hex (8 chars, no hyphens)
+    try std.testing.expectEqual(@as(usize, 8), id.len);
+    try std.testing.expect(id[0] != '-');
+    for (id) |c| {
+        try std.testing.expect(std.ascii.isHex(c));
+    }
+}
+
+test "generateIdWithTitle: non-empty prefix with title" {
+    const allocator = std.testing.allocator;
+
+    const id = try storage_mod.generateIdWithTitle(allocator, "myproject", "Fix bug");
+    defer allocator.free(id);
+
+    // Should be prefix-slug-hex
+    try std.testing.expect(std.mem.startsWith(u8, id, "myproject-fix-bug-"));
+}
+
+test "generateIdWithTitle: non-empty prefix without title" {
+    const allocator = std.testing.allocator;
+
+    const id = try storage_mod.generateIdWithTitle(allocator, "myproject", null);
+    defer allocator.free(id);
+
+    // Should be prefix-hex
+    try std.testing.expect(std.mem.startsWith(u8, id, "myproject-"));
+    try std.testing.expectEqual(@as(usize, "myproject-".len + 8), id.len);
+}
+
 test "slugify: basic conversion" {
     const allocator = std.testing.allocator;
     const oh = OhSnap{};
@@ -121,6 +169,39 @@ test "slugify: prop: idempotent on valid slugs" {
             return std.mem.eql(u8, slug1, slug2);
         }
     }.property, .{ .iterations = 50, .seed = 123 });
+}
+
+test "cli: add with empty prefix creates slug-only IDs" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    // Init and set empty prefix
+    var ts = openTestStorage(allocator, test_dir);
+    try ts.storage.setConfig("prefix", "");
+    ts.deinit();
+
+    // Create an issue
+    const add = try runDot(allocator, &.{ "add", "Fix authentication bug" }, test_dir);
+    defer add.deinit(allocator);
+    try std.testing.expect(isExitCode(add.term, 0));
+
+    // Get the created issue ID
+    const ls = try runDot(allocator, &.{ "ls", "--json" }, test_dir);
+    defer ls.deinit(allocator);
+
+    const parsed = try std.json.parseFromSlice([]JsonIssue, allocator, ls.stdout, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.len);
+    const id = parsed.value[0].id;
+
+    // ID should start with slug, not have leading hyphen
+    try std.testing.expect(std.mem.startsWith(u8, id, "fix-auth"));
+    try std.testing.expect(id[0] != '-');
 }
 
 test "cli: slugify skips already-slugged issues from dot add" {
