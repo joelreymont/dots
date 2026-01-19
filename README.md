@@ -42,7 +42,7 @@ cp zig-out/bin/dot ~/.local/bin/
 
 ```bash
 dot --version
-# Output: dots 0.6.3
+# Output: dots 0.6.4
 ```
 
 ## Quick Start
