@@ -14,6 +14,54 @@ const setupTestDirOrPanic = h.setupTestDirOrPanic;
 const cleanupTestDirAndFree = h.cleanupTestDirAndFree;
 const openTestStorage = h.openTestStorage;
 
+test "generateIdWithTitle: empty prefix with title" {
+    const allocator = std.testing.allocator;
+
+    const id = try storage_mod.generateIdWithTitle(allocator, "", "Fix authentication bug");
+    defer allocator.free(id);
+
+    // Should be slug-hex (no leading hyphen)
+    try std.testing.expect(std.mem.startsWith(u8, id, "fix-auth"));
+    try std.testing.expect(id[0] != '-');
+    // Should have 8 hex chars at end
+    try std.testing.expectEqual(@as(usize, 8), id.len - std.mem.lastIndexOf(u8, id, "-").? - 1);
+}
+
+test "generateIdWithTitle: empty prefix without title" {
+    const allocator = std.testing.allocator;
+
+    const id = try storage_mod.generateIdWithTitle(allocator, "", null);
+    defer allocator.free(id);
+
+    // Should be just hex (8 chars, no hyphens)
+    try std.testing.expectEqual(@as(usize, 8), id.len);
+    try std.testing.expect(id[0] != '-');
+    for (id) |c| {
+        try std.testing.expect(std.ascii.isHex(c));
+    }
+}
+
+test "generateIdWithTitle: non-empty prefix with title" {
+    const allocator = std.testing.allocator;
+
+    const id = try storage_mod.generateIdWithTitle(allocator, "myproject", "Fix bug");
+    defer allocator.free(id);
+
+    // Should be prefix-slug-hex
+    try std.testing.expect(std.mem.startsWith(u8, id, "myproject-fix-bug-"));
+}
+
+test "generateIdWithTitle: non-empty prefix without title" {
+    const allocator = std.testing.allocator;
+
+    const id = try storage_mod.generateIdWithTitle(allocator, "myproject", null);
+    defer allocator.free(id);
+
+    // Should be prefix-hex
+    try std.testing.expect(std.mem.startsWith(u8, id, "myproject-"));
+    try std.testing.expectEqual(@as(usize, "myproject-".len + 8), id.len);
+}
+
 test "slugify: basic conversion" {
     const allocator = std.testing.allocator;
     const oh = OhSnap{};
@@ -121,6 +169,169 @@ test "slugify: prop: idempotent on valid slugs" {
             return std.mem.eql(u8, slug1, slug2);
         }
     }.property, .{ .iterations = 50, .seed = 123 });
+}
+
+test "cli: add with empty prefix creates slug-only IDs" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    // Init and set empty prefix
+    var ts = openTestStorage(allocator, test_dir);
+    try ts.storage.setConfig("prefix", "");
+    ts.deinit();
+
+    // Create an issue
+    const add = try runDot(allocator, &.{ "add", "Fix authentication bug" }, test_dir);
+    defer add.deinit(allocator);
+    try std.testing.expect(isExitCode(add.term, 0));
+
+    // Get the created issue ID
+    const ls = try runDot(allocator, &.{ "ls", "--json" }, test_dir);
+    defer ls.deinit(allocator);
+
+    const parsed = try std.json.parseFromSlice([]JsonIssue, allocator, ls.stdout, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.len);
+    const id = parsed.value[0].id;
+
+    // ID should start with slug, not have leading hyphen
+    try std.testing.expect(std.mem.startsWith(u8, id, "fix-auth"));
+    try std.testing.expect(id[0] != '-');
+}
+
+test "cli: slugify migrates prefixed IDs to empty prefix" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    // Create issue with old prefix
+    var ts = openTestStorage(allocator, test_dir);
+    try ts.storage.setConfig("prefix", "myproject");
+
+    const issue = Issue{
+        .id = "myproject-abcd1234",
+        .title = "Fix authentication bug",
+        .description = "",
+        .status = .open,
+        .priority = 5,
+        .issue_type = "task",
+        .assignee = "",
+        .created_at = fixed_timestamp,
+        .closed_at = null,
+        .close_reason = null,
+        .blocks = &.{},
+    };
+    try ts.storage.createIssue(issue, null);
+
+    // Change prefix to empty
+    try ts.storage.setConfig("prefix", "");
+    ts.deinit();
+
+    // Run slugify to migrate
+    const slugify = try runDot(allocator, &.{"slugify"}, test_dir);
+    defer slugify.deinit(allocator);
+    try std.testing.expect(isExitCode(slugify.term, 0));
+
+    // Should have slugified 1 issue
+    try std.testing.expect(std.mem.indexOf(u8, slugify.stdout, "Slugified 1") != null);
+
+    // Get the new ID
+    const ls = try runDot(allocator, &.{ "ls", "--json" }, test_dir);
+    defer ls.deinit(allocator);
+
+    const parsed = try std.json.parseFromSlice([]JsonIssue, allocator, ls.stdout, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.len);
+    const new_id = parsed.value[0].id;
+
+    // New ID should be slug-hex (no prefix, preserves hex suffix)
+    try std.testing.expectEqualStrings("fix-auth-bug-abcd1234", new_id);
+}
+
+test "cli: slugify handles parent-child relationships" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    var ts = openTestStorage(allocator, test_dir);
+    try ts.storage.setConfig("prefix", "");
+
+    // Create parent issue
+    const parent_issue = Issue{
+        .id = "proj-11111111",
+        .title = "Parent feature",
+        .description = "",
+        .status = .open,
+        .priority = 1,
+        .issue_type = "task",
+        .assignee = "",
+        .created_at = fixed_timestamp,
+        .closed_at = null,
+        .close_reason = null,
+        .blocks = &.{},
+    };
+    try ts.storage.createIssue(parent_issue, null);
+
+    // Create child issue under parent
+    const child_issue = Issue{
+        .id = "proj-22222222",
+        .title = "Child task",
+        .description = "",
+        .status = .open,
+        .priority = 2,
+        .issue_type = "task",
+        .assignee = "",
+        .created_at = fixed_timestamp,
+        .closed_at = null,
+        .close_reason = null,
+        .blocks = &.{},
+    };
+    try ts.storage.createIssue(child_issue, "proj-11111111");
+    ts.deinit();
+
+    // Run slugify
+    const slugify = try runDot(allocator, &.{"slugify"}, test_dir);
+    defer slugify.deinit(allocator);
+    try std.testing.expect(isExitCode(slugify.term, 0));
+
+    // Should have slugified 2 issues
+    try std.testing.expect(std.mem.indexOf(u8, slugify.stdout, "Slugified 2") != null);
+
+    // Verify both issues exist with new IDs
+    const ls = try runDot(allocator, &.{ "ls", "-a", "--json" }, test_dir);
+    defer ls.deinit(allocator);
+
+    const parsed = try std.json.parseFromSlice([]JsonIssue, allocator, ls.stdout, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.len);
+
+    // Find parent and child
+    var found_parent = false;
+    var found_child = false;
+    for (parsed.value) |issue| {
+        if (std.mem.eql(u8, issue.id, "parent-feature-11111111")) {
+            found_parent = true;
+        }
+        if (std.mem.eql(u8, issue.id, "child-task-22222222")) {
+            found_child = true;
+        }
+    }
+
+    try std.testing.expect(found_parent);
+    try std.testing.expect(found_child);
 }
 
 test "cli: slugify skips already-slugged issues from dot add" {

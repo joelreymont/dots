@@ -738,7 +738,10 @@ fn slugifyIssue(allocator: Allocator, storage: *Storage, prefix: []const u8, old
         hex_suffix = &hex_buf;
     }
 
-    const new_id = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ prefix, slug, hex_suffix });
+    const new_id = if (prefix.len == 0)
+        try std.fmt.allocPrint(allocator, "{s}-{s}", .{ slug, hex_suffix })
+    else
+        try std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ prefix, slug, hex_suffix });
     defer allocator.free(new_id);
 
     // Skip if already slugified (same ID)
