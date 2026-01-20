@@ -1029,8 +1029,24 @@ pub const Storage = struct {
             return self.allocator.dupe(u8, archive_folder_path);
         } else |_| {}
 
-        // Search recursively in all subdirectories
-        return try self.searchForIssue(self.dots_dir, id) orelse StorageError.IssueNotFound;
+        // Search recursively in main subdirectories
+        if (try self.searchForIssue(self.dots_dir, id)) |path| {
+            return path;
+        }
+
+        // Search recursively in archive subdirectories
+        // Needed for children inside archived parent folders - when a parent is renamed,
+        // children move with it but their IDs remain unchanged, so we must search archive
+        if (self.dots_dir.openDir("archive", .{ .iterate = true })) |archive_dir| {
+            var ad = archive_dir;
+            defer ad.close();
+            if (try self.searchForIssue(ad, id)) |rel_path| {
+                defer self.allocator.free(rel_path);
+                return std.fmt.allocPrint(self.allocator, "archive/{s}", .{rel_path});
+            }
+        } else |_| {}
+
+        return StorageError.IssueNotFound;
     }
 
     const MAX_SEARCH_DEPTH = 10;
@@ -1419,11 +1435,18 @@ pub const Storage = struct {
         const old_path = try self.findIssuePath(old_id);
         defer self.allocator.free(old_path);
 
-        // Check if it's a parent (has folder)
-        const is_parent = std.mem.indexOf(u8, old_path, "/") != null and blk: {
-            const folder_name = old_path[0..std.mem.indexOf(u8, old_path, "/").?];
-            break :blk std.mem.eql(u8, folder_name, old_id);
-        };
+        // Check if it's a parent (path ends with {id}/{id}.md pattern)
+        // Using endsWith handles both regular parents (parent-id/parent-id.md) and
+        // archived parents (archive/parent-id/parent-id.md) without special-casing paths
+        var expected_suffix_buf: [MAX_PATH_LEN]u8 = undefined;
+        const expected_suffix = std.fmt.bufPrint(&expected_suffix_buf, "{s}/{s}.md", .{ old_id, old_id }) catch return StorageError.IoError;
+        const is_parent = std.mem.endsWith(u8, old_path, expected_suffix);
+
+        // Get path prefix (e.g., "archive/" or empty)
+        const path_prefix = if (is_parent and old_path.len > expected_suffix.len)
+            old_path[0 .. old_path.len - expected_suffix.len]
+        else
+            "";
 
         // Create new issue with updated ID
         const new_issue = Issue{
@@ -1447,14 +1470,20 @@ pub const Storage = struct {
         if (is_parent) {
             // Parent issue: rename folder and file inside
             var new_path_buf: [MAX_PATH_LEN]u8 = undefined;
-            const new_path = std.fmt.bufPrint(&new_path_buf, "{s}/{s}.md", .{ new_id, new_id }) catch return StorageError.IoError;
+            const new_path = std.fmt.bufPrint(&new_path_buf, "{s}{s}/{s}.md", .{ path_prefix, new_id, new_id }) catch return StorageError.IoError;
+
+            // Build old and new folder paths
+            var old_folder_buf: [MAX_PATH_LEN]u8 = undefined;
+            const old_folder = std.fmt.bufPrint(&old_folder_buf, "{s}{s}", .{ path_prefix, old_id }) catch return StorageError.IoError;
+            var new_folder_buf: [MAX_PATH_LEN]u8 = undefined;
+            const new_folder = std.fmt.bufPrint(&new_folder_buf, "{s}{s}", .{ path_prefix, new_id }) catch return StorageError.IoError;
 
             // Rename folder first
-            try self.dots_dir.rename(old_id, new_id);
+            try self.dots_dir.rename(old_folder, new_folder);
 
             // Write new content to new path (old file was renamed with folder)
             var old_file_in_new_folder_buf: [MAX_PATH_LEN]u8 = undefined;
-            const old_file_in_new_folder = std.fmt.bufPrint(&old_file_in_new_folder_buf, "{s}/{s}.md", .{ new_id, old_id }) catch return StorageError.IoError;
+            const old_file_in_new_folder = std.fmt.bufPrint(&old_file_in_new_folder_buf, "{s}{s}/{s}.md", .{ path_prefix, new_id, old_id }) catch return StorageError.IoError;
 
             // Write new file before deleting old
             try writeFileAtomic(self.dots_dir, new_path, content);
@@ -1463,11 +1492,14 @@ pub const Storage = struct {
                 else => return err,
             };
         } else {
-            // Simple file or child: just rename
+            // Simple file or child: derive new path from old path's directory
             var new_path_buf: [MAX_PATH_LEN]u8 = undefined;
-            const new_path = if (issue.parent) |parent| blk: {
-                break :blk std.fmt.bufPrint(&new_path_buf, "{s}/{s}.md", .{ parent, new_id }) catch return StorageError.IoError;
+            const new_path = if (std.mem.lastIndexOf(u8, old_path, "/")) |last_slash| blk: {
+                // Has directory - keep it and replace filename
+                const dir = old_path[0 .. last_slash + 1];
+                break :blk std.fmt.bufPrint(&new_path_buf, "{s}{s}.md", .{ dir, new_id }) catch return StorageError.IoError;
             } else blk: {
+                // No directory - just the filename
                 break :blk std.fmt.bufPrint(&new_path_buf, "{s}.md", .{new_id}) catch return StorageError.IoError;
             };
 
