@@ -51,17 +51,18 @@ fn findCommand(name: []const u8) ?Handler {
     return null;
 }
 
-pub fn main() void {
-    if (run()) |_| {} else |err| handleError(err);
+pub fn main(init: std.process.Init) void {
+    if (run(init)) |_| {} else |err| handleError(err);
 }
 
-fn run() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+fn run(init: std.process.Init) !void {
+    app_io = init.io;
+
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer if (gpa.deinit() == .leak) @panic("memory leak detected");
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len < 2) {
         try cmdReady(allocator, &.{"--json"});
@@ -98,25 +99,26 @@ fn cmdVersion(_: Allocator, _: []const []const u8) !void {
 }
 
 fn openStorage(allocator: Allocator) !Storage {
-    return Storage.open(allocator);
+    return Storage.open(allocator, app_io);
 }
 
 // I/O helpers
+var app_io: std.Io = undefined;
 var stdout_buffer: [4096]u8 = undefined;
-var stdout_writer: ?fs.File.Writer = null;
+var stdout_writer: ?std.Io.File.Writer = null;
 var stderr_buffer: [4096]u8 = undefined;
-var stderr_writer: ?fs.File.Writer = null;
+var stderr_writer: ?std.Io.File.Writer = null;
 
 fn stdout() *std.Io.Writer {
     if (stdout_writer == null) {
-        stdout_writer = fs.File.stdout().writer(&stdout_buffer);
+        stdout_writer = std.Io.File.stdout().writer(app_io, &stdout_buffer);
     }
     return &stdout_writer.?.interface;
 }
 
 fn stderr() *std.Io.Writer {
     if (stderr_writer == null) {
-        stderr_writer = fs.File.stderr().writer(&stderr_buffer);
+        stderr_writer = std.Io.File.stderr().writer(app_io, &stderr_buffer);
     }
     return &stderr_writer.?.interface;
 }
@@ -222,21 +224,24 @@ const USAGE =
 
 fn gitAddDots(allocator: Allocator) !void {
     // Add .dots to git if in a git repo
-    fs.cwd().access(".git", .{}) catch |err| switch (err) {
+    std.Io.Dir.cwd().access(app_io, ".git", .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
 
     // Run git add .dots
-    var child = std.process.Child.init(&.{ "git", "add", DOTS_DIR }, allocator);
-    const term = try child.spawnAndWait();
-    switch (term) {
-        .Exited => |code| {
+    const result = try std.process.run(allocator, app_io, .{
+        .argv = &.{ "git", "add", DOTS_DIR },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| {
             if (code != 0) {
                 try stderr().print("Warning: git add failed with exit code {d}\n", .{code});
             }
         },
-        .Signal => |sig| try stderr().print("Warning: git add killed by signal {d}\n", .{sig}),
+        .signal => |sig| try stderr().print("Warning: git add killed by signal {d}\n", .{sig}),
         else => try stderr().writeAll("Warning: git add terminated abnormally\n"),
     }
 }
@@ -295,7 +300,7 @@ fn cmdAdd(allocator: Allocator, args: []const []const u8) !void {
     const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
     defer allocator.free(prefix);
 
-    const id = try storage_mod.generateIdWithTitle(allocator, prefix, title);
+    const id = try storage_mod.generateIdWithTitle(allocator, app_io, prefix, title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -425,7 +430,7 @@ fn cmdOff(allocator: Allocator, args: []const []const u8) !void {
     if (args.len == 0) fatal("Usage: dot off <id> [id2 ...] [-r reason]\n", .{});
 
     var reason: ?[]const u8 = null;
-    var ids: std.ArrayList([]const u8) = .{};
+    var ids: std.ArrayList([]const u8) = .empty;
     defer ids.deinit(allocator);
 
     var i: usize = 0;
@@ -732,7 +737,7 @@ fn slugifyIssue(allocator: Allocator, storage: *Storage, prefix: []const u8, old
     var hex_buf: [8]u8 = undefined;
     if (hex_suffix.len == 0) {
         var rand_bytes: [4]u8 = undefined;
-        std.crypto.random.bytes(&rand_bytes);
+        try app_io.randomSecure(&rand_bytes);
         const hex = std.fmt.bytesToHex(rand_bytes, .lower);
         @memcpy(&hex_buf, &hex);
         hex_suffix = &hex_buf;
@@ -758,7 +763,7 @@ fn slugifyIssue(allocator: Allocator, storage: *Storage, prefix: []const u8, old
 }
 
 fn formatTimestamp(buf: []u8) ![]const u8 {
-    const nanos = std.time.nanoTimestamp();
+    const nanos = std.Io.Timestamp.now(app_io, .real).nanoseconds;
     if (nanos < 0) return error.InvalidTimestamp;
     const epoch_nanos: u128 = @intCast(nanos);
     const epoch_secs: libc.time_t = std.math.cast(libc.time_t, epoch_nanos / 1_000_000_000) orelse return error.TimestampOverflow;
@@ -842,18 +847,18 @@ const HydrateResult = struct {
 };
 
 fn hydrateFromJsonl(allocator: Allocator, storage: *Storage, jsonl_path: []const u8) !HydrateResult {
-    const file = fs.cwd().openFile(jsonl_path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.cwd().openFile(app_io, jsonl_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .{ .imported = 0, .skipped = 0, .dep_skipped = 0 },
         else => return err,
     };
-    defer file.close();
+    defer file.close(app_io);
 
     var count: usize = 0;
     var skipped: usize = 0;
     var dep_skipped: usize = 0;
     const read_buf = try allocator.alloc(u8, max_jsonl_line_bytes);
     defer allocator.free(read_buf);
-    var file_reader = fs.File.Reader.init(file, read_buf);
+    var file_reader = file.reader(app_io, read_buf);
     const reader = &file_reader.interface;
 
     while (true) {

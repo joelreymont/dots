@@ -1,5 +1,8 @@
 const std = @import("std");
-const fs = std.fs;
+const Dir = std.Io.Dir;
+const Io = std.Io;
+const fs_path = std.fs.path;
+const max_path_bytes = std.fs.max_path_bytes;
 const Allocator = std.mem.Allocator;
 
 pub const DOTS_DIR = ".dots";
@@ -45,22 +48,22 @@ pub fn validateId(id: []const u8) StorageError!void {
 
 /// Write content to file atomically (write to unique .tmp, sync, rename)
 /// Uses random suffix to prevent concurrent write conflicts
-fn writeFileAtomic(dir: fs.Dir, path: []const u8, content: []const u8) !void {
+fn writeFileAtomic(dir: Dir, io: Io, path: []const u8, content: []const u8) !void {
     // Generate unique tmp filename with random suffix
     var rand_buf: [4]u8 = undefined;
-    std.crypto.random.bytes(&rand_buf);
+    try io.randomSecure(&rand_buf);
     const hex = std.fmt.bytesToHex(rand_buf, .lower);
 
     var tmp_path_buf: [MAX_PATH_LEN + 16]u8 = undefined; // +16 for ".XXXXXXXX.tmp"
     const tmp_path = std.fmt.bufPrint(&tmp_path_buf, "{s}.{s}.tmp", .{ path, hex }) catch return StorageError.IoError;
 
-    const tmp_file = try dir.createFile(tmp_path, .{});
-    defer tmp_file.close();
-    errdefer dir.deleteFile(tmp_path) catch {};
-    try tmp_file.writeAll(content);
-    try tmp_file.sync();
+    const tmp_file = try dir.createFile(io, tmp_path, .{});
+    defer tmp_file.close(io);
+    errdefer dir.deleteFile(io, tmp_path) catch {};
+    try tmp_file.writeStreamingAll(io, content);
+    try tmp_file.sync(io);
 
-    try dir.rename(tmp_path, path);
+    try dir.rename(tmp_path, dir, path, io);
 }
 
 // Status enum with comptime string map
@@ -196,7 +199,7 @@ pub const Issue = struct {
         const close_reason = if (self.close_reason) |r| try allocator.dupe(u8, r) else null;
         errdefer if (close_reason) |r| allocator.free(r);
 
-        var blocks: std.ArrayList([]const u8) = .{};
+        var blocks: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (blocks.items) |b| allocator.free(b);
             blocks.deinit(allocator);
@@ -398,7 +401,7 @@ fn parseYamlValue(allocator: Allocator, value: []const u8) !YamlValue {
         return .{ .borrowed = value };
     }
     // Quoted value - unescape it
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var i: usize = 1; // Skip opening quote
@@ -444,7 +447,7 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
         "";
 
     var fm = Frontmatter{};
-    var blocks_list: std.ArrayList([]const u8) = .{};
+    var blocks_list: std.ArrayList([]const u8) = .empty;
     var allocated_title: ?[]const u8 = null;
     errdefer {
         if (allocated_title) |t| allocator.free(t);
@@ -555,7 +558,7 @@ fn writeYamlValue(buf: *std.ArrayList(u8), allocator: Allocator, value: []const 
 }
 
 fn serializeFrontmatter(allocator: Allocator, issue: Issue) ![]u8 {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, "---\n");
@@ -743,7 +746,7 @@ pub fn slugify(allocator: Allocator, title: []const u8) ![]u8 {
         return allocator.dupe(u8, "untitled");
     }
 
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var word_start: usize = 0;
@@ -821,13 +824,13 @@ fn appendWord(allocator: Allocator, result: *std.ArrayList(u8), word: []const u8
 }
 
 // ID generation - {prefix}-{slug}-{8 hex chars}
-pub fn generateId(allocator: Allocator, prefix: []const u8) ![]u8 {
-    return generateIdWithTitle(allocator, prefix, null);
+pub fn generateId(allocator: Allocator, io: Io, prefix: []const u8) ![]u8 {
+    return generateIdWithTitle(allocator, io, prefix, null);
 }
 
-pub fn generateIdWithTitle(allocator: Allocator, prefix: []const u8, title: ?[]const u8) ![]u8 {
+pub fn generateIdWithTitle(allocator: Allocator, io: Io, prefix: []const u8, title: ?[]const u8) ![]u8 {
     var rand_bytes: [4]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    try io.randomSecure(&rand_bytes);
     const hex = std.fmt.bytesToHex(rand_bytes, .lower);
 
     if (title) |t| {
@@ -846,13 +849,14 @@ pub fn getOrCreatePrefix(allocator: Allocator, storage: *Storage) ![]const u8 {
     }
 
     // Auto-detect from directory name
-    const cwd = fs.cwd();
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const path = try cwd.realpath(".", &path_buf);
-    const basename = fs.path.basename(path);
+    const cwd = Dir.cwd();
+    var path_buf: [max_path_bytes]u8 = undefined;
+    const n = try cwd.realPathFile(storage.io, ".", &path_buf);
+    const path = path_buf[0..n];
+    const basename = fs_path.basename(path);
 
     // Strip trailing hyphens
-    var prefix = std.mem.trimRight(u8, basename, "-");
+    var prefix = std.mem.trimEnd(u8, basename, "-");
     if (prefix.len == 0) prefix = "dot";
 
     // Store it in config for future use
@@ -863,33 +867,35 @@ pub fn getOrCreatePrefix(allocator: Allocator, storage: *Storage) ![]const u8 {
 
 pub const Storage = struct {
     allocator: Allocator,
-    dots_dir: fs.Dir,
+    io: Io,
+    dots_dir: Dir,
 
     const Self = @This();
 
-    pub fn open(allocator: Allocator) !Self {
+    pub fn open(allocator: Allocator, io: Io) !Self {
         // Create .dots directory if needed
-        fs.cwd().makeDir(DOTS_DIR) catch |err| switch (err) {
+        Dir.cwd().createDir(io, DOTS_DIR, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };
 
         // Create archive directory if needed
-        fs.cwd().makeDir(ARCHIVE_DIR) catch |err| switch (err) {
+        Dir.cwd().createDir(io, ARCHIVE_DIR, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };
 
-        const dots_dir = try fs.cwd().openDir(DOTS_DIR, .{ .iterate = true });
+        const dots_dir = try Dir.cwd().openDir(io, DOTS_DIR, .{ .iterate = true });
 
         return Self{
             .allocator = allocator,
+            .io = io,
             .dots_dir = dots_dir,
         };
     }
 
     pub fn close(self: *Self) void {
-        self.dots_dir.close();
+        self.dots_dir.close(self.io);
     }
 
     // Resolve a short ID prefix to full ID
@@ -899,13 +905,13 @@ pub const Storage = struct {
 
         try self.scanResolve(self.dots_dir, states[0..]);
 
-        const archive_dir = self.dots_dir.openDir("archive", .{ .iterate = true }) catch |err| switch (err) {
+        const archive_dir = self.dots_dir.openDir(self.io, "archive", .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => null,
             else => return err,
         };
         if (archive_dir) |*dir| {
             var d = dir.*;
-            defer d.close();
+            defer d.close(self.io);
             try self.scanResolve(d, states[0..]);
         }
 
@@ -939,13 +945,13 @@ pub const Storage = struct {
 
         try self.scanResolve(self.dots_dir, states);
 
-        const archive_dir = self.dots_dir.openDir("archive", .{ .iterate = true }) catch |err| switch (err) {
+        const archive_dir = self.dots_dir.openDir(self.io, "archive", .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => null,
             else => return err,
         };
         if (archive_dir) |*dir| {
             var d = dir.*;
-            defer d.close();
+            defer d.close(self.io);
             try self.scanResolve(d, states);
         }
 
@@ -978,16 +984,16 @@ pub const Storage = struct {
         }
     }
 
-    fn scanResolve(self: *Self, dir: fs.Dir, states: []ResolveState) !void {
+    fn scanResolve(self: *Self, dir: Dir, states: []ResolveState) !void {
         var iter = dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
                 const id = entry.name[0 .. entry.name.len - 3];
                 try self.addResolve(states, id);
             } else if (entry.kind == .directory and !std.mem.eql(u8, entry.name, "archive")) {
                 // Recurse into folder to resolve issue files
-                var subdir = try dir.openDir(entry.name, .{ .iterate = true });
-                defer subdir.close();
+                var subdir = try dir.openDir(self.io, entry.name, .{ .iterate = true });
+                defer subdir.close(self.io);
                 try self.scanResolve(subdir, states);
             }
         }
@@ -1007,25 +1013,25 @@ pub const Storage = struct {
         var path_buf: [MAX_PATH_LEN]u8 = undefined;
         const direct_path = std.fmt.bufPrint(&path_buf, "{s}.md", .{id}) catch return StorageError.IoError;
 
-        if (self.dots_dir.statFile(direct_path)) |_| {
+        if (self.dots_dir.statFile(self.io, direct_path, .{})) |_| {
             return self.allocator.dupe(u8, direct_path);
         } else |_| {}
 
         // Try folder: .dots/{id}/{id}.md
         const folder_path = std.fmt.bufPrint(&path_buf, "{s}/{s}.md", .{ id, id }) catch return StorageError.IoError;
-        if (self.dots_dir.statFile(folder_path)) |_| {
+        if (self.dots_dir.statFile(self.io, folder_path, .{})) |_| {
             return self.allocator.dupe(u8, folder_path);
         } else |_| {}
 
         // Try in archive: .dots/archive/{id}.md
         const archive_path = std.fmt.bufPrint(&path_buf, "archive/{s}.md", .{id}) catch return StorageError.IoError;
-        if (self.dots_dir.statFile(archive_path)) |_| {
+        if (self.dots_dir.statFile(self.io, archive_path, .{})) |_| {
             return self.allocator.dupe(u8, archive_path);
         } else |_| {}
 
         // Try archive folder: .dots/archive/{id}/{id}.md
         const archive_folder_path = std.fmt.bufPrint(&path_buf, "archive/{s}/{s}.md", .{ id, id }) catch return StorageError.IoError;
-        if (self.dots_dir.statFile(archive_folder_path)) |_| {
+        if (self.dots_dir.statFile(self.io, archive_folder_path, .{})) |_| {
             return self.allocator.dupe(u8, archive_folder_path);
         } else |_| {}
 
@@ -1035,28 +1041,28 @@ pub const Storage = struct {
 
     const MAX_SEARCH_DEPTH = 10;
 
-    fn searchForIssue(self: *Self, dir: fs.Dir, id: []const u8) !?[]const u8 {
+    fn searchForIssue(self: *Self, dir: Dir, id: []const u8) !?[]const u8 {
         return self.searchForIssueWithDepth(dir, id, 0);
     }
 
-    fn searchForIssueWithDepth(self: *Self, dir: fs.Dir, id: []const u8, depth: usize) !?[]const u8 {
+    fn searchForIssueWithDepth(self: *Self, dir: Dir, id: []const u8, depth: usize) !?[]const u8 {
         if (depth >= MAX_SEARCH_DEPTH) return null; // Prevent infinite recursion
 
         var iter = dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             // Skip symlinks to prevent infinite loops
             if (entry.kind == .sym_link) continue;
             if (entry.kind == .directory and !std.mem.eql(u8, entry.name, "archive")) {
-                var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch |err| switch (err) {
+                var subdir = dir.openDir(self.io, entry.name, .{ .iterate = true }) catch |err| switch (err) {
                     error.FileNotFound, error.AccessDenied => continue, // Skip inaccessible dirs
                     else => return err,
                 };
-                defer subdir.close();
+                defer subdir.close(self.io);
 
                 // Check for {id}.md in this directory
                 var path_buf: [MAX_PATH_LEN]u8 = undefined;
                 const filename = std.fmt.bufPrint(&path_buf, "{s}.md", .{id}) catch return StorageError.IoError;
-                if (subdir.statFile(filename)) |_| {
+                if (subdir.statFile(self.io, filename, .{})) |_| {
                     const full_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ entry.name, filename });
                     return full_path;
                 } else |_| {}
@@ -1089,10 +1095,7 @@ pub const Storage = struct {
     }
 
     fn readIssueFromPath(self: *Self, path: []const u8, id: []const u8) !Issue {
-        const file = try self.dots_dir.openFile(path, .{});
-        defer file.close();
-
-        const content = try file.readToEndAlloc(self.allocator, MAX_ISSUE_FILE_SIZE);
+        const content = try self.dots_dir.readFileAlloc(self.io, path, self.allocator, .limited(MAX_ISSUE_FILE_SIZE));
         defer self.allocator.free(content);
 
         const parsed = try parseFrontmatter(self.allocator, content);
@@ -1168,7 +1171,7 @@ pub const Storage = struct {
                 return null;
             }
             // Check if this is parent/parent.md (self) or parent/child.md
-            const filename = std.fs.path.basename(path);
+            const filename = fs_path.basename(path);
             const file_id = filename[0 .. filename.len - 3]; // strip .md
             if (!std.mem.eql(u8, file_id, potential_parent)) {
                 return try self.allocator.dupe(u8, potential_parent);
@@ -1199,7 +1202,7 @@ pub const Storage = struct {
             break :blk std.fmt.bufPrint(&path_buf, "{s}/{s}.md", .{ pid, issue.id }) catch return StorageError.IoError;
         } else blk: {
             // Check if a folder with this ID exists (child created before parent)
-            const stat = self.dots_dir.statFile(issue.id) catch |err| switch (err) {
+            const stat = self.dots_dir.statFile(self.io, issue.id, .{}) catch |err| switch (err) {
                 error.FileNotFound => break :blk std.fmt.bufPrint(&path_buf, "{s}.md", .{issue.id}) catch return StorageError.IoError,
                 else => return err,
             };
@@ -1210,14 +1213,14 @@ pub const Storage = struct {
             break :blk std.fmt.bufPrint(&path_buf, "{s}.md", .{issue.id}) catch return StorageError.IoError;
         };
 
-        try writeFileAtomic(self.dots_dir, path, content);
+        try writeFileAtomic(self.dots_dir, self.io, path, content);
     }
 
     fn ensureParentFolder(self: *Self, parent_id: []const u8) !void {
         var path_buf: [MAX_PATH_LEN]u8 = undefined;
 
         // Check if parent is already a folder
-        self.dots_dir.makeDir(parent_id) catch |err| switch (err) {
+        self.dots_dir.createDir(self.io, parent_id, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 // Folder exists - check if parent.md exists in root and move it
                 const old_path = std.fmt.bufPrint(&path_buf, "{s}.md", .{parent_id}) catch return StorageError.IoError;
@@ -1225,7 +1228,7 @@ pub const Storage = struct {
                 var new_path_buf: [MAX_PATH_LEN]u8 = undefined;
                 const new_path = std.fmt.bufPrint(&new_path_buf, "{s}/{s}.md", .{ parent_id, parent_id }) catch return StorageError.IoError;
 
-                self.dots_dir.rename(old_path, new_path) catch |err2| switch (err2) {
+                self.dots_dir.rename(old_path, self.dots_dir, new_path, self.io) catch |err2| switch (err2) {
                     error.FileNotFound => {}, // Parent file not in root, already correct
                     else => return err2,
                 };
@@ -1240,7 +1243,7 @@ pub const Storage = struct {
         var new_path_buf: [MAX_PATH_LEN]u8 = undefined;
         const new_path = std.fmt.bufPrint(&new_path_buf, "{s}/{s}.md", .{ parent_id, parent_id }) catch return StorageError.IoError;
 
-        self.dots_dir.rename(old_path, new_path) catch |err| switch (err) {
+        self.dots_dir.rename(old_path, self.dots_dir, new_path, self.io) catch |err| switch (err) {
             error.FileNotFound => {}, // Parent file doesn't exist yet, that's fine
             else => return err,
         };
@@ -1278,7 +1281,7 @@ pub const Storage = struct {
         const content = try serializeFrontmatter(self.allocator, issue.withStatus(status, effective_closed_at, effective_close_reason));
         defer self.allocator.free(content);
 
-        try writeFileAtomic(self.dots_dir, path, content);
+        try writeFileAtomic(self.dots_dir, self.io, path, content);
 
         // Handle archiving if closed
         if (status == .closed) {
@@ -1313,11 +1316,11 @@ pub const Storage = struct {
         if (is_folder) {
             // Check all children are closed
             const folder_name = path[0..std.mem.indexOf(u8, path, "/").?];
-            var folder = try self.dots_dir.openDir(folder_name, .{ .iterate = true });
-            defer folder.close();
+            var folder = try self.dots_dir.openDir(self.io, folder_name, .{ .iterate = true });
+            defer folder.close(self.io);
 
             var iter = folder.iterate();
-            while (try iter.next()) |entry| {
+            while (try iter.next(self.io)) |entry| {
                 if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
                     const child_id = entry.name[0 .. entry.name.len - 3];
                     if (std.mem.eql(u8, child_id, id)) continue; // Skip self
@@ -1334,12 +1337,12 @@ pub const Storage = struct {
             // All children closed, move entire folder
             var archive_path_buf: [MAX_PATH_LEN]u8 = undefined;
             const archive_path = std.fmt.bufPrint(&archive_path_buf, "archive/{s}", .{folder_name}) catch return StorageError.IoError;
-            try self.dots_dir.rename(folder_name, archive_path);
+            try self.dots_dir.rename(folder_name, self.dots_dir, archive_path, self.io);
         } else {
             // Simple file, move to archive
             var archive_path_buf: [MAX_PATH_LEN]u8 = undefined;
             const archive_path = std.fmt.bufPrint(&archive_path_buf, "archive/{s}", .{path}) catch return StorageError.IoError;
-            try self.dots_dir.rename(path, archive_path);
+            try self.dots_dir.rename(path, self.dots_dir, archive_path, self.io);
         }
     }
 
@@ -1359,7 +1362,7 @@ pub const Storage = struct {
         // Check if it's a folder (has children)
         if (std.mem.indexOf(u8, effective_path, "/")) |slash_idx| {
             const folder_name = effective_path[0..slash_idx];
-            const filename = std.fs.path.basename(effective_path);
+            const filename = fs_path.basename(effective_path);
             const file_id = filename[0 .. filename.len - 3];
 
             // If deleting parent, delete entire folder
@@ -1371,25 +1374,25 @@ pub const Storage = struct {
                 else
                     folder_name;
                 try self.removeChildDependencyReferences(full_folder);
-                try self.dots_dir.deleteTree(full_folder);
+                try self.dots_dir.deleteTree(self.io, full_folder);
                 return;
             }
         }
 
         // Simple file deletion
-        try self.dots_dir.deleteFile(path);
+        try self.dots_dir.deleteFile(self.io, path);
     }
 
     /// Remove dependency references for all children in a folder
     fn removeChildDependencyReferences(self: *Self, folder_name: []const u8) !void {
-        var folder = self.dots_dir.openDir(folder_name, .{ .iterate = true }) catch |err| switch (err) {
+        var folder = self.dots_dir.openDir(self.io, folder_name, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return,
             else => return err,
         };
-        defer folder.close();
+        defer folder.close(self.io);
 
         var it = folder.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
             const child_id = entry.name[0 .. entry.name.len - 3];
@@ -1450,15 +1453,15 @@ pub const Storage = struct {
             const new_path = std.fmt.bufPrint(&new_path_buf, "{s}/{s}.md", .{ new_id, new_id }) catch return StorageError.IoError;
 
             // Rename folder first
-            try self.dots_dir.rename(old_id, new_id);
+            try self.dots_dir.rename(old_id, self.dots_dir, new_id, self.io);
 
             // Write new content to new path (old file was renamed with folder)
             var old_file_in_new_folder_buf: [MAX_PATH_LEN]u8 = undefined;
             const old_file_in_new_folder = std.fmt.bufPrint(&old_file_in_new_folder_buf, "{s}/{s}.md", .{ new_id, old_id }) catch return StorageError.IoError;
 
             // Write new file before deleting old
-            try writeFileAtomic(self.dots_dir, new_path, content);
-            self.dots_dir.deleteFile(old_file_in_new_folder) catch |err| switch (err) {
+            try writeFileAtomic(self.dots_dir, self.io, new_path, content);
+            self.dots_dir.deleteFile(self.io, old_file_in_new_folder) catch |err| switch (err) {
                 error.FileNotFound => {},
                 else => return err,
             };
@@ -1472,8 +1475,8 @@ pub const Storage = struct {
             };
 
             // Write new file first, then delete old
-            try writeFileAtomic(self.dots_dir, new_path, content);
-            self.dots_dir.deleteFile(old_path) catch |err| switch (err) {
+            try writeFileAtomic(self.dots_dir, self.io, new_path, content);
+            self.dots_dir.deleteFile(self.io, old_path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 else => return err,
             };
@@ -1501,7 +1504,7 @@ pub const Storage = struct {
             if (!has_reference) continue;
 
             // Build new blocks with updated reference
-            var new_blocks: std.ArrayList([]const u8) = .{};
+            var new_blocks: std.ArrayList([]const u8) = .empty;
             errdefer {
                 for (new_blocks.items) |b| self.allocator.free(b);
                 new_blocks.deinit(self.allocator);
@@ -1525,7 +1528,7 @@ pub const Storage = struct {
             const updated_content = try serializeFrontmatter(self.allocator, issue.withBlocks(blocks_slice));
             defer self.allocator.free(updated_content);
 
-            try writeFileAtomic(self.dots_dir, path, updated_content);
+            try writeFileAtomic(self.dots_dir, self.io, path, updated_content);
         }
     }
 
@@ -1549,7 +1552,7 @@ pub const Storage = struct {
             if (!has_reference) continue;
 
             // Build new blocks without the removed dependency (using already-loaded issue)
-            var new_blocks: std.ArrayList([]const u8) = .{};
+            var new_blocks: std.ArrayList([]const u8) = .empty;
             errdefer {
                 for (new_blocks.items) |b| self.allocator.free(b);
                 new_blocks.deinit(self.allocator);
@@ -1575,12 +1578,12 @@ pub const Storage = struct {
             const content = try serializeFrontmatter(self.allocator, issue.withBlocks(blocks_slice));
             defer self.allocator.free(content);
 
-            try writeFileAtomic(self.dots_dir, path, content);
+            try writeFileAtomic(self.dots_dir, self.io, path, content);
         }
     }
 
     pub fn listAllIssuesIncludingArchived(self: *Self) ![]Issue {
-        var issues: std.ArrayList(Issue) = .{};
+        var issues: std.ArrayList(Issue) = .empty;
         errdefer {
             for (issues.items) |*iss| iss.deinit(self.allocator);
             issues.deinit(self.allocator);
@@ -1590,9 +1593,9 @@ pub const Storage = struct {
         try self.collectIssuesFromDir(self.dots_dir, "", null, &issues);
 
         // Also collect from archive
-        if (self.dots_dir.openDir("archive", .{ .iterate = true })) |archive_dir| {
+        if (self.dots_dir.openDir(self.io, "archive", .{ .iterate = true })) |archive_dir| {
             var ad = archive_dir;
-            defer ad.close();
+            defer ad.close(self.io);
             try self.collectIssuesFromDir(ad, "archive", null, &issues);
         } else |err| switch (err) {
             error.FileNotFound => {}, // Archive doesn't exist yet, that's fine
@@ -1603,7 +1606,7 @@ pub const Storage = struct {
     }
 
     pub fn listIssues(self: *Self, status_filter: ?Status) ![]Issue {
-        var issues: std.ArrayList(Issue) = .{};
+        var issues: std.ArrayList(Issue) = .empty;
         errdefer {
             for (issues.items) |*iss| iss.deinit(self.allocator);
             issues.deinit(self.allocator);
@@ -1617,9 +1620,9 @@ pub const Storage = struct {
         return issues.toOwnedSlice(self.allocator);
     }
 
-    fn collectIssuesFromDir(self: *Self, dir: fs.Dir, prefix: []const u8, status_filter: ?Status, issues: *std.ArrayList(Issue)) !void {
+    fn collectIssuesFromDir(self: *Self, dir: Dir, prefix: []const u8, status_filter: ?Status, issues: *std.ArrayList(Issue)) !void {
         var iter = dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
                 const id = entry.name[0 .. entry.name.len - 3];
                 var path_buf: [MAX_PATH_LEN]u8 = undefined;
@@ -1646,8 +1649,8 @@ pub const Storage = struct {
                     return err;
                 };
             } else if (entry.kind == .directory and !std.mem.eql(u8, entry.name, "archive")) {
-                var subdir = try dir.openDir(entry.name, .{ .iterate = true });
-                defer subdir.close();
+                var subdir = try dir.openDir(self.io, entry.name, .{ .iterate = true });
+                defer subdir.close(self.io);
 
                 var sub_prefix_buf: [MAX_PATH_LEN]u8 = undefined;
                 const sub_prefix = if (prefix.len > 0)
@@ -1676,7 +1679,7 @@ pub const Storage = struct {
         const all_issues = try self.listIssues(null);
         defer self.allocator.free(all_issues);
 
-        var ready: std.ArrayList(Issue) = .{};
+        var ready: std.ArrayList(Issue) = .empty;
         errdefer {
             for (ready.items) |*iss| iss.deinit(self.allocator);
             ready.deinit(self.allocator);
@@ -1725,14 +1728,14 @@ pub const Storage = struct {
     }
 
     fn appendOrphanChildren(self: *Self, folder_name: []const u8, issues: *std.ArrayList(Issue)) !void {
-        var folder = self.dots_dir.openDir(folder_name, .{ .iterate = true }) catch |err| switch (err) {
+        var folder = self.dots_dir.openDir(self.io, folder_name, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound, error.NotDir => return,
             else => return err,
         };
-        defer folder.close();
+        defer folder.close(self.io);
 
         var iter = folder.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".md")) continue;
             const id = entry.name[0 .. entry.name.len - 3];
             if (std.mem.eql(u8, id, folder_name)) continue;
@@ -1762,7 +1765,7 @@ pub const Storage = struct {
 
         // Only collect from root level of .dots (not archive, not subdirs for children)
         var iter = self.dots_dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
                 if (issues) |list| {
                     const id = entry.name[0 .. entry.name.len - 3];
@@ -1809,7 +1812,7 @@ pub const Storage = struct {
     }
 
     pub fn getRootIssues(self: *Self) ![]Issue {
-        var issues: std.ArrayList(Issue) = .{};
+        var issues: std.ArrayList(Issue) = .empty;
         errdefer {
             for (issues.items) |*iss| iss.deinit(self.allocator);
             issues.deinit(self.allocator);
@@ -1824,7 +1827,7 @@ pub const Storage = struct {
     }
 
     pub fn listOrphanParents(self: *Self) ![]const []const u8 {
-        var orphans: std.ArrayList([]const u8) = .{};
+        var orphans: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (orphans.items) |name| self.allocator.free(name);
             orphans.deinit(self.allocator);
@@ -1854,20 +1857,20 @@ pub const Storage = struct {
     }
 
     fn promoteOrphanFolder(self: *Self, folder_name: []const u8) !usize {
-        var folder = self.dots_dir.openDir(folder_name, .{ .iterate = true }) catch |err| switch (err) {
+        var folder = self.dots_dir.openDir(self.io, folder_name, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound, error.NotDir => return 0,
             else => return err,
         };
-        defer folder.close();
+        defer folder.close(self.io);
 
-        var names: std.ArrayList([]const u8) = .{};
+        var names: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (names.items) |name| self.allocator.free(name);
             names.deinit(self.allocator);
         }
 
         var iter = folder.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".md")) continue;
 
             const name = try self.allocator.dupe(u8, entry.name);
@@ -1875,7 +1878,7 @@ pub const Storage = struct {
         }
 
         for (names.items) |name| {
-            if (self.dots_dir.statFile(name)) |_| {
+            if (self.dots_dir.statFile(self.io, name, .{})) |_| {
                 return StorageError.IssueAlreadyExists;
             } else |_| {}
         }
@@ -1883,8 +1886,8 @@ pub const Storage = struct {
         for (names.items) |name| {
             var src_buf: [MAX_PATH_LEN]u8 = undefined;
             const src = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ folder_name, name }) catch return StorageError.IoError;
-            self.dots_dir.rename(src, name) catch |err| switch (err) {
-                error.PathAlreadyExists => return StorageError.IssueAlreadyExists,
+            self.dots_dir.rename(src, self.dots_dir, name, self.io) catch |err| switch (err) {
+                
                 else => return err,
             };
         }
@@ -1893,7 +1896,7 @@ pub const Storage = struct {
         for (names.items) |name| self.allocator.free(name);
         names.deinit(self.allocator);
 
-        self.dots_dir.deleteDir(folder_name) catch |err| switch (err) {
+        self.dots_dir.deleteDir(self.io, folder_name) catch |err| switch (err) {
             error.DirNotEmpty => {},
             error.FileNotFound => {},
             else => return err,
@@ -1903,21 +1906,21 @@ pub const Storage = struct {
     }
 
     fn getChildIssues(self: *Self, parent_id: []const u8) ![]Issue {
-        var children: std.ArrayList(Issue) = .{};
+        var children: std.ArrayList(Issue) = .empty;
         errdefer {
             for (children.items) |*c| c.deinit(self.allocator);
             children.deinit(self.allocator);
         }
 
         // Open parent folder
-        var folder = self.dots_dir.openDir(parent_id, .{ .iterate = true }) catch |err| switch (err) {
+        var folder = self.dots_dir.openDir(self.io, parent_id, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return children.toOwnedSlice(self.allocator),
             else => return err,
         };
-        defer folder.close();
+        defer folder.close(self.io);
 
         var iter = folder.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".md")) {
                 const id = entry.name[0 .. entry.name.len - 3];
                 if (std.mem.eql(u8, id, parent_id)) continue; // Skip parent itself
@@ -1960,7 +1963,7 @@ pub const Storage = struct {
             self.allocator.free(child_issues);
         };
 
-        var children: std.ArrayList(ChildIssue) = .{};
+        var children: std.ArrayList(ChildIssue) = .empty;
         errdefer {
             for (children.items) |*c| c.deinit(self.allocator);
             children.deinit(self.allocator);
@@ -1985,7 +1988,7 @@ pub const Storage = struct {
         const all_issues = try self.listAllIssuesIncludingArchived();
         defer self.allocator.free(all_issues);
 
-        var matches: std.ArrayList(Issue) = .{};
+        var matches: std.ArrayList(Issue) = .empty;
         errdefer {
             for (matches.items) |*iss| iss.deinit(self.allocator);
             matches.deinit(self.allocator);
@@ -2070,7 +2073,7 @@ pub const Storage = struct {
             }
 
             // Add to blocks array
-            var new_blocks: std.ArrayList([]const u8) = .{};
+            var new_blocks: std.ArrayList([]const u8) = .empty;
             errdefer {
                 for (new_blocks.items) |b| self.allocator.free(b);
                 new_blocks.deinit(self.allocator);
@@ -2092,7 +2095,7 @@ pub const Storage = struct {
             const content = try serializeFrontmatter(self.allocator, issue.withBlocks(blocks_slice));
             defer self.allocator.free(content);
 
-            try writeFileAtomic(self.dots_dir, path, content);
+            try writeFileAtomic(self.dots_dir, self.io, path, content);
         }
         // "parent-child" type is handled by file location, not frontmatter
     }
@@ -2107,7 +2110,7 @@ pub const Storage = struct {
         const alloc = arena.allocator();
 
         var visited = std.StringHashMap(void).init(alloc);
-        var queue: std.ArrayList([]const u8) = .{};
+        var queue: std.ArrayList([]const u8) = .empty;
 
         // Must dupe to_id since it may outlive original
         try queue.append(alloc, try alloc.dupe(u8, to_id));
@@ -2141,10 +2144,10 @@ pub const Storage = struct {
 
     pub fn purgeArchive(self: *Self) !void {
         // deleteTree succeeds silently if the directory doesn't exist
-        try self.dots_dir.deleteTree("archive");
+        try self.dots_dir.deleteTree(self.io, "archive");
 
         // Recreate empty archive directory (handle race if another process recreated it)
-        self.dots_dir.makeDir("archive") catch |err| switch (err) {
+        self.dots_dir.createDir(self.io, "archive", .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };
@@ -2152,13 +2155,10 @@ pub const Storage = struct {
 
     // Config stored in .dots/config as simple key=value lines
     pub fn getConfig(self: *Self, key: []const u8) !?[]const u8 {
-        const file = self.dots_dir.openFile("config", .{}) catch |err| switch (err) {
+        const content = self.dots_dir.readFileAlloc(self.io, "config", self.allocator, .limited(MAX_CONFIG_SIZE)) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
         };
-        defer file.close();
-
-        const content = try file.readToEndAlloc(self.allocator, MAX_CONFIG_SIZE);
         defer self.allocator.free(content);
 
         var lines = std.mem.splitScalar(u8, content, '\n');
@@ -2184,14 +2184,14 @@ pub const Storage = struct {
             config.deinit();
         }
 
-        const file = self.dots_dir.openFile("config", .{}) catch |err| switch (err) {
+        const file = self.dots_dir.openFile(self.io, "config", .{}) catch |err| switch (err) {
             error.FileNotFound => null,
             else => return err,
         };
 
         if (file) |f| {
-            defer f.close();
-            const content = try f.readToEndAlloc(self.allocator, MAX_CONFIG_SIZE);
+            defer f.close(self.io);
+            const content = try self.dots_dir.readFileAlloc(self.io, "config", self.allocator, .limited(MAX_CONFIG_SIZE));
             defer self.allocator.free(content);
 
             var lines = std.mem.splitScalar(u8, content, '\n');
@@ -2227,7 +2227,7 @@ pub const Storage = struct {
         try config.put(k, v);
 
         // Build config content
-        var buf: std.ArrayList(u8) = .{};
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
 
         var iter = config.iterator();
@@ -2238,6 +2238,6 @@ pub const Storage = struct {
             try buf.append(self.allocator, '\n');
         }
 
-        try writeFileAtomic(self.dots_dir, "config", buf.items);
+        try writeFileAtomic(self.dots_dir, self.io, "config", buf.items);
     }
 };

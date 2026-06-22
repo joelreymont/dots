@@ -120,7 +120,7 @@ pub fn runDotWithInput(
     cwd: []const u8,
     input: ?[]const u8,
 ) !RunResult {
-    var argv: std.ArrayList([]const u8) = .{};
+    var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
 
     try argv.append(allocator, dot_binary);
@@ -320,7 +320,7 @@ pub fn trimNewline(input: []const u8) []const u8 {
 }
 
 pub fn normalizeTreeOutput(allocator: std.mem.Allocator, output: []const u8) ![]u8 {
-    var normalized = std.ArrayList(u8){};
+    var normalized = std.ArrayList(u8).empty;
     errdefer normalized.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, output, '\n');

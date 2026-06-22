@@ -62,7 +62,7 @@ test "snap: markdown frontmatter format" {
     defer allocator.free(content);
 
     // Normalize: replace dynamic ID and timestamp with placeholders
-    var normalized = std.ArrayList(u8){};
+    var normalized = std.ArrayList(u8).empty;
     defer normalized.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -144,7 +144,7 @@ test "snap: json output format" {
     }.lessThan);
 
     // Build normalized output (just titles and priorities)
-    var output = std.ArrayList(u8){};
+    var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
 
     for (parsed.value) |issue| {

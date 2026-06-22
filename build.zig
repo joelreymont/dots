@@ -15,11 +15,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
-
-    // Link libc for @cImport of time.h (localtime_r)
-    exe.linkLibC();
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
