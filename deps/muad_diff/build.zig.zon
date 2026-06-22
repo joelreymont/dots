@@ -1,0 +1,20 @@
+// Zig package metadata for {driff}
+.{
+    .name = .muad_diff,
+
+    .version = "0.0.1",
+
+    .minimum_zig_version = "0.14.0",
+
+    .fingerprint = 0xcf462719a1974fa7,
+
+    .dependencies = .{},
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}

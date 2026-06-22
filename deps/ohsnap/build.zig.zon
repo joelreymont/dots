@@ -34,8 +34,7 @@
             .path = "../pretty",
         },
         .muad_diff = .{
-            .url = "https://github.com/mnemnion/muad-diff/archive/refs/tags/ohsnap-prerelease-02.tar.gz",
-            .hash = "muad_diff-0.0.1-p0-XoRGIAwBmN7XLmC4Z6Sj7mqeiUaZvwoisN1hXF81b",
+            .path = "../muad_diff",
         },
     },
     .paths = .{
