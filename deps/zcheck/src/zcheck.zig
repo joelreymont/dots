@@ -178,7 +178,7 @@ fn checkType(comptime Args: type, comptime property: anytype, config: Config) ?F
         random = external;
     } else {
         if (seed == 0) {
-            seed = @as(u64, @intCast(std.time.timestamp()));
+            seed = timestampSeed();
         }
         prng = std.Random.DefaultPrng.init(seed);
         random = prng.random();
@@ -200,6 +200,11 @@ fn checkType(comptime Args: type, comptime property: anytype, config: Config) ?F
         }
     }
     return null;
+}
+
+fn timestampSeed() u64 {
+    const nanos = std.Io.Timestamp.now(std.Options.debug_io, .real).toNanoseconds();
+    return @as(u64, @truncate(@as(u96, @bitCast(nanos))));
 }
 
 fn printFailure(comptime Args: type, failure: Failure(Args)) void {

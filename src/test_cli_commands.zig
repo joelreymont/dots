@@ -1,5 +1,6 @@
 const std = @import("std");
-const fs = std.fs;
+const io = std.Options.debug_io;
+const fs = std.Io.Dir;
 const h = @import("test_helpers.zig");
 
 const storage_mod = h.storage_mod;
@@ -50,7 +51,7 @@ test "cli: init creates dots directory" {
     };
     defer allocator.free(dots_path);
 
-    const stat = fs.cwd().statFile(dots_path) catch |err| {
+    const stat = fs.cwd().statFile(io, dots_path, .{}) catch |err| {
         std.debug.panic("stat: {}", .{err});
     };
     try std.testing.expect(stat.kind == .directory);
@@ -83,7 +84,7 @@ test "cli: add creates markdown file" {
     };
     defer allocator.free(md_path);
 
-    const stat = fs.cwd().statFile(md_path) catch |err| {
+    const stat = fs.cwd().statFile(io, md_path, .{}) catch |err| {
         std.debug.panic("stat: {}", .{err});
     };
     try std.testing.expect(stat.kind == .file);
@@ -119,14 +120,14 @@ test "cli: purge removes archived dots" {
     };
     defer allocator.free(archive_path);
 
-    var archive_dir = fs.cwd().openDir(archive_path, .{ .iterate = true }) catch |err| {
+    var archive_dir = fs.cwd().openDir(io, archive_path, .{ .iterate = true }) catch |err| {
         std.debug.panic("open archive: {}", .{err});
     };
-    defer archive_dir.close();
+    defer archive_dir.close(io);
 
     var count: usize = 0;
     var iter = archive_dir.iterate();
-    while (try iter.next()) |_| {
+    while (try iter.next(io)) |_| {
         count += 1;
     }
     try std.testing.expect(count > 0);
@@ -140,14 +141,14 @@ test "cli: purge removes archived dots" {
     try std.testing.expect(isExitCode(purge.term, 0));
 
     // Verify archive is empty
-    var archive_dir2 = fs.cwd().openDir(archive_path, .{ .iterate = true }) catch |err| {
+    var archive_dir2 = fs.cwd().openDir(io, archive_path, .{ .iterate = true }) catch |err| {
         std.debug.panic("open archive2: {}", .{err});
     };
-    defer archive_dir2.close();
+    defer archive_dir2.close(io);
 
     var count2: usize = 0;
     var iter2 = archive_dir2.iterate();
-    while (try iter2.next()) |_| {
+    while (try iter2.next(io)) |_| {
         count2 += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), count2);
@@ -184,7 +185,7 @@ test "cli: parent creates folder structure" {
     };
     defer allocator.free(folder_path);
 
-    const stat = fs.cwd().statFile(folder_path) catch |err| {
+    const stat = fs.cwd().statFile(io, folder_path, .{}) catch |err| {
         std.debug.panic("stat: {}", .{err});
     };
     try std.testing.expect(stat.kind == .directory);
@@ -452,18 +453,18 @@ test "cli: jsonl hydration imports issues and archives closed" {
         },
     };
 
-    const file = try fs.createFileAbsolute(jsonl_path, .{});
-    defer file.close();
+    const file = try fs.createFileAbsolute(io, jsonl_path, .{});
+    defer file.close(io);
 
     var buffer: [4096]u8 = undefined;
-    var writer = file.writer(&buffer);
+    var writer = file.writer(io, &buffer);
     const w = &writer.interface;
     for (issues) |issue| {
         try std.json.Stringify.value(issue, .{}, w);
         try w.writeByte('\n');
     }
     try w.flush();
-    try file.sync();
+    try file.sync(io);
 
     const init = runDot(allocator, &.{ "init", "--from-jsonl", jsonl_path }, test_dir) catch |err| {
         std.debug.panic("init: {}", .{err});
@@ -606,17 +607,17 @@ test "cli: tree ignores missing parent" {
     };
     defer init.deinit(allocator);
 
-    var dir = fs.openDirAbsolute(test_dir, .{}) catch |err| {
+    var dir = fs.openDirAbsolute(io, test_dir, .{}) catch |err| {
         std.debug.panic("open dir: {}", .{err});
     };
-    defer dir.close();
+    defer dir.close(io);
 
-    var dots_dir = dir.openDir(".dots", .{ .iterate = true }) catch |err| {
+    var dots_dir = dir.openDir(io, ".dots", .{ .iterate = true }) catch |err| {
         std.debug.panic("open .dots: {}", .{err});
     };
-    defer dots_dir.close();
+    defer dots_dir.close(io);
 
-    dots_dir.makeDir("orphan") catch |err| {
+    dots_dir.createDir(io, "orphan", .default_dir) catch |err| {
         std.debug.panic("mkdir orphan: {}", .{err});
     };
 
@@ -629,7 +630,7 @@ test "cli: tree ignores missing parent" {
         \\created-at: 2024-01-01T00:00:00Z
         \\---
     ;
-    dots_dir.writeFile(.{ .sub_path = "orphan/orphan-child.md", .data = orphan }) catch |err| {
+    dots_dir.writeFile(io, .{ .sub_path = "orphan/orphan-child.md", .data = orphan }) catch |err| {
         std.debug.panic("write orphan: {}", .{err});
     };
 
@@ -663,17 +664,17 @@ test "cli: fix promotes orphan children" {
     };
     defer init.deinit(allocator);
 
-    var dir = fs.openDirAbsolute(test_dir, .{}) catch |err| {
+    var dir = fs.openDirAbsolute(io, test_dir, .{}) catch |err| {
         std.debug.panic("open dir: {}", .{err});
     };
-    defer dir.close();
+    defer dir.close(io);
 
-    var dots_dir = dir.openDir(".dots", .{ .iterate = true }) catch |err| {
+    var dots_dir = dir.openDir(io, ".dots", .{ .iterate = true }) catch |err| {
         std.debug.panic("open .dots: {}", .{err});
     };
-    defer dots_dir.close();
+    defer dots_dir.close(io);
 
-    dots_dir.makeDir("orphan") catch |err| {
+    dots_dir.createDir(io, "orphan", .default_dir) catch |err| {
         std.debug.panic("mkdir orphan: {}", .{err});
     };
 
@@ -686,7 +687,7 @@ test "cli: fix promotes orphan children" {
         \\created-at: 2024-01-01T00:00:00Z
         \\---
     ;
-    dots_dir.writeFile(.{ .sub_path = "orphan/orphan-child.md", .data = orphan }) catch |err| {
+    dots_dir.writeFile(io, .{ .sub_path = "orphan/orphan-child.md", .data = orphan }) catch |err| {
         std.debug.panic("write orphan: {}", .{err});
     };
 
@@ -708,13 +709,13 @@ test "cli: fix promotes orphan children" {
         \\  ""
     ).expectEqual(fix.stderr);
 
-    _ = dots_dir.statFile("orphan-child.md") catch |err| {
+    _ = dots_dir.statFile(io, "orphan-child.md", .{}) catch |err| {
         std.debug.panic("stat moved orphan: {}", .{err});
     };
 
-    if (dots_dir.openDir("orphan", .{})) |orphan_dir| {
+    if (dots_dir.openDir(io, "orphan", .{})) |orphan_dir| {
         var od = orphan_dir;
-        od.close();
+        od.close(io);
         std.debug.panic("orphan dir still exists", .{});
     } else |err| switch (err) {
         error.FileNotFound => {},

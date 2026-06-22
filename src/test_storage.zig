@@ -272,7 +272,7 @@ test "storage: missing required frontmatter fields rejected" {
         \\created-at: 2024-01-01T00:00:00Z
         \\---
     ;
-    try ts.storage.dots_dir.writeFile(.{ .sub_path = "no-title.md", .data = no_title });
+    try ts.storage.dots_dir.writeFile(std.Options.debug_io, .{ .sub_path = "no-title.md", .data = no_title });
 
     // Should fail to read
     const result1 = ts.storage.getIssue("no-title");
@@ -287,7 +287,7 @@ test "storage: missing required frontmatter fields rejected" {
         \\issue-type: task
         \\---
     ;
-    try ts.storage.dots_dir.writeFile(.{ .sub_path = "no-created.md", .data = no_created });
+    try ts.storage.dots_dir.writeFile(std.Options.debug_io, .{ .sub_path = "no-created.md", .data = no_created });
 
     // Should fail to read
     const result2 = ts.storage.getIssue("no-created");
@@ -314,7 +314,7 @@ test "storage: invalid block id rejected" {
         \\  - ../nope
         \\---
     ;
-    try ts.storage.dots_dir.writeFile(.{ .sub_path = "bad-blocks.md", .data = bad_blocks });
+    try ts.storage.dots_dir.writeFile(std.Options.debug_io, .{ .sub_path = "bad-blocks.md", .data = bad_blocks });
 
     const result = ts.storage.getIssue("bad-blocks");
     try std.testing.expectError(error.InvalidFrontmatter, result);

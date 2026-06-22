@@ -2,7 +2,7 @@
     .name = .zcheck,
     .version = "0.1.0",
     .fingerprint = 0xe1d7d40a8a5b1d3f,
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         "src",
         "build.zig",

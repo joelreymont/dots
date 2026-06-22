@@ -31,8 +31,7 @@
             .hash = "mvzr-0.3.7-ZSOky5FtAQB2VrFQPNbXHQCFJxWTMAYEK7ljYEaMR6jt",
         },
         .pretty = .{
-            .url = "https://github.com/timfayz/pretty/archive/refs/heads/main.tar.gz",
-            .hash = "pretty-0.10.6-Tm65r6lPAQCBxgwzehYPeqsCXQDT9kt2ktJuO-2tRfE6",
+            .path = "../pretty",
         },
         .muad_diff = .{
             .url = "https://github.com/mnemnion/muad-diff/archive/refs/tags/ohsnap-prerelease-02.tar.gz",

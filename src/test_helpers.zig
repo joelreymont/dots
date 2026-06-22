@@ -1,5 +1,14 @@
 const std = @import("std");
-const fs = std.fs;
+const Dir = std.Io.Dir;
+
+var test_io_threaded: ?std.Io.Threaded = null;
+
+pub fn testIo() std.Io {
+    if (test_io_threaded == null) {
+        test_io_threaded = .init(std.heap.smp_allocator, .{});
+    }
+    return test_io_threaded.?.io();
+}
 
 const build_options = @import("build_options");
 pub const dot_binary = build_options.dot_binary;
@@ -120,6 +129,7 @@ pub fn runDotWithInput(
     cwd: []const u8,
     input: ?[]const u8,
 ) !RunResult {
+    const io = testIo();
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
 
@@ -128,25 +138,31 @@ pub fn runDotWithInput(
         try argv.append(allocator, arg);
     }
 
-    var child = std.process.Child.init(argv.items, allocator);
-    child.cwd = cwd;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.stdin_behavior = if (input != null) .Pipe else .Ignore;
-
-    try child.spawn();
+    var child = try std.process.spawn(io, .{
+        .argv = argv.items,
+        .cwd = .{ .path = cwd },
+        .stdin = if (input != null) .pipe else .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    defer child.kill(io);
 
     if (input) |data| {
-        try child.stdin.?.writeAll(data);
-        child.stdin.?.close();
+        var buffer: [4096]u8 = undefined;
+        var writer = child.stdin.?.writer(io, &buffer);
+        try writer.interface.writeAll(data);
+        try writer.interface.flush();
+        child.stdin.?.close(io);
         child.stdin = null;
     }
 
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, max_output_bytes);
+    var stdout_reader = child.stdout.?.readerStreaming(io, &.{});
+    const stdout = try stdout_reader.interface.allocRemaining(allocator, .limited(max_output_bytes));
     errdefer allocator.free(stdout);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, max_output_bytes);
+    var stderr_reader = child.stderr.?.readerStreaming(io, &.{});
+    const stderr = try stderr_reader.interface.allocRemaining(allocator, .limited(max_output_bytes));
     errdefer allocator.free(stderr);
-    const term = try child.wait();
+    const term = try child.wait(io);
 
     return RunResult{ .stdout = stdout, .stderr = stderr, .term = term };
 }
@@ -185,18 +201,22 @@ pub const MultiProcess = struct {
 
     /// Spawn all processes concurrently
     pub fn spawnAll(self: *MultiProcess) !void {
+        const io = testIo();
         for (0..self.count) |i| {
             const argv = self.argv_storage[i][0..self.argv_lens[i]];
-            self.children[i] = std.process.Child.init(argv, self.allocator);
-            self.children[i].cwd = self.cwd;
-            self.children[i].stdin_behavior = if (self.inputs[i] != null) .Pipe else .Ignore;
-            self.children[i].stdout_behavior = .Pipe;
-            self.children[i].stderr_behavior = .Pipe;
-
-            try self.children[i].spawn();
+            self.children[i] = try std.process.spawn(io, .{
+                .argv = argv,
+                .cwd = .{ .path = self.cwd },
+                .stdin = if (self.inputs[i] != null) .pipe else .ignore,
+                .stdout = .pipe,
+                .stderr = .pipe,
+            });
             if (self.inputs[i]) |data| {
-                try self.children[i].stdin.?.writeAll(data);
-                self.children[i].stdin.?.close();
+                var buffer: [4096]u8 = undefined;
+                var writer = self.children[i].stdin.?.writer(io, &buffer);
+                try writer.interface.writeAll(data);
+                try writer.interface.flush();
+                self.children[i].stdin.?.close(io);
                 self.children[i].stdin = null;
             }
         }
@@ -204,14 +224,17 @@ pub const MultiProcess = struct {
 
     /// Wait for all processes and return results
     pub fn waitAll(self: *MultiProcess) ![MAX_PROCS]?RunResult {
+        const io = testIo();
         var results: [MAX_PROCS]?RunResult = [_]?RunResult{null} ** MAX_PROCS;
         errdefer self.freeResults(&results);
         for (0..self.count) |i| {
-            const stdout = try self.children[i].stdout.?.readToEndAlloc(self.allocator, max_output_bytes);
+            var stdout_reader = self.children[i].stdout.?.readerStreaming(io, &.{});
+            const stdout = try stdout_reader.interface.allocRemaining(self.allocator, .limited(max_output_bytes));
             errdefer self.allocator.free(stdout);
-            const stderr = try self.children[i].stderr.?.readToEndAlloc(self.allocator, max_output_bytes);
+            var stderr_reader = self.children[i].stderr.?.readerStreaming(io, &.{});
+            const stderr = try stderr_reader.interface.allocRemaining(self.allocator, .limited(max_output_bytes));
             errdefer self.allocator.free(stderr);
-            const term = try self.children[i].wait();
+            const term = try self.children[i].wait(io);
             results[i] = .{ .stdout = stdout, .stderr = stderr, .term = term };
         }
         return results;
@@ -240,18 +263,20 @@ pub const MultiProcess = struct {
 };
 
 pub fn setupTestDir(allocator: std.mem.Allocator) ![]const u8 {
+    const io = testIo();
     var rand_buf: [8]u8 = undefined;
-    std.crypto.random.bytes(&rand_buf);
+    try io.randomSecure(&rand_buf);
 
     const hex = std.fmt.bytesToHex(rand_buf, .lower);
     const path = try std.fmt.allocPrint(allocator, "/tmp/dots-test-{s}", .{hex});
 
-    try fs.makeDirAbsolute(path);
+    try Dir.createDirAbsolute(io, path, .default_dir);
     return path;
 }
 
 pub fn cleanupTestDir(path: []const u8) !void {
-    try fs.cwd().deleteTree(path);
+    const io = testIo();
+    try Dir.cwd().deleteTree(io, path);
 }
 
 pub fn cleanupTestDirOrPanic(path: []const u8) void {
@@ -276,22 +301,23 @@ pub fn cleanupTestDirAndFree(allocator: std.mem.Allocator, path: []const u8) voi
 // Returns the storage and original directory for cleanup
 pub const TestStorage = struct {
     storage: Storage,
-    original_dir: fs.Dir,
+    original_dir: Dir,
     test_dir_path: []const u8,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, test_dir: []const u8) !TestStorage {
-        const original_dir = fs.cwd();
+        const io = testIo();
+        const original_dir = Dir.cwd();
 
         // Change to test directory
-        var dir = try fs.openDirAbsolute(test_dir, .{});
-        defer dir.close(); // Close after setAsCwd - we don't need to keep it open
-        try dir.setAsCwd();
+        var dir = try Dir.openDirAbsolute(io, test_dir, .{});
+        defer dir.close(io); // Close after setCurrentDir - we don't need to keep it open
+        try std.process.setCurrentDir(io, dir);
 
         // Open storage (creates .dots in test dir)
-        const storage = Storage.open(allocator) catch |err| {
+        const storage = Storage.open(allocator, io) catch |err| {
             // Restore original directory on error
-            original_dir.setAsCwd() catch {};
+            std.process.setCurrentDir(io, original_dir) catch {};
             return err;
         };
 
@@ -304,8 +330,9 @@ pub const TestStorage = struct {
     }
 
     pub fn deinit(self: *TestStorage) void {
+        const io = testIo();
         self.storage.close();
-        self.original_dir.setAsCwd() catch {};
+        std.process.setCurrentDir(io, self.original_dir) catch {};
     }
 };
 
@@ -316,7 +343,7 @@ pub fn openTestStorage(allocator: std.mem.Allocator, dir: []const u8) TestStorag
 }
 
 pub fn trimNewline(input: []const u8) []const u8 {
-    return std.mem.trimRight(u8, input, "\n");
+    return std.mem.trimEnd(u8, input, "\n");
 }
 
 pub fn normalizeTreeOutput(allocator: std.mem.Allocator, output: []const u8) ![]u8 {
@@ -346,7 +373,7 @@ pub fn normalizeTreeOutput(allocator: std.mem.Allocator, output: []const u8) ![]
 
 pub fn isExitCode(term: std.process.Child.Term, code: u8) bool {
     return switch (term) {
-        .Exited => |actual| actual == code,
+        .exited => |actual| actual == code,
         else => false,
     };
 }

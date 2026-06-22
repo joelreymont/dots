@@ -1,5 +1,6 @@
 const std = @import("std");
-const fs = std.fs;
+const io = std.Options.debug_io;
+const fs = std.Io.Dir;
 const h = @import("test_helpers.zig");
 
 const OhSnap = h.OhSnap;
@@ -56,7 +57,7 @@ test "snap: markdown frontmatter format" {
     };
     defer allocator.free(md_path);
 
-    const content = fs.cwd().readFileAlloc(allocator, md_path, 64 * 1024) catch |err| {
+    const content = fs.cwd().readFileAlloc(io, md_path, allocator, .limited(64 * 1024)) catch |err| {
         std.debug.panic("read: {}", .{err});
     };
     defer allocator.free(content);

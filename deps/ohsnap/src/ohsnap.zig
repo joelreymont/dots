@@ -26,6 +26,7 @@ const SourceLocation = std.builtin.SourceLocation;
 
 const Diff = diffz.DiffList;
 const Edit = diffz.Edit;
+const io = std.Options.debug_io;
 
 // Generous limits for user regexen
 const UserRegex = mvzr.SizedRegex(128, 16);
@@ -43,6 +44,17 @@ comptime {
 }
 
 const OhSnap = @This();
+
+const default_pretty_options = pretty.Options{
+    .max_depth = 0,
+    .struct_max_len = 0,
+    .array_max_len = 0,
+    .array_show_prim_type_info = true,
+    .type_name_max_len = 0,
+    .type_name_fold_parens = 0,
+    .str_max_len = 0,
+    .show_tree_lines = true,
+};
 
 pretty_options: pretty.Options = pretty.Options{
     .max_depth = 0,
@@ -91,7 +103,7 @@ pub const Snap = struct {
         const got = try pretty.dump(
             allocator,
             args,
-            snapshot.ohsnap.pretty_options,
+            comptime default_pretty_options,
         );
         defer allocator.free(got);
         try snapshot.diff(got, true);
@@ -109,7 +121,7 @@ pub const Snap = struct {
         const got = try pretty.dump(
             allocator,
             args,
-            snapshot.ohsnap.pretty_options,
+            comptime default_pretty_options,
         );
         defer allocator.free(got);
         try snapshot.diff(got, false);
@@ -194,11 +206,11 @@ pub const Snap = struct {
 
         const dir_str = maybe_dir_str orelse "src";
 
-        var mod_dir = try std.fs.cwd().openDir(dir_str, .{});
-        defer mod_dir.close();
+        var mod_dir = try std.Io.Dir.cwd().openDir(io, dir_str, .{});
+        defer mod_dir.close(io);
 
         const file_text =
-            try mod_dir.readFileAlloc(arena_allocator, snapshot.location.file, 1024 * 1024);
+            try mod_dir.readFileAlloc(io, snapshot.location.file, arena_allocator, .limited(1024 * 1024));
         var file_text_updated = try std.ArrayList(u8).initCapacity(arena_allocator, file_text.len);
 
         const line_zero_based = snapshot.location.line - 1;
@@ -214,12 +226,12 @@ pub const Snap = struct {
         {
             var lines = std.mem.splitScalar(u8, got, '\n');
             while (lines.next()) |line| {
-                try file_text_updated.writer(allocator).print("{s}\\\\{s}\n", .{ indent, line });
+                try file_text_updated.print(allocator, "{s}\\\\{s}\n", .{ indent, line });
             }
         }
         try file_text_updated.appendSlice(arena_allocator, snapshot_suffix);
 
-        try mod_dir.writeFile(.{
+        try mod_dir.writeFile(io, .{
             .sub_path = snapshot.location.file,
             .data = file_text_updated.items,
         });
@@ -239,7 +251,7 @@ pub const Snap = struct {
         var diffs_idx: usize = 0;
         var snap_idx: usize = 0;
         var got_idx: usize = 0;
-        var new_diffs = Diff{};
+        var new_diffs: Diff = .empty;
         errdefer diffz.deinitDiffList(allocator, &new_diffs);
         const dummy_diff = Edit.init(.equal, "");
         regex_while: while (regex_find.next()) |found| {
@@ -344,7 +356,7 @@ pub const Snap = struct {
         // then add a paired delete/insert, and use it to patch `got`.
         var regex_find = regex_finder.iterator(snapshot.text);
         var got_idx: usize = 0;
-        var new_diffs = Diff{};
+        var new_diffs: Diff = .empty;
         defer diffz.deinitDiffList(allocator, &new_diffs);
         var new_got = try std.ArrayList(u8).initCapacity(allocator, @max(got.len, snapshot.text.len));
         defer new_got.deinit(allocator);
@@ -540,7 +552,7 @@ const StampedStruct = struct {
         return StampedStruct{
             .message = msg,
             .tag = tag,
-            .timestamp = std.time.timestamp(),
+            .timestamp = @intCast(std.Io.Timestamp.now(io, .real).toSeconds()),
         };
     }
 };
