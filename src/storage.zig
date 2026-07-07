@@ -196,7 +196,7 @@ pub const Issue = struct {
         const close_reason = if (self.close_reason) |r| try allocator.dupe(u8, r) else null;
         errdefer if (close_reason) |r| allocator.free(r);
 
-        var blocks: std.ArrayList([]const u8) = .{};
+        var blocks: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (blocks.items) |b| allocator.free(b);
             blocks.deinit(allocator);
@@ -337,10 +337,13 @@ const ParseResult = struct {
     description: []const u8,
     // Track allocated strings for cleanup
     allocated_blocks: [][]const u8,
-    allocated_title: ?[]const u8 = null,
+    // Owned buffers behind unquoted scalar fields (title, created-at,
+    // closed-at, close-reason, assignee, issue-type when quoted on disk)
+    allocated_scalars: [][]const u8 = &.{},
 
     pub fn deinit(self: *const ParseResult, allocator: Allocator) void {
-        if (self.allocated_title) |t| allocator.free(t);
+        for (self.allocated_scalars) |s| allocator.free(s);
+        allocator.free(self.allocated_scalars);
         for (self.allocated_blocks) |b| allocator.free(b);
         allocator.free(self.allocated_blocks);
     }
@@ -398,7 +401,7 @@ fn parseYamlValue(allocator: Allocator, value: []const u8) !YamlValue {
         return .{ .borrowed = value };
     }
     // Quoted value - unescape it
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var i: usize = 1; // Skip opening quote
@@ -425,6 +428,19 @@ fn parseYamlValue(allocator: Allocator, value: []const u8) !YamlValue {
     return .{ .owned = try result.toOwnedSlice(allocator) };
 }
 
+/// Parse one scalar frontmatter value idempotently: unquote/unescape when
+/// the on-disk value is quoted, and record any owned buffer for cleanup.
+/// Serialization re-quotes from the raw string, so parse+emit round-trips
+/// are byte-stable instead of nesting quotes on every rewrite.
+fn parseScalar(allocator: Allocator, scalars: *std.ArrayList([]const u8), value: []const u8) ![]const u8 {
+    const parsed = try parseYamlValue(allocator, value);
+    if (parsed.getOwned()) |o| {
+        errdefer allocator.free(o);
+        try scalars.append(allocator, o);
+    }
+    return parsed.slice();
+}
+
 fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
     // Find YAML delimiters
     if (!std.mem.startsWith(u8, content, "---\n")) {
@@ -444,10 +460,11 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
         "";
 
     var fm = Frontmatter{};
-    var blocks_list: std.ArrayList([]const u8) = .{};
-    var allocated_title: ?[]const u8 = null;
+    var blocks_list: std.ArrayList([]const u8) = .empty;
+    var scalars_list: std.ArrayList([]const u8) = .empty;
     errdefer {
-        if (allocated_title) |t| allocator.free(t);
+        for (scalars_list.items) |s| allocator.free(s);
+        scalars_list.deinit(allocator);
         for (blocks_list.items) |b| allocator.free(b);
         blocks_list.deinit(allocator);
     }
@@ -482,42 +499,37 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
         const field = frontmatter_field_map.get(key) orelse continue;
 
         switch (field) {
-            .title => {
-                const parsed = try parseYamlValue(allocator, value);
-                fm.title = parsed.slice();
-                allocated_title = parsed.getOwned();
-            },
+            .title => fm.title = try parseScalar(allocator, &scalars_list, value),
             .status => fm.status = Status.parse(value) orelse return StorageError.InvalidStatus,
             .priority => fm.priority = std.fmt.parseInt(i64, value, 10) catch return StorageError.InvalidFrontmatter,
-            .issue_type => fm.issue_type = value,
-            .assignee => fm.assignee = if (value.len > 0) value else null,
-            .created_at => fm.created_at = value,
-            .closed_at => fm.closed_at = if (value.len > 0) value else null,
-            .close_reason => fm.close_reason = if (value.len > 0) value else null,
+            .issue_type => fm.issue_type = try parseScalar(allocator, &scalars_list, value),
+            .assignee => fm.assignee = if (value.len > 0) try parseScalar(allocator, &scalars_list, value) else null,
+            .created_at => fm.created_at = try parseScalar(allocator, &scalars_list, value),
+            .closed_at => fm.closed_at = if (value.len > 0) try parseScalar(allocator, &scalars_list, value) else null,
+            .close_reason => fm.close_reason = if (value.len > 0) try parseScalar(allocator, &scalars_list, value) else null,
             .blocks => in_blocks = true,
         }
     }
 
     const allocated_blocks = try blocks_list.toOwnedSlice(allocator);
-    fm.blocks = allocated_blocks;
-
-    // Validate required fields
-    if (fm.title.len == 0 or fm.created_at.len == 0) {
-        // Clean up allocations on validation failure
+    errdefer {
         for (allocated_blocks) |b| allocator.free(b);
         allocator.free(allocated_blocks);
-        if (allocated_title) |t| {
-            allocator.free(t);
-            allocated_title = null; // Prevent errdefer double-free
-        }
+    }
+    fm.blocks = allocated_blocks;
+
+    // Validate required fields (errdefers free blocks and scalar buffers)
+    if (fm.title.len == 0 or fm.created_at.len == 0) {
         return StorageError.InvalidFrontmatter;
     }
+
+    const allocated_scalars = try scalars_list.toOwnedSlice(allocator);
 
     return ParseResult{
         .frontmatter = fm,
         .description = description,
         .allocated_blocks = allocated_blocks,
-        .allocated_title = allocated_title,
+        .allocated_scalars = allocated_scalars,
     };
 }
 
@@ -555,7 +567,7 @@ fn writeYamlValue(buf: *std.ArrayList(u8), allocator: Allocator, value: []const 
 }
 
 fn serializeFrontmatter(allocator: Allocator, issue: Issue) ![]u8 {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, "---\n");
@@ -743,7 +755,7 @@ pub fn slugify(allocator: Allocator, title: []const u8) ![]u8 {
         return allocator.dupe(u8, "untitled");
     }
 
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var word_start: usize = 0;
@@ -1096,8 +1108,11 @@ pub const Storage = struct {
         defer self.allocator.free(content);
 
         const parsed = try parseFrontmatter(self.allocator, content);
-        // Free allocated_title after duping
-        defer if (parsed.allocated_title) |t| self.allocator.free(t);
+        // Free unquoted scalar buffers after duping the fields below
+        defer {
+            for (parsed.allocated_scalars) |s| self.allocator.free(s);
+            self.allocator.free(parsed.allocated_scalars);
+        }
         // Free allocated_blocks on error (transferred to Issue on success)
         var blocks_transferred = false;
         errdefer if (!blocks_transferred) {
@@ -1501,7 +1516,7 @@ pub const Storage = struct {
             if (!has_reference) continue;
 
             // Build new blocks with updated reference
-            var new_blocks: std.ArrayList([]const u8) = .{};
+            var new_blocks: std.ArrayList([]const u8) = .empty;
             errdefer {
                 for (new_blocks.items) |b| self.allocator.free(b);
                 new_blocks.deinit(self.allocator);
@@ -1549,7 +1564,7 @@ pub const Storage = struct {
             if (!has_reference) continue;
 
             // Build new blocks without the removed dependency (using already-loaded issue)
-            var new_blocks: std.ArrayList([]const u8) = .{};
+            var new_blocks: std.ArrayList([]const u8) = .empty;
             errdefer {
                 for (new_blocks.items) |b| self.allocator.free(b);
                 new_blocks.deinit(self.allocator);
@@ -1580,7 +1595,7 @@ pub const Storage = struct {
     }
 
     pub fn listAllIssuesIncludingArchived(self: *Self) ![]Issue {
-        var issues: std.ArrayList(Issue) = .{};
+        var issues: std.ArrayList(Issue) = .empty;
         errdefer {
             for (issues.items) |*iss| iss.deinit(self.allocator);
             issues.deinit(self.allocator);
@@ -1603,7 +1618,7 @@ pub const Storage = struct {
     }
 
     pub fn listIssues(self: *Self, status_filter: ?Status) ![]Issue {
-        var issues: std.ArrayList(Issue) = .{};
+        var issues: std.ArrayList(Issue) = .empty;
         errdefer {
             for (issues.items) |*iss| iss.deinit(self.allocator);
             issues.deinit(self.allocator);
@@ -1676,7 +1691,7 @@ pub const Storage = struct {
         const all_issues = try self.listIssues(null);
         defer self.allocator.free(all_issues);
 
-        var ready: std.ArrayList(Issue) = .{};
+        var ready: std.ArrayList(Issue) = .empty;
         errdefer {
             for (ready.items) |*iss| iss.deinit(self.allocator);
             ready.deinit(self.allocator);
@@ -1809,7 +1824,7 @@ pub const Storage = struct {
     }
 
     pub fn getRootIssues(self: *Self) ![]Issue {
-        var issues: std.ArrayList(Issue) = .{};
+        var issues: std.ArrayList(Issue) = .empty;
         errdefer {
             for (issues.items) |*iss| iss.deinit(self.allocator);
             issues.deinit(self.allocator);
@@ -1824,7 +1839,7 @@ pub const Storage = struct {
     }
 
     pub fn listOrphanParents(self: *Self) ![]const []const u8 {
-        var orphans: std.ArrayList([]const u8) = .{};
+        var orphans: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (orphans.items) |name| self.allocator.free(name);
             orphans.deinit(self.allocator);
@@ -1860,7 +1875,7 @@ pub const Storage = struct {
         };
         defer folder.close();
 
-        var names: std.ArrayList([]const u8) = .{};
+        var names: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (names.items) |name| self.allocator.free(name);
             names.deinit(self.allocator);
@@ -1903,7 +1918,7 @@ pub const Storage = struct {
     }
 
     fn getChildIssues(self: *Self, parent_id: []const u8) ![]Issue {
-        var children: std.ArrayList(Issue) = .{};
+        var children: std.ArrayList(Issue) = .empty;
         errdefer {
             for (children.items) |*c| c.deinit(self.allocator);
             children.deinit(self.allocator);
@@ -1960,7 +1975,7 @@ pub const Storage = struct {
             self.allocator.free(child_issues);
         };
 
-        var children: std.ArrayList(ChildIssue) = .{};
+        var children: std.ArrayList(ChildIssue) = .empty;
         errdefer {
             for (children.items) |*c| c.deinit(self.allocator);
             children.deinit(self.allocator);
@@ -1985,7 +2000,7 @@ pub const Storage = struct {
         const all_issues = try self.listAllIssuesIncludingArchived();
         defer self.allocator.free(all_issues);
 
-        var matches: std.ArrayList(Issue) = .{};
+        var matches: std.ArrayList(Issue) = .empty;
         errdefer {
             for (matches.items) |*iss| iss.deinit(self.allocator);
             matches.deinit(self.allocator);
@@ -2070,7 +2085,7 @@ pub const Storage = struct {
             }
 
             // Add to blocks array
-            var new_blocks: std.ArrayList([]const u8) = .{};
+            var new_blocks: std.ArrayList([]const u8) = .empty;
             errdefer {
                 for (new_blocks.items) |b| self.allocator.free(b);
                 new_blocks.deinit(self.allocator);
@@ -2107,7 +2122,7 @@ pub const Storage = struct {
         const alloc = arena.allocator();
 
         var visited = std.StringHashMap(void).init(alloc);
-        var queue: std.ArrayList([]const u8) = .{};
+        var queue: std.ArrayList([]const u8) = .empty;
 
         // Must dupe to_id since it may outlive original
         try queue.append(alloc, try alloc.dupe(u8, to_id));
@@ -2227,7 +2242,7 @@ pub const Storage = struct {
         try config.put(k, v);
 
         // Build config content
-        var buf: std.ArrayList(u8) = .{};
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
 
         var iter = config.iterator();
@@ -2241,3 +2256,91 @@ pub const Storage = struct {
         try writeFileAtomic(self.dots_dir, "config", buf.items);
     }
 };
+
+// -- Round-trip regression: closing (parse -> withStatus -> serialize) must
+// keep created-at byte-stable instead of nesting quotes on every rewrite.
+// https://.dots/habu-dot-cli-re-6fc34b33: created-at: '"..."' after close.
+
+fn testIssueFromParse(parsed: ParseResult) Issue {
+    return .{
+        .id = "round-trip-test",
+        .title = parsed.frontmatter.title,
+        .description = parsed.description,
+        .status = parsed.frontmatter.status,
+        .priority = parsed.frontmatter.priority,
+        .issue_type = parsed.frontmatter.issue_type,
+        .assignee = parsed.frontmatter.assignee,
+        .created_at = parsed.frontmatter.created_at,
+        .closed_at = parsed.frontmatter.closed_at,
+        .close_reason = parsed.frontmatter.close_reason,
+        .blocks = parsed.frontmatter.blocks,
+    };
+}
+
+test "close-then-reopen round-trip keeps created-at byte-stable" {
+    const allocator = std.testing.allocator;
+    const original =
+        \\---
+        \\title: Round trip
+        \\status: open
+        \\priority: 2
+        \\issue-type: task
+        \\created-at: "2026-07-04T08:53:59.626268+02:00"
+        \\---
+        \\
+        \\Body text.
+        \\
+    ;
+
+    // Close: parse the open issue, mark closed, serialize.
+    const open_parsed = try parseFrontmatter(allocator, original);
+    defer open_parsed.deinit(allocator);
+    const closed_issue = testIssueFromParse(open_parsed)
+        .withStatus(.closed, "2026-07-04T18:44:14.683485+02:00", null);
+    const closed_bytes = try serializeFrontmatter(allocator, closed_issue);
+    defer allocator.free(closed_bytes);
+
+    // The closed file must carry the ORIGINAL quoted timestamp, not a
+    // re-quoted one.
+    try std.testing.expect(
+        std.mem.indexOf(u8, closed_bytes, "created-at: \"2026-07-04T08:53:59.626268+02:00\"\n") != null,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, closed_bytes, "\\\"") == null);
+
+    // Reopen: parse the closed file, mark open again, serialize; then close
+    // once more. Every rewrite must be byte-identical in created-at.
+    const closed_parsed = try parseFrontmatter(allocator, closed_bytes);
+    defer closed_parsed.deinit(allocator);
+    try std.testing.expectEqualStrings(
+        "2026-07-04T08:53:59.626268+02:00",
+        closed_parsed.frontmatter.created_at,
+    );
+    const reopened_issue = testIssueFromParse(closed_parsed).withStatus(.open, null, null);
+    const reopened_bytes = try serializeFrontmatter(allocator, reopened_issue);
+    defer allocator.free(reopened_bytes);
+    try std.testing.expectEqualStrings(original, reopened_bytes);
+}
+
+test "parse unquotes every scalar frontmatter field" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\---
+        \\title: "Quoted: title"
+        \\status: closed
+        \\priority: 2
+        \\issue-type: "task"
+        \\assignee: "who: me"
+        \\created-at: "2026-07-04T08:53:59.626268+02:00"
+        \\closed-at: "2026-07-04T18:44:14.683485+02:00"
+        \\close-reason: "done: fully"
+        \\---
+    ;
+    const parsed = try parseFrontmatter(allocator, content);
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqualStrings("Quoted: title", parsed.frontmatter.title);
+    try std.testing.expectEqualStrings("task", parsed.frontmatter.issue_type);
+    try std.testing.expectEqualStrings("who: me", parsed.frontmatter.assignee.?);
+    try std.testing.expectEqualStrings("2026-07-04T08:53:59.626268+02:00", parsed.frontmatter.created_at);
+    try std.testing.expectEqualStrings("2026-07-04T18:44:14.683485+02:00", parsed.frontmatter.closed_at.?);
+    try std.testing.expectEqualStrings("done: fully", parsed.frontmatter.close_reason.?);
+}
