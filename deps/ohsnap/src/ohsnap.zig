@@ -24,7 +24,7 @@ const testing = std.testing;
 const assert = std.debug.assert;
 const SourceLocation = std.builtin.SourceLocation;
 
-const Diff = diffz.DiffList;
+const Diff = @TypeOf(diffz.Diff.default.edits);
 const Edit = diffz.Edit;
 
 // Generous limits for user regexen
@@ -42,9 +42,10 @@ comptime {
     }
 }
 
-const OhSnap = @This();
+/// OhSnap specialized to use the default options.
+pub const default = OhSnap(default_pretty_options);
 
-pretty_options: pretty.Options = pretty.Options{
+pub const default_pretty_options = pretty.Options{
     .max_depth = 0,
     .struct_max_len = 0,
     .array_max_len = 0,
@@ -53,25 +54,28 @@ pretty_options: pretty.Options = pretty.Options{
     .type_name_fold_parens = 0,
     .str_max_len = 0,
     .show_tree_lines = true,
-},
+};
 
-/// Creates a new Snap using `pretty` formatting.
-///
-/// For the update logic to work, *must* be formatted as:
-///
-/// ```
-/// try oh.snap(@src(), // This can be on the next line
-///     \\Text of the snapshot.
-/// ).expectEqual(val);
-/// ```
-///
-/// With the `@src()` on the line before the text, which must be
-/// in multi-line format.
-pub fn snap(ohsnap: OhSnap, location: SourceLocation, text: []const u8) Snap {
-    return Snap{
-        .location = location,
-        .text = text,
-        .ohsnap = ohsnap,
+pub fn OhSnap(comptime pretty_options: pretty.Options) type {
+    return struct {
+        /// Creates a new Snap using `pretty` formatting.
+        ///
+        /// For the update logic to work, *must* be formatted as:
+        ///
+        /// ```
+        /// try oh.snap(@src(), // This can be on the next line
+        ///     \\Text of the snapshot.
+        /// ).expectEqual(val);
+        /// ```
+        ///
+        /// With the `@src()` on the line before the text, which must be
+        /// in multi-line format.
+        pub fn snap(location: SourceLocation, text: []const u8) Snap(pretty_options) {
+            return .{
+                .location = location,
+                .text = text,
+            };
+        }
     };
 }
 
@@ -79,293 +83,336 @@ pub fn snap(ohsnap: OhSnap, location: SourceLocation, text: []const u8) Snap {
 const ignore_regex_string = "<\\^[^\n]+?\\$>";
 const regex_finder = mvzr.compile(ignore_regex_string).?;
 
-pub const Snap = struct {
-    location: SourceLocation,
-    text: []const u8,
-    ohsnap: OhSnap,
+pub fn Snap(comptime pretty_options: pretty.Options) type {
+    return struct {
+        location: SourceLocation,
+        text: []const u8,
 
-    const allocator = std.testing.allocator;
+        const Self = @This();
+        const allocator = std.testing.allocator;
 
-    /// Compare the snapshot with a pretty-printed string.
-    pub fn expectEqual(snapshot: *const Snap, args: anytype) !void {
-        const got = try pretty.dump(
-            allocator,
-            args,
-            snapshot.ohsnap.pretty_options,
-        );
-        defer allocator.free(got);
-        try snapshot.diff(got, true);
-    }
+        /// Compare the snapshot with a pretty-printed string.
+        pub fn expectEqual(snapshot: *const Self, args: anytype) !void {
+            const got = try pretty.dump(
+                allocator,
+                args,
+                pretty_options,
+            );
+            defer allocator.free(got);
+            try snapshot.diff(got, true);
+        }
 
-    /// Compare the snapshot with a .fmt printed string.
-    pub fn expectEqualFmt(snapshot: *const Snap, args: anytype) !void {
-        const got = try std.fmt.allocPrint(allocator, "{f}", .{args});
-        defer allocator.free(got);
-        try snapshot.diff(got, true);
-    }
+        /// Compare the snapshot with a .fmt printed string.
+        pub fn expectEqualFmt(snapshot: *const Self, args: anytype) !void {
+            const got = try std.fmt.allocPrint(allocator, "{f}", .{args});
+            defer allocator.free(got);
+            try snapshot.diff(got, true);
+        }
 
-    /// Show the snapshot diff without testing
-    pub fn show(snapshot: *const Snap, args: anytype) !void {
-        const got = try pretty.dump(
-            allocator,
-            args,
-            snapshot.ohsnap.pretty_options,
-        );
-        defer allocator.free(got);
-        try snapshot.diff(got, false);
-    }
+        /// Show the snapshot diff without testing
+        pub fn show(snapshot: *const Self, args: anytype) !void {
+            const got = try pretty.dump(
+                allocator,
+                args,
+                pretty_options,
+            );
+            defer allocator.free(got);
+            try snapshot.diff(got, false);
+        }
 
-    /// Show a diff with the .fmt string without testing.
-    pub fn showFmt(snapshot: *const Snap, args: anytype) !void {
-        const got = try std.fmt.allocPrint(allocator, "{any}", .{args});
-        defer allocator.free(got);
-        try snapshot.diff(got, false);
-    }
+        /// Show a diff with the .fmt string without testing.
+        pub fn showFmt(snapshot: *const Self, args: anytype) !void {
+            const got = try std.fmt.allocPrint(allocator, "{f}", .{args});
+            defer allocator.free(got);
+            try snapshot.diff(got, false);
+        }
 
-    /// Compare the snapshot with a given string.
-    pub fn diff(snapshot: *const Snap, got: []const u8, test_it: bool) !void {
-        // Check for an update first
-        const update_idx = std.mem.indexOf(u8, snapshot.text, "<!update>");
-        if (update_idx) |idx| {
-            if (idx == 0) {
+        /// Compare the snapshot with a given string.
+        pub fn diff(snapshot: *const Self, got: []const u8, test_it: bool) !void {
+            // Check for an update first
+            const update_idx = std.mem.indexOf(u8, snapshot.text, "<!update>");
+            if (update_idx) |idx| {
+                if (idx == 0) {
+                    const match = regex_finder.match(snapshot.text);
+                    if (match) |_| {
+                        return try patchAndUpdate(snapshot, got);
+                    } else {
+                        return try updateSnap(snapshot, got);
+                    }
+                } else {
+                    // Probably a user mistake but the diff logic will surface that
+                }
+            }
+
+            var dmp = diffz.Diff.init(.{
+                .timeout = 0,
+                .edit_cost = diffz.DiffConfig.default.edit_cost,
+                .check_lines = diffz.DiffConfig.default.check_lines,
+                .check_line_threshold = diffz.DiffConfig.default.check_line_threshold,
+            });
+            defer dmp.deinit(allocator);
+            _ = try dmp.diff(allocator, snapshot.text, got);
+            var diffs = dmp.edits;
+            dmp.edits = .empty;
+            defer deinitDiffList(allocator, &diffs);
+            if (diffDiffers(diffs) or !test_it) {
+                var cleaned = diffz.Diff{ .config = dmp.config, .edits = diffs };
+                _ = try cleaned.cleanupSemantic(allocator);
+                diffs = cleaned.edits;
+                cleaned.edits = .empty;
+                // Check if we have a regex in the snapshot
                 const match = regex_finder.match(snapshot.text);
                 if (match) |_| {
-                    return try patchAndUpdate(snapshot, got);
+                    diffs = try regexFixup(&diffs, snapshot, got);
+                    if (test_it)
+                        if (!diffDiffers(diffs)) return;
+                }
+                const diff_string = try (diffz.Diff{ .config = dmp.config, .edits = diffs }).prettyFormat(
+                    allocator,
+                    diffz.DiffDecorations.xterm_classic,
+                );
+                defer allocator.free(diff_string);
+                const differs = if (test_it) " differs" else "";
+                std.debug.print(
+                    \\Snapshot on line {s}{d}{s}{s}:
+                    \\
+                    \\{s}
+                    \\
+                ,
+                    .{
+                        "\x1b[33m",
+                        snapshot.location.line + 1,
+                        "\x1b[m",
+                        differs,
+                        diff_string,
+                    },
+                );
+                if (test_it) {
+                    if (snapshot.text.len == 0 or snapshot.text.len == 1 and snapshot.text[0] == '\n') {
+                        std.debug.print("your snap:", .{});
+                        var split = std.mem.splitScalar(u8, got, '\n');
+                        while (split.next()) |line| {
+                            std.debug.print("\n        \\\\{s}", .{line});
+                        }
+                        std.debug.print("\n", .{});
+                    } else {
+                        std.debug.print("\n\nTo replace contents, add <!update> as the first line of the snap text.\n", .{});
+                    }
+                    return try std.testing.expect(false);
+                } else return;
+            }
+        }
+
+        fn updateSnap(snapshot: *const Self, got: []const u8) !void {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+
+            const arena_allocator = arena.allocator();
+            var threaded_io: std.Io.Threaded = .init_single_threaded;
+            defer threaded_io.deinit();
+            const io = threaded_io.io();
+
+            var maybe_dir_str: ?[]const u8 = null;
+            {
+                var i: usize = 0;
+                while (i < config.module_name.len) : (i += 1) {
+                    if (std.mem.eql(u8, config.module_name[i], snapshot.location.module)) {
+                        maybe_dir_str = config.root_directory[i];
+                        break;
+                    }
+                }
+            }
+
+            const dir_str = maybe_dir_str orelse "src";
+
+            var mod_dir = std.Io.Dir.cwd().openDir(io, dir_str, .{}) catch |err| {
+                std.debug.print("Problem opening directory {s}, bailing out\n", .{dir_str});
+                return err;
+            };
+            defer mod_dir.close(io);
+
+            const file_text =
+                mod_dir.readFileAlloc(io, snapshot.location.file, arena_allocator, .limited(1024 * 1024)) catch |err| {
+                    std.debug.print("Problem opening file {s}, bailing out\n", .{snapshot.location.file});
+                    return err;
+                };
+            var file_text_updated = try std.ArrayList(u8).initCapacity(arena_allocator, file_text.len);
+
+            const line_zero_based = snapshot.location.line - 1;
+            const range = try snapRange(file_text, line_zero_based);
+
+            const snapshot_prefix = file_text[0..range.start];
+            const snapshot_text = file_text[range.start..range.end];
+            const snapshot_suffix = file_text[range.end..];
+            const indent = getIndent(snapshot_text);
+
+            try file_text_updated.appendSlice(arena_allocator, snapshot_prefix);
+            {
+                var allocating = std.Io.Writer.Allocating.fromArrayList(arena_allocator, &file_text_updated);
+                defer file_text_updated = allocating.toArrayList();
+                var lines = std.mem.splitScalar(u8, got, '\n');
+                while (lines.next()) |line| {
+                    try allocating.writer.print("{s}\\\\{s}\n", .{ indent, line });
+                }
+            }
+            try file_text_updated.appendSlice(arena_allocator, snapshot_suffix);
+
+            try mod_dir.writeFile(io, .{
+                .sub_path = snapshot.location.file,
+                .data = file_text_updated.items,
+            });
+
+            std.debug.print("Updated {s}\n", .{snapshot.location.file});
+            return error.SnapUpdated;
+        }
+
+        /// Find regex matches and modify the diff accordingly.
+        fn regexFixup(
+            diffs: *Diff,
+            snapshot: *const Self,
+            got: []const u8,
+        ) !Diff {
+            defer deinitDiffList(allocator, diffs);
+            var regex_find = regex_finder.iterator(snapshot.text);
+            var diffs_idx: usize = 0;
+            var snap_idx: usize = 0;
+            var got_idx: usize = 0;
+            var new_diffs: Diff = .empty;
+            errdefer deinitDiffList(allocator, &new_diffs);
+            const dummy_diff = Edit.asBorrow(.equal, "");
+            regex_while: while (regex_find.next()) |found| {
+                // Find this location in the got string.
+                const snap_start = found.start;
+                const snap_end = found.end;
+                const diff_obj = diffz.Diff{ .config = diffz.DiffConfig.default, .edits = diffs.* };
+                const got_start = diff_obj.index(snap_start);
+                const got_end = diff_obj.index(snap_end);
+                // Check if these are identical (use/mention distinction!)
+                if (std.mem.eql(u8, found.slice, got[got_start..got_end])) {
+                    // That's fine then
+                    continue :regex_while;
+                }
+                // Trim the angle brackets off the regex.
+                const exclude_regex = found.slice[1 .. found.slice.len - 1];
+                const maybe_matcher = UserRegex.compile(exclude_regex);
+                if (maybe_matcher == null) {
+                    std.debug.print("Issue with mvzr or regex, hard to say. Regex string: {s}\n", .{exclude_regex});
+                    continue :regex_while;
+                }
+                const matcher = maybe_matcher.?;
+                const maybe_match = matcher.match(got[got_start..got_end]);
+                // Either way, we zero out the patches, the difference being
+                // how we represent the match or not-match in the diff list.
+                while (diffs_idx < diffs.items.len) : (diffs_idx += 1) {
+                    const d = diffs.items[diffs_idx];
+                    // All patches which are inside one or the other are set to nothing
+                    const in_snap = snap_start <= snap_idx and snap_start < snap_end;
+                    const in_got = got_start <= got_idx and got_idx < got_end;
+                    switch (d.operation) {
+                        .equal => {
+                            // Could easily be in common between the regex and the match.
+                            snap_idx += d.text.len;
+                            got_idx += d.text.len;
+                            if (in_snap and in_got) {
+                                try new_diffs.append(allocator, dummy_diff);
+                            } else {
+                                try new_diffs.append(allocator, try dupe(d));
+                            }
+                        },
+                        .insert => {
+                            // Are we in the match?
+                            got_idx += d.text.len;
+                            if (in_got) {
+                                // Yes, replace with dummy equal
+                                try new_diffs.append(allocator, dummy_diff);
+                            } else {
+                                try new_diffs.append(allocator, try dupe(d));
+                            }
+                        },
+                        .delete => {
+                            snap_idx += d.text.len;
+                            // Same deal, are we in the match?
+                            if (in_snap) {
+                                try new_diffs.append(allocator, dummy_diff);
+                            } else {
+                                try new_diffs.append(allocator, try dupe(d));
+                            }
+                        },
+                    }
+
+                    if (got_idx >= got_end and snap_idx >= snap_end) break;
+                }
+                // Should always mean we have at least two (but we care about
+                // having one) diffs rubbed out.
+                var formatted = try std.ArrayList(u8).initCapacity(allocator, 10);
+                defer formatted.deinit(allocator);
+                assert(new_diffs.items[diffs_idx].operation == .equal and new_diffs.items[diffs_idx].text.len == 0);
+                if (maybe_match) |_| {
+                    // Decorate with cyan for a match.
+                    try formatted.appendSlice(allocator, "\x1b[36m");
+                    try formatted.appendSlice(allocator, got[got_start..got_end]);
+                    try formatted.appendSlice(allocator, "\x1b[m");
+                    new_diffs.items[diffs_idx] = Edit{
+                        .operation = .equal,
+                        .owned = true,
+                        .text = try formatted.toOwnedSlice(allocator),
+                    };
                 } else {
-                    return try updateSnap(snapshot, got);
+                    // Decorate magenta for no match, and make it an insert (hence, error)
+                    try formatted.appendSlice(allocator, "\x1b[35m");
+                    try formatted.appendSlice(allocator, got[got_start..got_end]);
+                    try formatted.appendSlice(allocator, "\x1b[m");
+                    new_diffs.items[diffs_idx] = Edit{
+                        .operation = .insert,
+                        .owned = true,
+                        .text = try formatted.toOwnedSlice(allocator),
+                    };
                 }
-            } else {
-                // Probably a user mistake but the diff logic will surface that
-            }
-        }
-
-        const dmp = diffz{ .diff_timeout = 0 };
-        var diffs = try dmp.diff(allocator, snapshot.text, got, false);
-        defer diffz.deinitDiffList(allocator, &diffs);
-        if (diffDiffers(diffs) or !test_it) {
-            try diffz.diffCleanupSemantic(allocator, &diffs);
-            // Check if we have a regex in the snapshot
-            const match = regex_finder.match(snapshot.text);
-            if (match) |_| {
-                diffs = try regexFixup(&diffs, snapshot, got);
-                if (test_it)
-                    if (!diffDiffers(diffs)) return;
-            }
-            const diff_string = try diffz.diffPrettyFormatXTerm(allocator, diffs);
-            defer allocator.free(diff_string);
-            const differs = if (test_it) " differs" else "";
-            std.debug.print(
-                \\Snapshot on line {s}{d}{s}{s}:
-                \\
-                \\{s}
-                \\
-            ,
-                .{
-                    "\x1b[33m",
-                    snapshot.location.line + 1,
-                    "\x1b[m",
-                    differs,
-                    diff_string,
-                },
-            );
-            if (test_it) {
-                std.debug.print("\n\nTo replace contents, add <!update> as the first line of the snap text.\n", .{});
-                return try std.testing.expect(false);
-            } else return;
-        }
-    }
-
-    fn updateSnap(snapshot: *const Snap, got: []const u8) !void {
-        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-        defer arena.deinit();
-
-        const arena_allocator = arena.allocator();
-
-        var maybe_dir_str: ?[]const u8 = null;
-        {
-            var i: usize = 0;
-            while (i < config.module_name.len) : (i += 1) {
-                if (std.mem.eql(u8, config.module_name[i], snapshot.location.module)) {
-                    maybe_dir_str = config.root_directory[i];
-                    break;
-                }
-            }
-        }
-
-        const dir_str = maybe_dir_str orelse "src";
-
-        var mod_dir = try std.fs.cwd().openDir(dir_str, .{});
-        defer mod_dir.close();
-
-        const file_text =
-            try mod_dir.readFileAlloc(arena_allocator, snapshot.location.file, 1024 * 1024);
-        var file_text_updated = try std.ArrayList(u8).initCapacity(arena_allocator, file_text.len);
-
-        const line_zero_based = snapshot.location.line - 1;
-        const range = try snapRange(file_text, line_zero_based);
-
-        const snapshot_prefix = file_text[0..range.start];
-        const snapshot_text = file_text[range.start..range.end];
-        const snapshot_suffix = file_text[range.end..];
-
-        const indent = getIndent(snapshot_text);
-
-        try file_text_updated.appendSlice(arena_allocator, snapshot_prefix);
-        {
-            var lines = std.mem.splitScalar(u8, got, '\n');
-            while (lines.next()) |line| {
-                try file_text_updated.writer(allocator).print("{s}\\\\{s}\n", .{ indent, line });
-            }
-        }
-        try file_text_updated.appendSlice(arena_allocator, snapshot_suffix);
-
-        try mod_dir.writeFile(.{
-            .sub_path = snapshot.location.file,
-            .data = file_text_updated.items,
-        });
-
-        std.debug.print("Updated {s}\n", .{snapshot.location.file});
-        return error.SnapUpdated;
-    }
-
-    /// Find regex matches and modify the diff accordingly.
-    fn regexFixup(
-        diffs: *Diff,
-        snapshot: *const Snap,
-        got: []const u8,
-    ) !Diff {
-        defer diffz.deinitDiffList(allocator, diffs);
-        var regex_find = regex_finder.iterator(snapshot.text);
-        var diffs_idx: usize = 0;
-        var snap_idx: usize = 0;
-        var got_idx: usize = 0;
-        var new_diffs = Diff{};
-        errdefer diffz.deinitDiffList(allocator, &new_diffs);
-        const dummy_diff = Edit.init(.equal, "");
-        regex_while: while (regex_find.next()) |found| {
-            // Find this location in the got string.
-            const snap_start = found.start;
-            const snap_end = found.end;
-            const got_start = diffz.diffIndex(diffs.*, snap_start);
-            const got_end = diffz.diffIndex(diffs.*, snap_end);
-            // Check if these are identical (use/mention distinction!)
-            if (std.mem.eql(u8, found.slice, got[got_start..got_end])) {
-                // That's fine then
-                continue :regex_while;
-            }
-            // Trim the angle brackets off the regex.
-            const exclude_regex = found.slice[1 .. found.slice.len - 1];
-            const maybe_matcher = UserRegex.compile(exclude_regex);
-            if (maybe_matcher == null) {
-                std.debug.print("Issue with mvzr or regex, hard to say. Regex string: {s}\n", .{exclude_regex});
-                continue :regex_while;
-            }
-            const matcher = maybe_matcher.?;
-            const maybe_match = matcher.match(got[got_start..got_end]);
-            // Either way, we zero out the patches, the difference being
-            // how we represent the match or not-match in the diff list.
+                diffs_idx += 1;
+            } // end regex while
             while (diffs_idx < diffs.items.len) : (diffs_idx += 1) {
                 const d = diffs.items[diffs_idx];
-                // All patches which are inside one or the other are set to nothing
-                const in_snap = snap_start <= snap_idx and snap_start < snap_end;
-                const in_got = got_start <= got_idx and got_idx < got_end;
-                switch (d.operation) {
-                    .equal => {
-                        // Could easily be in common between the regex and the match.
-                        snap_idx += d.text.len;
-                        got_idx += d.text.len;
-                        if (in_snap and in_got) {
-                            try new_diffs.append(allocator, dummy_diff);
-                        } else {
-                            try new_diffs.append(allocator, try dupe(d));
-                        }
-                    },
-                    .insert => {
-                        // Are we in the match?
-                        got_idx += d.text.len;
-                        if (in_got) {
-                            // Yes, replace with dummy equal
-                            try new_diffs.append(allocator, dummy_diff);
-                        } else {
-                            try new_diffs.append(allocator, try dupe(d));
-                        }
-                    },
-                    .delete => {
-                        snap_idx += d.text.len;
-                        // Same deal, are we in the match?
-                        if (in_snap) {
-                            try new_diffs.append(allocator, dummy_diff);
-                        } else {
-                            try new_diffs.append(allocator, try dupe(d));
-                        }
-                    },
-                }
-
-                if (got_idx >= got_end and snap_idx >= snap_end) break;
+                try new_diffs.append(allocator, try dupe(d));
             }
-            // Should always mean we have at least two (but we care about
-            // having one) diffs rubbed out.
-            var formatted = try std.ArrayList(u8).initCapacity(allocator, 10);
-            defer formatted.deinit(allocator);
-            assert(new_diffs.items[diffs_idx].operation == .equal and new_diffs.items[diffs_idx].text.len == 0);
-            if (maybe_match) |_| {
-                // Decorate with cyan for a match.
-                try formatted.appendSlice(allocator, "\x1b[36m");
-                try formatted.appendSlice(allocator, got[got_start..got_end]);
-                try formatted.appendSlice(allocator, "\x1b[m");
-                new_diffs.items[diffs_idx] = Edit{
-                    .operation = .equal,
-                    .text = try formatted.toOwnedSlice(allocator),
-                };
-            } else {
-                // Decorate magenta for no match, and make it an insert (hence, error)
-                try formatted.appendSlice(allocator, "\x1b[35m");
-                try formatted.appendSlice(allocator, got[got_start..got_end]);
-                try formatted.appendSlice(allocator, "\x1b[m");
-                new_diffs.items[diffs_idx] = Edit{
-                    .operation = .insert,
-                    .text = try formatted.toOwnedSlice(allocator),
-                };
+            return new_diffs;
+        }
+
+        fn patchAndUpdate(snapshot: *const Self, got: []const u8) !void {
+            var dmp = diffz.Diff.init(.{
+                .timeout = 0,
+                .edit_cost = diffz.DiffConfig.default.edit_cost,
+                .check_lines = diffz.DiffConfig.default.check_lines,
+                .check_line_threshold = diffz.DiffConfig.default.check_line_threshold,
+            });
+            defer dmp.deinit(allocator);
+            _ = try dmp.diff(allocator, snapshot.text, got);
+            // Very similar to `regexFixup`, but here we clean up the diffed region,
+            // then add a paired delete/insert, and use it to patch `got`.
+            var regex_find = regex_finder.iterator(snapshot.text);
+            var got_idx: usize = 0;
+            var new_diffs: Diff = .empty;
+            defer deinitDiffList(allocator, &new_diffs);
+            var new_got = try std.ArrayList(u8).initCapacity(allocator, @max(got.len, snapshot.text.len));
+            defer new_got.deinit(allocator);
+            while (regex_find.next()) |found| {
+                // Find this location in the got string.
+                const snap_start = found.start;
+                const snap_end = found.end;
+                const got_start = dmp.index(snap_start);
+                const got_end = dmp.index(snap_end);
+                try new_got.appendSlice(allocator, got[got_idx..got_start]);
+                try new_got.appendSlice(allocator, found.slice);
+                got_idx = got_end;
             }
-            diffs_idx += 1;
-        } // end regex while
-        while (diffs_idx < diffs.items.len) : (diffs_idx += 1) {
-            const d = diffs.items[diffs_idx];
-            try new_diffs.append(allocator, try dupe(d));
+            try new_got.appendSlice(allocator, got[got_idx..]);
+            return try updateSnap(snapshot, new_got.items);
         }
-        return new_diffs;
-    }
 
-    fn patchAndUpdate(snapshot: *const Snap, got: []const u8) !void {
-        const dmp = diffz{ .diff_timeout = 0, .match_threshold = 0.05 };
-        var diffs = try dmp.diff(allocator, snapshot.text, got, false);
-        defer diffz.deinitDiffList(allocator, &diffs);
-        // Very similar to `regexFixup`, but here we clean up the diffed region,
-        // then add a paired delete/insert, and use it to patch `got`.
-        var regex_find = regex_finder.iterator(snapshot.text);
-        var got_idx: usize = 0;
-        var new_diffs = Diff{};
-        defer diffz.deinitDiffList(allocator, &new_diffs);
-        var new_got = try std.ArrayList(u8).initCapacity(allocator, @max(got.len, snapshot.text.len));
-        defer new_got.deinit(allocator);
-        while (regex_find.next()) |found| {
-            // Find this location in the got string.
-            const snap_start = found.start;
-            const snap_end = found.end;
-            const got_start = diffz.diffIndex(diffs, snap_start);
-            const got_end = diffz.diffIndex(diffs, snap_end);
-            try new_got.appendSlice(allocator, got[got_idx..got_start]);
-            try new_got.appendSlice(allocator, found.slice);
-            got_idx = got_end;
+        fn dupe(d: Edit) !Edit {
+            return Edit.asOwn(allocator, d.operation, d.text);
         }
-        try new_got.appendSlice(allocator, got[got_idx..]);
-        return try updateSnap(snapshot, new_got.items);
-    }
-
-    fn dupe(d: Edit) !Edit {
-        return Edit.init(d.operation, try allocator.dupe(u8, d.text));
-    }
-};
+    };
+}
 
 /// Answer whether the diffs differ (pre-regex, if any)
 fn diffDiffers(diffs: Diff) bool {
@@ -380,6 +427,12 @@ fn diffDiffers(diffs: Diff) bool {
         }
     }
     return !all_equal;
+}
+
+fn deinitDiffList(allocator: std.mem.Allocator, diffs: *Diff) void {
+    for (diffs.items) |*d| d.deinit(allocator);
+    diffs.deinit(allocator);
+    diffs.* = .empty;
 }
 
 const Range = struct { start: usize, end: usize };
@@ -464,7 +517,7 @@ fn getIndent(line: []const u8) []const u8 {
 
 test "snap test" {
     // Change either the snapshot or the struct to make these tests fail
-    const oh = OhSnap{};
+    const oh = OhSnap(default_pretty_options);
     // Simple anon struct
     try oh.snap(@src(),
         \\ohsnap.test.snap test__struct_<^\d+$>
@@ -482,19 +535,18 @@ test "snap test" {
         \\    .backing_integer: ?type
         \\      null
         \\    .fields: []const builtin.Type.StructField
-        \\      [0]: builtin.Type.StructField
-        \\        .name: [:0]const u8
-        \\          "pretty_options"
-        \\        .type: type
-        \\          pretty.Options
-        \\        .default_value_ptr: ?*const anyopaque
-        \\        .is_comptime: bool = false
-        \\        .alignment: comptime_int = 8
+        \\      (empty)
         \\    .decls: []const builtin.Type.Declaration
         \\      [0]: builtin.Type.Declaration
         \\        .name: [:0]const u8
-        \\          "snap"
+        \\          "default"
         \\      [1]: builtin.Type.Declaration
+        \\        .name: [:0]const u8
+        \\          "default_pretty_options"
+        \\      [2]: builtin.Type.Declaration
+        \\        .name: [:0]const u8
+        \\          "OhSnap"
+        \\      [3]: builtin.Type.Declaration
         \\        .name: [:0]const u8
         \\          "Snap"
         \\    .is_tuple: bool = false
@@ -512,14 +564,15 @@ test "snap regex" {
             return RF{ .rand = rand };
         }
     };
-    var prng = std.Random.DefaultPrng.init(blk: {
-        var seed: u64 = undefined;
-        try std.posix.getrandom(std.mem.asBytes(&seed));
-        break :blk seed;
-    });
+    var test_threaded_io: std.Io.Threaded = .init_single_threaded;
+    defer test_threaded_io.deinit();
+    const test_io = test_threaded_io.io();
+    var seed: u64 = undefined;
+    test_io.random(std.mem.asBytes(&seed));
+    var prng = std.Random.DefaultPrng.init(seed);
     const rand = prng.random();
     const an_rf = RandomField.init(rand.int(u64));
-    const oh = OhSnap{};
+    const oh = OhSnap(default_pretty_options);
     try oh.snap(
         @src(),
         \\ohsnap.test.snap regex.RandomField
@@ -537,16 +590,19 @@ const StampedStruct = struct {
     tag: u64,
     timestamp: isize,
     pub fn init(msg: []const u8, tag: u64) StampedStruct {
+        var threaded_io: std.Io.Threaded = .init_single_threaded;
+        defer threaded_io.deinit();
+        const io = threaded_io.io();
         return StampedStruct{
             .message = msg,
             .tag = tag,
-            .timestamp = std.time.timestamp(),
+            .timestamp = @intCast(std.Io.Timestamp.now(io, .real).toSeconds()),
         };
     }
 };
 
 test "snap with timestamp" {
-    const oh = OhSnap{};
+    const oh = OhSnap(default_pretty_options);
     const with_stamp = StampedStruct.init(
         "frobnicate the turbo-encabulator",
         37337,
@@ -574,7 +630,7 @@ const CustomStruct = struct {
 };
 
 test "expectEqualFmt" {
-    const oh = OhSnap{};
+    const oh = OhSnap(default_pretty_options);
     const foobar = CustomStruct{ .foo = 42, .bar = 23 };
     try oh.snap(
         @src(),
@@ -584,7 +640,7 @@ test "expectEqualFmt" {
 }
 
 test "regex match" {
-    const oh = OhSnap{};
+    const oh = OhSnap(default_pretty_options);
     try oh.snap(@src(),
         \\?mvzr.Match
         \\  .slice: []const u8

@@ -178,7 +178,11 @@ fn checkType(comptime Args: type, comptime property: anytype, config: Config) ?F
         random = external;
     } else {
         if (seed == 0) {
-            seed = @as(u64, @intCast(std.time.timestamp()));
+            // Zig 0.16 removed std.time.timestamp(); zcheck is compiled only in
+            // test builds here, so draw a fresh fallback seed from the test Io.
+            var seed_bytes: [8]u8 = undefined;
+            std.testing.io.random(&seed_bytes);
+            seed = @bitCast(seed_bytes);
         }
         prng = std.Random.DefaultPrng.init(seed);
         random = prng.random();
