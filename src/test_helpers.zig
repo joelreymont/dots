@@ -1,12 +1,14 @@
 const std = @import("std");
-const fs = std.fs;
+const Io = std.Io;
 
 const build_options = @import("build_options");
 pub const dot_binary = build_options.dot_binary;
 
 pub const storage_mod = @import("storage.zig");
 pub const zc = @import("zcheck");
-pub const OhSnap = @import("ohsnap");
+// ohsnap v0.5.x exposes `default`, a concrete OhSnap type preconfigured with
+// default pretty options. Bind it directly; call sites use `OhSnap.snap(...)`.
+pub const OhSnap = @import("ohsnap").default;
 
 pub const max_output_bytes = 1024 * 1024;
 pub const fixed_timestamp = "2024-01-01T00:00:00.000000+00:00";
@@ -114,13 +116,21 @@ pub fn runDot(allocator: std.mem.Allocator, args: []const []const u8, cwd: []con
     return runDotWithInput(allocator, args, cwd, null);
 }
 
+/// Drain an entire child pipe (Io.File) into an owned buffer. Zig 0.16 removed
+/// File.readToEndAlloc, so read through the reader interface instead.
+fn readPipe(file: Io.File, allocator: std.mem.Allocator) ![]u8 {
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(std.testing.io, &buf);
+    return reader.interface.allocRemaining(allocator, Io.Limit.limited(max_output_bytes));
+}
+
 pub fn runDotWithInput(
     allocator: std.mem.Allocator,
     args: []const []const u8,
     cwd: []const u8,
     input: ?[]const u8,
 ) !RunResult {
-    var argv: std.ArrayList([]const u8) = .{};
+    var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
 
     try argv.append(allocator, dot_binary);
@@ -128,25 +138,38 @@ pub fn runDotWithInput(
         try argv.append(allocator, arg);
     }
 
-    var child = std.process.Child.init(argv.items, allocator);
-    child.cwd = cwd;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.stdin_behavior = if (input != null) .Pipe else .Ignore;
+    const io = std.testing.io;
 
-    try child.spawn();
+    // Zig 0.16 removed Child.init. With no stdin, the blocking helper spawns,
+    // waits, and captures stdout/stderr for us in one call.
+    if (input == null) {
+        const r = try std.process.run(allocator, io, .{
+            .argv = argv.items,
+            .cwd = .{ .path = cwd },
+        });
+        return RunResult{ .stdout = r.stdout, .stderr = r.stderr, .term = r.term };
+    }
+
+    // With stdin, spawn manually so we can write to the child before draining it.
+    var child = try std.process.spawn(io, .{
+        .argv = argv.items,
+        .cwd = .{ .path = cwd },
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
 
     if (input) |data| {
-        try child.stdin.?.writeAll(data);
-        child.stdin.?.close();
+        try child.stdin.?.writeStreamingAll(io, data);
+        child.stdin.?.close(io);
         child.stdin = null;
     }
 
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, max_output_bytes);
+    const stdout = try readPipe(child.stdout.?, allocator);
     errdefer allocator.free(stdout);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, max_output_bytes);
+    const stderr = try readPipe(child.stderr.?, allocator);
     errdefer allocator.free(stderr);
-    const term = try child.wait();
+    const term = try child.wait(io);
 
     return RunResult{ .stdout = stdout, .stderr = stderr, .term = term };
 }
@@ -185,18 +208,19 @@ pub const MultiProcess = struct {
 
     /// Spawn all processes concurrently
     pub fn spawnAll(self: *MultiProcess) !void {
+        const io = std.testing.io;
         for (0..self.count) |i| {
             const argv = self.argv_storage[i][0..self.argv_lens[i]];
-            self.children[i] = std.process.Child.init(argv, self.allocator);
-            self.children[i].cwd = self.cwd;
-            self.children[i].stdin_behavior = if (self.inputs[i] != null) .Pipe else .Ignore;
-            self.children[i].stdout_behavior = .Pipe;
-            self.children[i].stderr_behavior = .Pipe;
-
-            try self.children[i].spawn();
+            self.children[i] = try std.process.spawn(io, .{
+                .argv = argv,
+                .cwd = .{ .path = self.cwd },
+                .stdin = if (self.inputs[i] != null) .pipe else .ignore,
+                .stdout = .pipe,
+                .stderr = .pipe,
+            });
             if (self.inputs[i]) |data| {
-                try self.children[i].stdin.?.writeAll(data);
-                self.children[i].stdin.?.close();
+                try self.children[i].stdin.?.writeStreamingAll(io, data);
+                self.children[i].stdin.?.close(io);
                 self.children[i].stdin = null;
             }
         }
@@ -204,14 +228,15 @@ pub const MultiProcess = struct {
 
     /// Wait for all processes and return results
     pub fn waitAll(self: *MultiProcess) ![MAX_PROCS]?RunResult {
+        const io = std.testing.io;
         var results: [MAX_PROCS]?RunResult = [_]?RunResult{null} ** MAX_PROCS;
         errdefer self.freeResults(&results);
         for (0..self.count) |i| {
-            const stdout = try self.children[i].stdout.?.readToEndAlloc(self.allocator, max_output_bytes);
+            const stdout = try readPipe(self.children[i].stdout.?, self.allocator);
             errdefer self.allocator.free(stdout);
-            const stderr = try self.children[i].stderr.?.readToEndAlloc(self.allocator, max_output_bytes);
+            const stderr = try readPipe(self.children[i].stderr.?, self.allocator);
             errdefer self.allocator.free(stderr);
-            const term = try self.children[i].wait();
+            const term = try self.children[i].wait(io);
             results[i] = .{ .stdout = stdout, .stderr = stderr, .term = term };
         }
         return results;
@@ -241,17 +266,17 @@ pub const MultiProcess = struct {
 
 pub fn setupTestDir(allocator: std.mem.Allocator) ![]const u8 {
     var rand_buf: [8]u8 = undefined;
-    std.crypto.random.bytes(&rand_buf);
+    std.testing.io.random(&rand_buf);
 
     const hex = std.fmt.bytesToHex(rand_buf, .lower);
     const path = try std.fmt.allocPrint(allocator, "/tmp/dots-test-{s}", .{hex});
 
-    try fs.makeDirAbsolute(path);
+    try Io.Dir.createDirAbsolute(std.testing.io, path, .default_dir);
     return path;
 }
 
 pub fn cleanupTestDir(path: []const u8) !void {
-    try fs.cwd().deleteTree(path);
+    try Io.Dir.cwd().deleteTree(std.testing.io, path);
 }
 
 pub fn cleanupTestDirOrPanic(path: []const u8) void {
@@ -276,22 +301,25 @@ pub fn cleanupTestDirAndFree(allocator: std.mem.Allocator, path: []const u8) voi
 // Returns the storage and original directory for cleanup
 pub const TestStorage = struct {
     storage: Storage,
-    original_dir: fs.Dir,
+    original_dir: Io.Dir,
     test_dir_path: []const u8,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, test_dir: []const u8) !TestStorage {
-        const original_dir = fs.cwd();
+        // Open the current directory as a real handle. Io.Dir.cwd() is the
+        // AT_FDCWD sentinel, which setCurrentDir (fchdir) cannot restore to.
+        var original_dir = try Io.Dir.cwd().openDir(std.testing.io, ".", .{});
+        errdefer original_dir.close(std.testing.io);
 
         // Change to test directory
-        var dir = try fs.openDirAbsolute(test_dir, .{});
-        defer dir.close(); // Close after setAsCwd - we don't need to keep it open
-        try dir.setAsCwd();
+        var dir = try Io.Dir.openDirAbsolute(std.testing.io, test_dir, .{});
+        defer dir.close(std.testing.io); // Close after chdir - we don't need to keep it open
+        try std.process.setCurrentDir(std.testing.io, dir);
 
         // Open storage (creates .dots in test dir)
-        const storage = Storage.open(allocator) catch |err| {
+        const storage = Storage.open(allocator, std.testing.io) catch |err| {
             // Restore original directory on error
-            original_dir.setAsCwd() catch {};
+            std.process.setCurrentDir(std.testing.io, original_dir) catch {};
             return err;
         };
 
@@ -305,7 +333,8 @@ pub const TestStorage = struct {
 
     pub fn deinit(self: *TestStorage) void {
         self.storage.close();
-        self.original_dir.setAsCwd() catch {};
+        std.process.setCurrentDir(std.testing.io, self.original_dir) catch {};
+        self.original_dir.close(std.testing.io);
     }
 };
 
@@ -316,11 +345,11 @@ pub fn openTestStorage(allocator: std.mem.Allocator, dir: []const u8) TestStorag
 }
 
 pub fn trimNewline(input: []const u8) []const u8 {
-    return std.mem.trimRight(u8, input, "\n");
+    return std.mem.trimEnd(u8, input, "\n");
 }
 
 pub fn normalizeTreeOutput(allocator: std.mem.Allocator, output: []const u8) ![]u8 {
-    var normalized = std.ArrayList(u8){};
+    var normalized = std.ArrayList(u8).empty;
     errdefer normalized.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, output, '\n');
@@ -346,7 +375,7 @@ pub fn normalizeTreeOutput(allocator: std.mem.Allocator, output: []const u8) ![]
 
 pub fn isExitCode(term: std.process.Child.Term, code: u8) bool {
     return switch (term) {
-        .Exited => |actual| actual == code,
+        .exited => |actual| actual == code,
         else => false,
     };
 }

@@ -1,5 +1,5 @@
 const std = @import("std");
-const fs = std.fs;
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const storage_mod = @import("storage.zig");
 const build_options = @import("build_options");
@@ -51,17 +51,23 @@ fn findCommand(name: []const u8) ?Handler {
     return null;
 }
 
-pub fn main() void {
-    if (run()) |_| {} else |err| handleError(err);
+pub fn main(init: std.process.Init) void {
+    // Zig 0.16 delivers the process Io (and args) through the main init
+    // parameter. Stash the Io for the file-scope I/O helpers before running.
+    g_io = init.io;
+    if (run(init)) |_| {} else |err| handleError(err);
 }
 
-fn run() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+fn run(init: std.process.Init) !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer if (gpa.deinit() == .leak) @panic("memory leak detected");
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    // Zig 0.16 removed std.process.argsAlloc; args now arrive via the main
+    // init parameter. toSlice requires an arena, so give it a scoped one.
+    var args_arena = std.heap.ArenaAllocator.init(allocator);
+    defer args_arena.deinit();
+    const args = try init.minimal.args.toSlice(args_arena.allocator());
 
     if (args.len < 2) {
         try cmdReady(allocator, &.{"--json"});
@@ -98,25 +104,29 @@ fn cmdVersion(_: Allocator, _: []const []const u8) !void {
 }
 
 fn openStorage(allocator: Allocator) !Storage {
-    return Storage.open(allocator);
+    return Storage.open(allocator, g_io);
 }
 
 // I/O helpers
+// Process-wide Io, set once in main() from the init parameter. This CLI is
+// single-threaded, so a file-scope Io keeps the stdout/stderr helpers and
+// storage open calls from having to thread it through every call site.
+var g_io: Io = undefined;
 var stdout_buffer: [4096]u8 = undefined;
-var stdout_writer: ?fs.File.Writer = null;
+var stdout_writer: ?Io.File.Writer = null;
 var stderr_buffer: [4096]u8 = undefined;
-var stderr_writer: ?fs.File.Writer = null;
+var stderr_writer: ?Io.File.Writer = null;
 
 fn stdout() *std.Io.Writer {
     if (stdout_writer == null) {
-        stdout_writer = fs.File.stdout().writer(&stdout_buffer);
+        stdout_writer = Io.File.stdout().writer(g_io, &stdout_buffer);
     }
     return &stdout_writer.?.interface;
 }
 
 fn stderr() *std.Io.Writer {
     if (stderr_writer == null) {
-        stderr_writer = fs.File.stderr().writer(&stderr_buffer);
+        stderr_writer = Io.File.stderr().writer(g_io, &stderr_buffer);
     }
     return &stderr_writer.?.interface;
 }
@@ -222,21 +232,25 @@ const USAGE =
 
 fn gitAddDots(allocator: Allocator) !void {
     // Add .dots to git if in a git repo
-    fs.cwd().access(".git", .{}) catch |err| switch (err) {
+    Io.Dir.cwd().access(g_io, ".git", .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
 
-    // Run git add .dots
-    var child = std.process.Child.init(&.{ "git", "add", DOTS_DIR }, allocator);
-    const term = try child.spawnAndWait();
-    switch (term) {
-        .Exited => |code| {
+    // Run git add .dots. Zig 0.16 removed Child.init/spawnAndWait; the blocking
+    // helper spawns, waits, and captures stdout/stderr for us.
+    const result = try std.process.run(allocator, g_io, .{
+        .argv = &.{ "git", "add", DOTS_DIR },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| {
             if (code != 0) {
                 try stderr().print("Warning: git add failed with exit code {d}\n", .{code});
             }
         },
-        .Signal => |sig| try stderr().print("Warning: git add killed by signal {d}\n", .{sig}),
+        .signal => |sig| try stderr().print("Warning: git add killed by signal {t}\n", .{sig}),
         else => try stderr().writeAll("Warning: git add terminated abnormally\n"),
     }
 }
@@ -295,7 +309,7 @@ fn cmdAdd(allocator: Allocator, args: []const []const u8) !void {
     const prefix = try storage_mod.getOrCreatePrefix(allocator, &storage);
     defer allocator.free(prefix);
 
-    const id = try storage_mod.generateIdWithTitle(allocator, prefix, title);
+    const id = try storage_mod.generateIdWithTitle(allocator, g_io, prefix, title);
     defer allocator.free(id);
 
     var ts_buf: [40]u8 = undefined;
@@ -425,7 +439,7 @@ fn cmdOff(allocator: Allocator, args: []const []const u8) !void {
     if (args.len == 0) fatal("Usage: dot off <id> [id2 ...] [-r reason]\n", .{});
 
     var reason: ?[]const u8 = null;
-    var ids: std.ArrayList([]const u8) = .{};
+    var ids: std.ArrayList([]const u8) = .empty;
     defer ids.deinit(allocator);
 
     var i: usize = 0;
@@ -732,7 +746,7 @@ fn slugifyIssue(allocator: Allocator, storage: *Storage, prefix: []const u8, old
     var hex_buf: [8]u8 = undefined;
     if (hex_suffix.len == 0) {
         var rand_bytes: [4]u8 = undefined;
-        std.crypto.random.bytes(&rand_bytes);
+        g_io.random(&rand_bytes);
         const hex = std.fmt.bytesToHex(rand_bytes, .lower);
         @memcpy(&hex_buf, &hex);
         hex_suffix = &hex_buf;
@@ -758,7 +772,7 @@ fn slugifyIssue(allocator: Allocator, storage: *Storage, prefix: []const u8, old
 }
 
 fn formatTimestamp(buf: []u8) ![]const u8 {
-    const nanos = std.time.nanoTimestamp();
+    const nanos = Io.Clock.real.now(g_io).nanoseconds;
     if (nanos < 0) return error.InvalidTimestamp;
     const epoch_nanos: u128 = @intCast(nanos);
     const epoch_secs: libc.time_t = std.math.cast(libc.time_t, epoch_nanos / 1_000_000_000) orelse return error.TimestampOverflow;
@@ -842,18 +856,18 @@ const HydrateResult = struct {
 };
 
 fn hydrateFromJsonl(allocator: Allocator, storage: *Storage, jsonl_path: []const u8) !HydrateResult {
-    const file = fs.cwd().openFile(jsonl_path, .{}) catch |err| switch (err) {
+    const file = Io.Dir.cwd().openFile(g_io, jsonl_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .{ .imported = 0, .skipped = 0, .dep_skipped = 0 },
         else => return err,
     };
-    defer file.close();
+    defer file.close(g_io);
 
     var count: usize = 0;
     var skipped: usize = 0;
     var dep_skipped: usize = 0;
     const read_buf = try allocator.alloc(u8, max_jsonl_line_bytes);
     defer allocator.free(read_buf);
-    var file_reader = fs.File.Reader.init(file, read_buf);
+    var file_reader = Io.File.Reader.init(file, g_io, read_buf);
     const reader = &file_reader.interface;
 
     while (true) {

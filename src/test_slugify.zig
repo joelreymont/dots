@@ -16,7 +16,7 @@ const openTestStorage = h.openTestStorage;
 
 test "slugify: basic conversion" {
     const allocator = std.testing.allocator;
-    const oh = OhSnap{};
+    const oh = OhSnap;
 
     const slug = try storage_mod.slugify(allocator, "Fix User Authentication Bug");
     defer allocator.free(slug);
@@ -29,7 +29,7 @@ test "slugify: basic conversion" {
 
 test "slugify: multiple abbreviations" {
     const allocator = std.testing.allocator;
-    const oh = OhSnap{};
+    const oh = OhSnap;
 
     const slug = try storage_mod.slugify(allocator, "Database Configuration Implementation");
     defer allocator.free(slug);
@@ -42,7 +42,7 @@ test "slugify: multiple abbreviations" {
 
 test "slugify: empty title" {
     const allocator = std.testing.allocator;
-    const oh = OhSnap{};
+    const oh = OhSnap;
 
     const slug = try storage_mod.slugify(allocator, "");
     defer allocator.free(slug);
@@ -55,7 +55,7 @@ test "slugify: empty title" {
 
 test "slugify: special characters stripped" {
     const allocator = std.testing.allocator;
-    const oh = OhSnap{};
+    const oh = OhSnap;
 
     const slug = try storage_mod.slugify(allocator, "Fix: API (v2) -- update!");
     defer allocator.free(slug);
@@ -125,7 +125,7 @@ test "slugify: prop: idempotent on valid slugs" {
 
 test "cli: slugify skips already-slugged issues from dot add" {
     const allocator = std.testing.allocator;
-    const oh = OhSnap{};
+    const oh = OhSnap;
 
     const test_dir = setupTestDirOrPanic(allocator);
     defer cleanupTestDirAndFree(allocator, test_dir);
@@ -304,7 +304,7 @@ test "cli: slugify updates dependency references" {
 
 test "cli: slugify skips already-slugified IDs" {
     const allocator = std.testing.allocator;
-    const oh = OhSnap{};
+    const oh = OhSnap;
 
     const test_dir = setupTestDirOrPanic(allocator);
     defer cleanupTestDirAndFree(allocator, test_dir);
