@@ -340,12 +340,12 @@ const ParseResult = struct {
     description: []const u8,
     // Track allocated strings for cleanup
     allocated_blocks: [][]const u8,
-    allocated_title: ?[]const u8 = null,
+    // Unquoted scalar values; frontmatter fields may point into them
+    allocated_values: [][]const u8,
 
-    pub fn deinit(self: *const ParseResult, allocator: Allocator) void {
-        if (self.allocated_title) |t| allocator.free(t);
-        for (self.allocated_blocks) |b| allocator.free(b);
-        allocator.free(self.allocated_blocks);
+    pub fn freeValues(self: *const ParseResult, allocator: Allocator) void {
+        for (self.allocated_values) |v| allocator.free(v);
+        allocator.free(self.allocated_values);
     }
 };
 
@@ -394,9 +394,14 @@ const YamlValue = union(enum) {
     }
 };
 
+/// True when the value is wrapped in double quotes
+fn isQuoted(value: []const u8) bool {
+    return value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"';
+}
+
 /// Parse a YAML value, handling quoted strings with escape sequences
 fn parseYamlValue(allocator: Allocator, value: []const u8) !YamlValue {
-    if (value.len < 2 or value[0] != '"' or value[value.len - 1] != '"') {
+    if (!isQuoted(value)) {
         // Unquoted value, use as-is (caller should not free)
         return .{ .borrowed = value };
     }
@@ -428,6 +433,23 @@ fn parseYamlValue(allocator: Allocator, value: []const u8) !YamlValue {
     return .{ .owned = try result.toOwnedSlice(allocator) };
 }
 
+/// Parse a timestamp through every quoting layer an older writer nested.
+/// A timestamp never holds a quote, so each layer is undone losslessly and
+/// the next write normalizes the file to a single layer.
+fn parseTimestamp(allocator: Allocator, value: []const u8) !YamlValue {
+    var current = try parseYamlValue(allocator, value);
+    while (current.getOwned()) |owned| {
+        if (!isQuoted(owned)) break;
+        const inner = parseYamlValue(allocator, owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
+        allocator.free(owned);
+        current = inner;
+    }
+    return current;
+}
+
 fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
     // Find YAML delimiters
     if (!std.mem.startsWith(u8, content, "---\n")) {
@@ -448,9 +470,10 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
 
     var fm = Frontmatter{};
     var blocks_list: std.ArrayList([]const u8) = .empty;
-    var allocated_title: ?[]const u8 = null;
+    var values_list: std.ArrayList([]const u8) = .empty;
     errdefer {
-        if (allocated_title) |t| allocator.free(t);
+        for (values_list.items) |v| allocator.free(v);
+        values_list.deinit(allocator);
         for (blocks_list.items) |b| allocator.free(b);
         blocks_list.deinit(allocator);
     }
@@ -484,43 +507,49 @@ fn parseFrontmatter(allocator: Allocator, content: []const u8) !ParseResult {
 
         const field = frontmatter_field_map.get(key) orelse continue;
 
+        // Every scalar is unquoted here, so fields hold bare values and the
+        // writer's quoting is the only quoting a file ever carries. Only the
+        // timestamps unwrap nested layers: a title such as "\"Quoted\"" is a
+        // real value and keeps its single unwrap.
+        const parsed = switch (field) {
+            .created_at, .closed_at => try parseTimestamp(allocator, value),
+            else => try parseYamlValue(allocator, value),
+        };
+        if (parsed.getOwned()) |owned| try values_list.append(allocator, owned);
+        const text = parsed.slice();
+
         switch (field) {
-            .title => {
-                const parsed = try parseYamlValue(allocator, value);
-                fm.title = parsed.slice();
-                allocated_title = parsed.getOwned();
-            },
-            .status => fm.status = Status.parse(value) orelse return StorageError.InvalidStatus,
-            .priority => fm.priority = std.fmt.parseInt(i64, value, 10) catch return StorageError.InvalidFrontmatter,
-            .issue_type => fm.issue_type = value,
-            .assignee => fm.assignee = if (value.len > 0) value else null,
-            .created_at => fm.created_at = value,
-            .closed_at => fm.closed_at = if (value.len > 0) value else null,
-            .close_reason => fm.close_reason = if (value.len > 0) value else null,
+            .title => fm.title = text,
+            .status => fm.status = Status.parse(text) orelse return StorageError.InvalidStatus,
+            .priority => fm.priority = std.fmt.parseInt(i64, text, 10) catch return StorageError.InvalidFrontmatter,
+            .issue_type => fm.issue_type = text,
+            .assignee => fm.assignee = if (text.len > 0) text else null,
+            .created_at => fm.created_at = text,
+            .closed_at => fm.closed_at = if (text.len > 0) text else null,
+            .close_reason => fm.close_reason = if (text.len > 0) text else null,
             .blocks => in_blocks = true,
         }
+    }
+
+    // Validate required fields before ownership moves out of the lists
+    if (fm.title.len == 0 or fm.created_at.len == 0) {
+        return StorageError.InvalidFrontmatter;
+    }
+
+    const allocated_values = try values_list.toOwnedSlice(allocator);
+    errdefer {
+        for (allocated_values) |v| allocator.free(v);
+        allocator.free(allocated_values);
     }
 
     const allocated_blocks = try blocks_list.toOwnedSlice(allocator);
     fm.blocks = allocated_blocks;
 
-    // Validate required fields
-    if (fm.title.len == 0 or fm.created_at.len == 0) {
-        // Clean up allocations on validation failure
-        for (allocated_blocks) |b| allocator.free(b);
-        allocator.free(allocated_blocks);
-        if (allocated_title) |t| {
-            allocator.free(t);
-            allocated_title = null; // Prevent errdefer double-free
-        }
-        return StorageError.InvalidFrontmatter;
-    }
-
     return ParseResult{
         .frontmatter = fm,
         .description = description,
         .allocated_blocks = allocated_blocks,
-        .allocated_title = allocated_title,
+        .allocated_values = allocated_values,
     };
 }
 
@@ -1099,8 +1128,8 @@ pub const Storage = struct {
         defer self.allocator.free(content);
 
         const parsed = try parseFrontmatter(self.allocator, content);
-        // Free allocated_title after duping
-        defer if (parsed.allocated_title) |t| self.allocator.free(t);
+        // Free unquoted scalars after duping
+        defer parsed.freeValues(self.allocator);
         // Free allocated_blocks on error (transferred to Issue on success)
         var blocks_transferred = false;
         errdefer if (!blocks_transferred) {

@@ -722,3 +722,101 @@ test "cli: fix promotes orphan children" {
         else => std.debug.panic("open orphan dir: {}", .{err}),
     }
 }
+
+// The reported escalation path: add writes a quoted created-at, and every
+// later status write used to re-quote it (created-at: "\"...\"").
+test "cli: add then on then off keeps one level of quoting" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    const init = runDot(allocator, &.{"init"}, test_dir) catch |err| {
+        std.debug.panic("init: {}", .{err});
+    };
+    defer init.deinit(allocator);
+
+    const add = runDot(allocator, &.{
+        "add", "Run library task-exit hooks beside TASK:AT-EXIT",
+        "-p",  "2",
+        "-d",  "desc",
+    }, test_dir) catch |err| {
+        std.debug.panic("add: {}", .{err});
+    };
+    defer add.deinit(allocator);
+
+    const id = trimNewline(add.stdout);
+
+    const open_path = std.fmt.allocPrint(allocator, "{s}/.dots/{s}.md", .{ test_dir, id }) catch |err| {
+        std.debug.panic("path: {}", .{err});
+    };
+    defer allocator.free(open_path);
+
+    const after_add = fs.cwd().readFileAlloc(io, open_path, allocator, .limited(64 * 1024)) catch |err| {
+        std.debug.panic("read after add: {}", .{err});
+    };
+    defer allocator.free(after_add);
+
+    const created_line = frontmatterLine(after_add, "created-at: ") orelse
+        std.debug.panic("no created-at after add", .{});
+    const created_at = allocator.dupe(u8, created_line) catch |err| {
+        std.debug.panic("dupe: {}", .{err});
+    };
+    defer allocator.free(created_at);
+
+    const on = runDot(allocator, &.{ "on", id }, test_dir) catch |err| {
+        std.debug.panic("on: {}", .{err});
+    };
+    defer on.deinit(allocator);
+    try std.testing.expect(isExitCode(on.term, 0));
+
+    const off = runDot(allocator, &.{ "off", id, "-r", "done: for now" }, test_dir) catch |err| {
+        std.debug.panic("off: {}", .{err});
+    };
+    defer off.deinit(allocator);
+    try std.testing.expect(isExitCode(off.term, 0));
+
+    const archived_path = std.fmt.allocPrint(allocator, "{s}/.dots/archive/{s}.md", .{ test_dir, id }) catch |err| {
+        std.debug.panic("path: {}", .{err});
+    };
+    defer allocator.free(archived_path);
+
+    const after_off = fs.cwd().readFileAlloc(io, archived_path, allocator, .limited(64 * 1024)) catch |err| {
+        std.debug.panic("read after off: {}", .{err});
+    };
+    defer allocator.free(after_off);
+
+    // No field carries an escaped quote, so nothing was quoted twice
+    try std.testing.expect(std.mem.indexOf(u8, after_off, "\\\"") == null);
+
+    try std.testing.expectEqualStrings(created_at, frontmatterLine(after_off, "created-at: ") orelse
+        std.debug.panic("no created-at after off", .{}));
+    try std.testing.expectEqualStrings(
+        "\"Run library task-exit hooks beside TASK:AT-EXIT\"",
+        frontmatterLine(after_off, "title: ") orelse std.debug.panic("no title after off", .{}),
+    );
+    try std.testing.expectEqualStrings(
+        "\"done: for now\"",
+        frontmatterLine(after_off, "close-reason: ") orelse std.debug.panic("no close-reason after off", .{}),
+    );
+
+    // The value the file carries reads back bare
+    const show = runDot(allocator, &.{ "show", id }, test_dir) catch |err| {
+        std.debug.panic("show: {}", .{err});
+    };
+    defer show.deinit(allocator);
+
+    const bare = std.mem.trim(u8, created_at, "\"");
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, bare) != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "\"") == null);
+}
+
+// Value of the first frontmatter line starting with prefix, quotes included
+fn frontmatterLine(content: []const u8, prefix: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.eql(u8, line, "---")) continue;
+        if (std.mem.startsWith(u8, line, prefix)) return line[prefix.len..];
+    }
+    return null;
+}
