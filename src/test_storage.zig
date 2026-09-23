@@ -540,3 +540,57 @@ test "storage: block ids stay unquoted across status writes" {
     try std.testing.expectEqual(@as(usize, 1), issue.blocks.len);
     try std.testing.expectEqualStrings("blocker-id", issue.blocks[0]);
 }
+
+// The invariant the nesting bug broke: writing an issue that was parsed from a
+// file reproduces that file byte for byte, for every field the writer quotes.
+test "storage: write parse write reproduces the file byte for byte" {
+    const allocator = std.testing.allocator;
+
+    const test_dir = setupTestDirOrPanic(allocator);
+    defer cleanupTestDirAndFree(allocator, test_dir);
+
+    var ts = openTestStorage(allocator, test_dir);
+    defer ts.deinit();
+
+    const first = Issue{
+        .id = "round-trip-first",
+        .title = "Title with: a colon, \"quotes\" and a back\\slash",
+        .description = "desc\n\nsecond paragraph",
+        .status = .closed,
+        .priority = 3,
+        .issue_type = "bug",
+        .assignee = "agent: hazel",
+        .created_at = fixed_timestamp,
+        .closed_at = fixed_timestamp,
+        .close_reason = "done: \"landed\"",
+        .blocks = &.{"blocker-id"},
+        .parent = null,
+    };
+    ts.storage.createIssue(first, null) catch |err| {
+        std.debug.panic("create first: {}", .{err});
+    };
+
+    const first_content = ts.storage.dots_dir.readFileAlloc(std.Options.debug_io, "round-trip-first.md", allocator, .limited(64 * 1024)) catch |err| {
+        std.debug.panic("read first: {}", .{err});
+    };
+    defer allocator.free(first_content);
+
+    const parsed = ts.storage.getIssue("round-trip-first") catch |err| {
+        std.debug.panic("get: {}", .{err});
+    } orelse std.debug.panic("issue missing", .{});
+    defer parsed.deinit(allocator);
+
+    // Same values under a new id: the id lives in the filename, not the frontmatter
+    var second = parsed;
+    second.id = "round-trip-second";
+    ts.storage.createIssue(second, null) catch |err| {
+        std.debug.panic("create second: {}", .{err});
+    };
+
+    const second_content = ts.storage.dots_dir.readFileAlloc(std.Options.debug_io, "round-trip-second.md", allocator, .limited(64 * 1024)) catch |err| {
+        std.debug.panic("read second: {}", .{err});
+    };
+    defer allocator.free(second_content);
+
+    try std.testing.expectEqualStrings(first_content, second_content);
+}
