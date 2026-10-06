@@ -865,9 +865,17 @@ pub fn generateIdWithTitle(allocator: Allocator, io: Io, prefix: []const u8, tit
     if (title) |t| {
         const slug = try slugify(allocator, t);
         defer allocator.free(slug);
-        return std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ prefix, slug, hex });
+        if (prefix.len == 0) {
+            return std.fmt.allocPrint(allocator, "{s}-{s}", .{ slug, hex });
+        } else {
+            return std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ prefix, slug, hex });
+        }
     } else {
-        return std.fmt.allocPrint(allocator, "{s}-{s}", .{ prefix, hex });
+        if (prefix.len == 0) {
+            return std.fmt.allocPrint(allocator, "{s}", .{hex});
+        } else {
+            return std.fmt.allocPrint(allocator, "{s}-{s}", .{ prefix, hex });
+        }
     }
 }
 
