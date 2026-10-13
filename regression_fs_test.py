@@ -88,6 +88,49 @@ class FilesystemRegression(unittest.TestCase):
         self.assertEqual(issue.read_text(), ISSUE)
         self.assertEqual(sorted(x.name for x in self.dots.iterdir()), ['a.md', 'archive'])
 
+    def test_read_only_store_rm_reports_permission_denied(self):
+        (self.dots / 'archive').mkdir()
+        issue = self.dots / 'a.md'
+        issue.write_text(ISSUE)
+        self.dots.chmod(0o555)
+        self.addCleanup(self.dots.chmod, 0o755)
+
+        result = self.run_dot('rm', 'a')
+
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (1, b'', b'Permission denied\n'))
+        self.assertEqual(issue.read_text(), ISSUE)
+
+    def test_read_only_store_fix_reports_permission_denied(self):
+        (self.dots / 'archive').mkdir()
+        orphan = self.dots / 'orphan'
+        orphan.mkdir()
+        issue = orphan / 'x.md'
+        issue.write_text(ISSUE)
+        self.dots.chmod(0o555)
+        self.addCleanup(self.dots.chmod, 0o755)
+
+        result = self.run_dot('fix')
+
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (1, b'', b'Permission denied\n'))
+        self.assertEqual(issue.read_text(), ISSUE)
+        self.assertFalse((self.dots / 'x.md').exists())
+
+    def test_read_only_store_purge_reports_permission_denied(self):
+        archive = self.dots / 'archive'
+        archive.mkdir()
+        (archive / 'a.md').write_text(ISSUE)
+        self.dots.chmod(0o555)
+        self.addCleanup(self.dots.chmod, 0o755)
+
+        result = self.run_dot('purge')
+
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (1, b'', b'Permission denied\n'))
+        self.assertTrue(archive.is_dir())
+        self.assertEqual(list(archive.iterdir()), [])
+
     def test_archive_directory_collision_reports_error(self):
         archive = self.dots / 'archive' / 'a'
         archive.mkdir(parents=True)

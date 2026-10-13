@@ -727,7 +727,7 @@ PROCESS-SYMBOLS
 FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
 13 constant FS-ACCESS-DENIED
 : FS-DIR-NOT-EMPTY ( -- n ) HB-TARGET-MACOS? if 66 else 39 then ;
-: FS-RENAME-ERROR ( n -- )
+: FS-MUTATION-ERROR ( n -- )
    dup FS-ACCESS-DENIED = if drop s" Permission denied" FAIL then
    FS-DIR-NOT-EMPTY = if
       s" Unexpected internal error (code: DirNotEmpty)" FAIL
@@ -735,14 +735,22 @@ FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
    E-FS-IO throw ;
 PROCESS-SYMBOLS
 FUNCTION: RENAME-CALL rename ( ptr u8 ptr u8 -- i32 ) ;FUNCTION
+FUNCTION: UNLINK-CALL unlink ( ptr u8 -- i32 ) ;FUNCTION
+FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
+: FS-CAUSE ( n -- n )
+   0< if FFI:ERRNO dup 0= if drop -1 then exit then
+   0 ;
 : RENAME-CAUSE ( ptr u8 n ptr u8 n -- n )
    {: src:ptr su:n dst:ptr du:n :}
-   src su FS-PATHZ dst du FS-MUT-PATHZ2 RENAME-CALL 0< if
-      FFI:ERRNO dup 0= if drop -1 then exit
-   then
-   0 ;
+   src su FS-PATHZ dst du FS-MUT-PATHZ2 RENAME-CALL FS-CAUSE ;
 : RENAME-ISSUE ( ptr u8 n ptr u8 n -- )
-   RENAME-CAUSE dup 0<> if FS-RENAME-ERROR else drop then ;
+   RENAME-CAUSE dup 0<> if FS-MUTATION-ERROR else drop then ;
+: REMOVE-ISSUE-FILE ( ptr u8 n -- )
+   FS-PATHZ UNLINK-CALL FS-CAUSE
+   dup 0<> if FS-MUTATION-ERROR else drop then ;
+: REMOVE-ISSUE-DIR ( ptr u8 n -- )
+   FS-PATHZ RMDIR-CALL FS-CAUSE
+   dup 0<> if FS-MUTATION-ERROR else drop then ;
 PROCESS-SYMBOLS
 FUNCTION: ACCESS-WRITE access ( ptr u8 n -- i32 ) ;FUNCTION
 : PARENT-WRITABLE? ( ptr u8 n -- bool )
@@ -792,7 +800,7 @@ variable RESERVED-FD
    reason 0<> if
       temp tu REMOVE-FILE
       path pu DIR? if s" Unexpected internal error (code: IsDir)" FAIL then
-      reason FS-RENAME-ERROR
+      reason FS-MUTATION-ERROR
    then ;
 : SAVE-RECORD ( n -- )
    {: idx:n :}
@@ -1305,7 +1313,7 @@ variable CLOSED-TIME-U
    {: depth:n plen:n :}
    depth MAX-DEPTH 1- >= if s" I/O error" FAIL then
    depth PATH-AT {: path:ptr :}
-   path plen SYMLINK? if path plen REMOVE-FILE exit then
+   path plen SYMLINK? if path plen REMOVE-ISSUE-FILE exit then
    SCAN-NAMES-U @ {: begin-at:n :}
    path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
    SCAN-NAMES-U @ {: end-at:n :}
@@ -1314,13 +1322,13 @@ variable CLOSED-TIME-U
       at SCANNED-NAME {: name:ptr nu:n next:n :}
       path plen name nu depth 1+ PATH-AT PATH-JOIN {: child-u:n :}
       depth 1+ PATH-AT {: child:ptr :}
-      child child-u SYMLINK? if child child-u REMOVE-FILE else
+      child child-u SYMLINK? if child child-u REMOVE-ISSUE-FILE else
          child child-u DIR? if depth 1+ child-u RECURSE
-         else child child-u REMOVE-FILE then
+         else child child-u REMOVE-ISSUE-FILE then
       then
       next
    repeat drop
-   path plen REMOVE-DIR ;
+   path plen REMOVE-ISSUE-DIR ;
 : REMOVE-ISSUE-TREE ( ptr u8 n -- )
    {: path:ptr pu:n :}
    0 SCAN-NAMES-U !
@@ -1367,7 +1375,7 @@ variable CLOSED-TIME-U
       loop
       PATH-ONE$ REMOVE-ISSUE-TREE
    else
-      idx F-PATH FIELD$ REMOVE-FILE
+      idx F-PATH FIELD$ REMOVE-ISSUE-FILE
    then
    idx F-PATH FIELD-EMPTY ;
 : RM-COMMAND ( -- )
@@ -1485,14 +1493,14 @@ create FIX-FOLDER-ROW 256 allot
       name nu FILE-ENTRY? if
          FIX-FOLDER-ROW fu name nu FIX-PATHS
          PATH-ONE$ SYMLINK? 0= PATH-ONE$ FILE? and if
-            PATH-ONE$ PATH-TWO$ RENAME-FILE
+            PATH-ONE$ PATH-TWO$ RENAME-ISSUE
          then
       then
       next
    repeat drop
    0 FIX-LEFT !
    path fu 6 + [: COUNT-FIX-ENTRY ;] FS-LIST:EACH
-   FIX-LEFT @ 0= if path fu 6 + REMOVE-DIR then
+   FIX-LEFT @ 0= if path fu 6 + REMOVE-ISSUE-DIR then
    1 FIX-FOLDERS +!
    FIX-COUNT @ FIX-FILES +! ;
 : FIX-COMMAND ( -- )
