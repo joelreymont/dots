@@ -1669,7 +1669,35 @@ variable SLUG-CHANGED
    HEX-ROW 8 SB-APPEND SB$ NEW-ID! ;
 variable SLUG-LAST-SLASH
 variable SLUG-PARENT-SLASH
-: REBASE-RENAMED-CHILDREN ( ptr u8 n ptr u8 n -- )
+variable SLUG-FOLDER
+variable SLUG-FOLDER-MOVED
+variable SLUG-IDX
+variable SLUG-KEEP-OLD
+8 constant SLUG-TXN-CELLS
+DYNAMIC-BUFFER SLUG-TXN n
+DYNAMIC-BUFFER SLUG-PATHS u8
+variable SLUG-PATH-U
+-92001 constant E-SLUG-COLLISION
+: SLUG-CELL ( n n -- ptr n )
+   {: idx:n field:n :}
+   idx SLUG-TXN-CELLS * field + SLUG-TXN ;
+: SLUG-STORE ( ptr u8 n n n -- )
+   {: a:ptr u:n idx:n field:n :}
+   SLUG-PATH-U @ u + 1+ SLUG-PATHS-RESERVE
+   SLUG-PATH-U @ idx field SLUG-CELL !
+   u idx field 1+ SLUG-CELL !
+   a SLUG-PATH-U @ SLUG-PATHS u BYTE-COPY
+   SLUG-PATH-U @ u + SLUG-PATH-U ! ;
+: SLUG-STORED$ ( n n -- ptr u8 n )
+   {: idx:n field:n :}
+   idx field SLUG-CELL @ SLUG-PATHS
+   idx field 1+ SLUG-CELL @ ;
+: SLUG-INIT ( -- )
+   ISSUE-N @ SLUG-TXN-CELLS * SLUG-TXN-RESERVE
+   ISSUE-N @ SLUG-TXN-CELLS * 0 ?do 0 i SLUG-TXN ! loop
+   0 SLUG-PATH-U ! 0 SLUG-FOLDER-MOVED !
+   ISSUE-N @ 0 ?do i F-PATH FIELD$ i 0 SLUG-STORE loop ;
+: SLUG-REBASE-RECORDS ( ptr u8 n ptr u8 n -- )
    {: old-dir:ptr old-u:n new-dir:ptr new-u:n :}
    ISSUE-N @ 0 ?do
       i F-PATH FIELD$ {: old-path:ptr path-u:n :}
@@ -1685,9 +1713,10 @@ variable SLUG-PARENT-SLASH
          then
       then
    loop ;
-: RENAME-PATH ( n -- )
+: SLUG-PLAN-PATH ( n -- )
    {: idx:n :}
    idx F-PATH FIELD$ PATH-ONE!
+   0 SLUG-FOLDER !
    -1 SLUG-LAST-SLASH ! -1 SLUG-PARENT-SLASH !
    PATH-ONE-U @ 0 ?do
       PATH-ONE i + c@ 47 = if
@@ -1696,36 +1725,27 @@ variable SLUG-PARENT-SLASH
       then
    loop
    SLUG-LAST-SLASH @ -1 = if s" Missing issue file or directory in .dots" FAIL then
-   \ A self-named file inside a same-named folder owns that folder.
-   \ Preserve its location under .dots or .dots/archive when moving it.
    idx F-CHILD REC-CELL @ 0= SLUG-PARENT-SLASH @ -1 <> and if
       PATH-ONE SLUG-PARENT-SLASH @ 1+ +
       SLUG-LAST-SLASH @ SLUG-PARENT-SLASH @ - 1-
       OLD-ID$ STR= if
          PATH-ONE SLUG-LAST-SLASH @ DIR? if
+            1 SLUG-FOLDER !
             SB-RESET PATH-ONE SLUG-PARENT-SLASH @ 1+ SB-APPEND
             RENAMED-ID$ SB-APPEND SB$ PATH-TWO!
-            PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$ RENAME-ISSUE
-            PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$
-            REBASE-RENAMED-CHILDREN
-            SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C
-            OLD-ID$ SB-APPEND s" .md" SB-APPEND SB$ PATH-ONE!
-            SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C
-            RENAMED-ID$ SB-APPEND s" .md" SB-APPEND SB$
-            idx F-PATH FIELD!
-            idx SAVE-RECORD
-            PATH-ONE$ REMOVE-FILE
             exit
          then
       then
    then
-   \ A simple issue or child stays in its current active/archive folder.
    SB-RESET PATH-ONE SLUG-LAST-SLASH @ 1+ SB-APPEND
-   RENAMED-ID$ SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
-   PATH-TWO$ idx F-PATH FIELD!
-   idx SAVE-RECORD
-   PATH-ONE$ REMOVE-FILE ;
-: REWRITE-OLD-BLOCKS ( n -- )
+   RENAMED-ID$ SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO! ;
+: SLUG-DEST-OCCUPIED? ( -- bool )
+   PATH-TWO$ EXISTS? PATH-TWO$ SYMLINK? or ;
+: SLUG-OLD-REMAINS? ( -- bool )
+   ISSUE-N @ 0 ?do
+      i F-ID FIELD$ OLD-ID$ STR= if true unloop exit then
+   loop false ;
+: SLUG-REWRITE-BLOCKS ( n -- )
    {: idx:n :}
    idx F-ERROR REC-CELL @ 0<> if exit then
    0 BLOCK-U ! 0 SLUG-CHANGED !
@@ -1734,15 +1754,124 @@ variable SLUG-PARENT-SLASH
       {: at:n :}
       blocks bu at NEXT-LINE drop {: block:ptr sz:n next:n :}
       block sz OLD-ID$ STR= if
+         SLUG-KEEP-OLD @ 0<> if OLD-ID$ BLOCK-ADD then
          RENAMED-ID$ BLOCK-ADD 1 SLUG-CHANGED !
       else block sz BLOCK-ADD then
       next
    repeat drop
    SLUG-CHANGED @ 0<> if
       0 BLOCK-BUF BLOCK-U @ idx F-BLOCKS FIELD!
-      idx F-PATH FIELD$ FILE? 0= if s" Issue not found" FAIL then
-      idx SAVE-RECORD
+      1 idx 7 SLUG-CELL !
    then ;
+: SLUG-PREPARE ( -- )
+   RENAMED-ID$ SLUG-IDX @ F-ID FIELD!
+   SLUG-FOLDER @ 0<> if
+      PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$ SLUG-REBASE-RECORDS
+      SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C
+      RENAMED-ID$ SB-APPEND s" .md" SB-APPEND SB$
+      SLUG-IDX @ F-PATH FIELD!
+   else PATH-TWO$ SLUG-IDX @ F-PATH FIELD! then
+   SLUG-OLD-REMAINS? if 1 else 0 then SLUG-KEEP-OLD !
+   ISSUE-N @ 0 ?do i SLUG-REWRITE-BLOCKS loop
+   1 SLUG-IDX @ 7 SLUG-CELL ! ;
+: SLUG-STAGE-ONE ( n -- )
+   {: idx:n :}
+   idx 0 SLUG-STORED$ RESERVE-ISSUE-SIBLING {: stage:ptr su:n stage-fd:n :}
+   stage-fd close
+   stage su idx 2 SLUG-STORE
+   idx SERIALIZE
+   idx 2 SLUG-STORED$ OUT$ WRITE-ATOMIC-THROW
+   idx 0 SLUG-STORED$ RESERVE-ISSUE-SIBLING {: backup:ptr bu:n backup-fd:n :}
+   backup-fd close
+   backup bu idx 4 SLUG-STORE ;
+: SLUG-STAGE ( -- )
+   ISSUE-N @ 0 ?do
+      i 7 SLUG-CELL @ 0<> if
+         i 0 SLUG-STORED$ FILE? 0= if E-FS-IO throw then
+         i SLUG-STAGE-ONE
+      then
+   loop ;
+: SLUG-RENAME-NOREPLACE-THROW ( ptr u8 n ptr u8 n -- )
+   {: src:ptr su:n dst:ptr du:n :}
+   src su FS-PATHZ {: src-z:ptr :}
+   dst du FS-MUT-PATHZ2 {: dst-z:ptr :}
+   HB-TARGET-MACOS? if
+      src-z dst-z 4 RENAME-X-CALL FS-CAUSE
+   else
+      HB-TARGET-LINUX? if
+         -100 src-z -100 dst-z 1 RENAME-AT2-CALL FS-CAUSE
+      else E-FS-IO throw then
+   then
+   dup 17 = if drop E-SLUG-COLLISION throw then
+   dup FS-DIR-NOT-EMPTY = if drop E-SLUG-COLLISION throw then
+   dup FS-ACCESS-DENIED = if drop E-ISSUE-PERMISSION throw then
+   dup 0<> if drop E-FS-IO throw else drop then ;
+: SLUG-RENAME-BACKUP ( ptr u8 n ptr u8 n -- )
+   RENAME-CAUSE dup FS-ACCESS-DENIED = if drop E-ISSUE-PERMISSION throw then
+   dup 0<> if drop E-FS-IO throw else drop then ;
+: SLUG-UNLINK ( ptr u8 n -- )
+   FS-PATHZ UNLINK-CALL FS-CAUSE
+   dup 2 = if drop exit then
+   dup FS-ACCESS-DENIED = if drop E-ISSUE-PERMISSION throw then
+   dup 0<> if drop E-FS-IO throw else drop then ;
+: SLUG-REBASE-STORED ( n n -- )
+   {: idx:n field:n :}
+   idx field SLUG-STORED$ {: path:ptr pu:n :}
+   pu 0= if exit then
+   path pu PATH-ONE SLUG-LAST-SLASH @ STARTS-WITH?
+   pu SLUG-LAST-SLASH @ > and if
+      path SLUG-LAST-SLASH @ + c@ 47 = if
+         SB-RESET PATH-TWO$ SB-APPEND
+         path SLUG-LAST-SLASH @ + pu SLUG-LAST-SLASH @ - SB-APPEND SB$
+         idx field SLUG-STORE
+      then
+   then ;
+: SLUG-REBASE-STAGED ( -- )
+   ISSUE-N @ 0 ?do
+      i 0 SLUG-REBASE-STORED
+      i 2 SLUG-REBASE-STORED
+      i 4 SLUG-REBASE-STORED
+   loop ;
+: SLUG-COMMIT ( -- )
+   SLUG-FOLDER @ 0<> if
+      PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$ SLUG-RENAME-NOREPLACE-THROW
+      1 SLUG-FOLDER-MOVED !
+      SLUG-REBASE-STAGED
+   then
+   ISSUE-N @ 0 ?do
+      i 7 SLUG-CELL @ 0<> if
+         i 0 SLUG-STORED$ i 4 SLUG-STORED$ SLUG-RENAME-BACKUP
+         1 i 6 SLUG-CELL !
+         i 2 SLUG-STORED$ i F-PATH FIELD$ SLUG-RENAME-NOREPLACE-THROW
+         2 i 6 SLUG-CELL !
+      then
+   loop ;
+: SLUG-ROLLBACK ( -- )
+   ISSUE-N @ 0 ?do
+      i 7 SLUG-CELL @ 0<> if
+         i 6 SLUG-CELL @ 2 = if i F-PATH FIELD$ SLUG-UNLINK then
+         i 6 SLUG-CELL @ 0<> if
+            i 4 SLUG-STORED$ i 0 SLUG-STORED$ SLUG-RENAME-NOREPLACE-THROW
+         then
+         i 2 SLUG-STORED$ nip 0<> if i 2 SLUG-STORED$ SLUG-UNLINK then
+         i 4 SLUG-STORED$ nip 0<> if i 4 SLUG-STORED$ SLUG-UNLINK then
+      then
+   loop
+   SLUG-FOLDER-MOVED @ 0<> if
+      PATH-TWO$ PATH-ONE SLUG-LAST-SLASH @ SLUG-RENAME-NOREPLACE-THROW
+   then ;
+: SLUG-CLEANUP ( -- )
+   ISSUE-N @ 0 ?do
+      i 7 SLUG-CELL @ 0<> if
+         i 2 SLUG-STORED$ SLUG-UNLINK
+         i 4 SLUG-STORED$ SLUG-UNLINK
+      then
+   loop ;
+: SLUG-SKIP ( -- )
+   SB-RESET s" Skipping " SB-APPEND OLD-ID$ SB-APPEND
+   s" : new ID " SB-APPEND RENAMED-ID$ SB-APPEND
+   s"  already exists" SB-APPEND 10 SB-APPEND-C
+   SB$ 2 -rot STDERR-WRITE drop ;
 : SLUGIFY-ONE ( n -- )
    {: idx:n :}
    idx F-ERROR REC-CELL @ 0<> if exit then
@@ -1750,16 +1879,21 @@ variable SLUG-PARENT-SLASH
    idx SLUG-NEW-ID
    OLD-ID$ RENAMED-ID$ STR= if exit then
    RENAMED-ID$ VALID-ID? 0= if s" Invalid issue id" FAIL then
-   RENAMED-ID$ FIND-EXACT -1 <> if
-      SB-RESET s" Skipping " SB-APPEND OLD-ID$ SB-APPEND
-      s" : new ID " SB-APPEND RENAMED-ID$ SB-APPEND
-      s"  already exists" SB-APPEND 10 SB-APPEND-C
-      SB$ 2 -rot STDERR-WRITE drop exit
-   then
+   RENAMED-ID$ FIND-EXACT -1 <> if SLUG-SKIP exit then
    idx F-PATH FIELD$ FILE? 0= if s" Issue not found" FAIL then
-   RENAMED-ID$ idx F-ID FIELD!
-   idx RENAME-PATH
-   ISSUE-N @ 0 ?do i REWRITE-OLD-BLOCKS loop
+   idx SLUG-PLAN-PATH
+   SLUG-DEST-OCCUPIED? if SLUG-SKIP exit then
+   idx SLUG-IDX !
+   SLUG-INIT
+   [: SLUG-PREPARE SLUG-STAGE SLUG-COMMIT ;] catch {: code:n :}
+   code 0<> if
+      [: SLUG-ROLLBACK ;] catch dup 0<> if drop E-FS-IO throw then drop
+      code E-SLUG-COLLISION = if s" Issue already exists" FAIL then
+      code REPORT-ISSUE-WRITE-ERROR
+   then
+   [: SLUG-CLEANUP ;] catch dup 0<> if
+      drop s" Warning: temporary cleanup failed" 2 -rot STDERR-WRITE drop
+   else drop then
    OLD-ID$ DOT-IO:PRINT s"  -> " DOT-IO:PRINT RENAMED-ID$ DOT-IO:PRINT DOT-IO:NL
    1 SLUG-RENAMED +! ;
 create GIT-EXEC-ROW PATH-CAP allot
@@ -1785,6 +1919,7 @@ create GIT-EXEC-ROW PATH-CAP allot
       ENDOF
    ;MATCH ;
 : SLUGIFY-COMMAND ( -- )
+   ASSERT-ARCHIVE-REAL
    true LOAD-ISSUES LOAD-PREFIX
    0 SLUG-RENAMED !
    ISSUE-N @ 0 ?do i SLUGIFY-ONE loop
