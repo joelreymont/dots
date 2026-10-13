@@ -1208,7 +1208,7 @@ variable CLOSED-TIME-U
       dup 1- path + c@ 47 = if 1- exit then
       1-
    repeat drop 0 ;
-: ACTIVE-CHILD? ( n n -- bool )
+: ACTIVE-DESCENDANT? ( n n -- bool )
    {: child:n parent:n :}
    parent F-CHILD REC-CELL @ 0<> if false exit then
    child F-ARCHIVED REC-CELL @ 0<> if false exit then
@@ -1217,26 +1217,27 @@ variable CLOSED-TIME-U
    pp ppu STATUS-DIR-U {: pdir:n :}
    pdir s" .dots" nip <= if false exit then
    child F-PATH FIELD$ {: cp:ptr cpu:n :}
-   cp cpu STATUS-DIR-U pdir <> if false exit then
-   cp pdir pp pdir STR= ;
+   cpu pdir <= if false exit then
+   cp pdir pp pdir STR= 0= if false exit then
+   cp pdir + c@ 47 = ;
 : STATUS-CHILDREN-OPEN? ( n -- bool )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i idx ACTIVE-CHILD? i F-ERROR REC-CELL @ 0= and if
+      i idx ACTIVE-DESCENDANT? i F-ERROR REC-CELL @ 0= and if
          i F-STATUS REC-CELL @ 2 <> if true unloop exit then
       then
    loop false ;
 : LOAD-STATUS-CHILDREN ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i idx ACTIVE-CHILD? i F-ERROR REC-CELL @ 0<> and if
+      i idx ACTIVE-DESCENDANT? i F-ERROR REC-CELL @ 0<> and if
          i PARSE-RECORD
       then
    loop ;
 : ARCHIVE-CHILDREN-CHECK ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i idx ACTIVE-CHILD? if
+      i idx ACTIVE-DESCENDANT? if
          i F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
          i F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
          i F-STATUS REC-CELL @ 2 <> if
@@ -1332,6 +1333,7 @@ variable REOPEN-BACKUPS
 variable REOPEN-CLEAN-ERROR
 variable REOPEN-TARGET
 variable REOPEN-WANTED-STATUS
+variable REOPEN-PARENT-KEEP-U
 : REOPEN-SOURCE$ ( -- ptr u8 n ) REOPEN-SOURCE REOPEN-SOURCE-U @ ;
 : REOPEN-DEST$ ( -- ptr u8 n ) REOPEN-DEST REOPEN-DEST-U @ ;
 : REOPEN-INDEX ( n -- n ) cells REOPEN-INDICES + @ ;
@@ -1365,19 +1367,63 @@ variable REOPEN-WANTED-STATUS
 : REOPEN-ROOTS! ( n -- )
    F-PATH FIELD$ {: path:ptr pu:n :}
    s" .dots/archive/" nip {: base-u:n :}
-   path base-u + pu base-u - 47 INDEX-OF MATCH option
-      none OF pu ENDOF
-      some OF IDX>N base-u + ENDOF
-   ;MATCH {: root-u:n :}
+   path pu STATUS-DIR-U {: dir-u:n :}
+   dir-u base-u >= if dir-u else pu then {: root-u:n :}
    root-u 512 >= if CAP-FAIL then
-   path REOPEN-SOURCE root-u BYTE-COPY
-   root-u REOPEN-SOURCE-U !
+   path REOPEN-SOURCE root-u BYTE-COPY root-u REOPEN-SOURCE-U !
+   ISSUE-N @ 0 ?do
+      i F-ARCHIVED REC-CELL @ 0<> i F-CHILD REC-CELL @ 0= and if
+         i F-PATH FIELD$ {: ancestor:ptr au:n :}
+         ancestor au STATUS-DIR-U {: ancestor-dir:n :}
+         ancestor-dir base-u >=
+         ancestor-dir REOPEN-SOURCE-U @ < and
+         path pu ancestor ancestor-dir STATUS-IN-SUBTREE? and if
+            ancestor REOPEN-SOURCE ancestor-dir BYTE-COPY
+            ancestor-dir REOPEN-SOURCE-U !
+         then
+      then
+   loop
    SB-RESET s" .dots/" SB-APPEND
-   path base-u + root-u base-u - SB-APPEND
+   REOPEN-SOURCE base-u + REOPEN-SOURCE-U @ base-u - SB-APPEND
    SB$ {: dst:ptr du:n :}
    du 512 >= if CAP-FAIL then
    dst REOPEN-DEST du BYTE-COPY
    du REOPEN-DEST-U ! ;
+: REOPEN-ENSURE-DEST-PARENT ( -- )
+   REOPEN-DEST$ {: path:ptr pu:n :}
+   path pu STATUS-DIR-U {: parent-u:n :}
+   s" .dots" SYMLINK? if s" Unsafe active symlink" FAIL then
+   s" .dots" nip REOPEN-PARENT-KEEP-U !
+   s" .dots" nip parent-u >= if exit then
+   s" .dots" nip 1+ begin dup parent-u < while
+      path over + c@ 47 = if
+         path over SYMLINK? if s" Unsafe active symlink" FAIL then
+         path over DIR? if dup REOPEN-PARENT-KEEP-U ! then
+      then
+      1+
+   repeat drop
+   path parent-u SYMLINK? if s" Unsafe active symlink" FAIL then
+   path parent-u DIR? if parent-u REOPEN-PARENT-KEEP-U ! then
+   path parent-u MAKE-DIRS ;
+: REOPEN-CLEAN-NEW-PARENTS ( -- )
+   REOPEN-DEST$ {: path:ptr pu:n :}
+   path pu STATUS-DIR-U
+   begin dup REOPEN-PARENT-KEEP-U @ > while
+      {: parent-u:n :}
+      path parent-u REMOVE-ISSUE-DIR
+      path parent-u STATUS-DIR-U
+   repeat drop ;
+: REOPEN-RENAME-CAUSE ( ptr u8 n ptr u8 n -- n )
+   {: src:ptr su:n dst:ptr du:n :}
+   src su FS-PATHZ {: src-z:ptr :}
+   dst du FS-MUT-PATHZ2 {: dst-z:ptr :}
+   HB-TARGET-MACOS? if
+      src-z dst-z 4 RENAME-X-CALL FS-CAUSE
+   else
+      HB-TARGET-LINUX? if
+         -100 src-z -100 dst-z 1 RENAME-AT2-CALL FS-CAUSE
+      else E-FS-IO throw then
+   then ;
 : REOPEN-STAGE-ONE ( n -- )
    {: at:n :}
    at REOPEN-INDEX F-PATH FIELD$ {: path:ptr pu:n :}
@@ -1441,12 +1487,24 @@ variable REOPEN-WANTED-STATUS
    idx REOPEN-ROOTS!
    idx REOPEN-TARGET ! status REOPEN-WANTED-STATUS !
    0 REOPEN-BACKUPS !
-   REOPEN-SOURCE$ REOPEN-DEST$ RENAME-ISSUE-NOREPLACE
+   REOPEN-DEST$ {: dest:ptr du:n :}
+   dest du SYMLINK? dest du FILE? or dest du DIR? or if
+      s" Issue already exists" FAIL
+   then
+   REOPEN-ENSURE-DEST-PARENT
+   REOPEN-SOURCE$ REOPEN-DEST$ REOPEN-RENAME-CAUSE
+   dup 0<> if
+      REOPEN-CLEAN-NEW-PARENTS
+      dup 17 = if drop s" Issue already exists" FAIL then
+      dup FS-DIR-NOT-EMPTY = if drop s" Issue already exists" FAIL then
+      FS-MUTATION-ERROR
+   else drop then
    [: REOPEN-FINISH ;] catch {: code:n :}
    code 0<> if
       REOPEN-RESTORE
       REOPEN-DEST$ REOPEN-SOURCE$ RENAME-ISSUE-NOREPLACE
       REOPEN-DEST$ REOPEN-SOURCE$ REBASE-STATUS-SUBTREE
+      REOPEN-CLEAN-NEW-PARENTS
       code REPORT-ISSUE-WRITE-ERROR
    then
    REOPEN-CLEAN-BACKUPS ;
