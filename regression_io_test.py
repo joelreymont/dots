@@ -76,6 +76,18 @@ class IORegression(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual((rows[0]['id'], rows[0]['title']), ('a', title))
 
+    def test_reader_closes_after_partial_json_output(self):
+        title = 'x' * 500_000
+        (self.root / '.dots/a.md').write_text(
+            f'---\ntitle: {title}\nstatus: open\npriority: 2\n'
+            'created-at: 2026-01-01T00:00:00Z\n---\n\n')
+        with subprocess.Popen([str(BINARY), 'ls', '--json'], cwd=self.root,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+            self.assertEqual(len(child.stdout.read(128)), 128)
+            child.stdout.close()
+            stderr = child.stderr.read()
+            self.assertEqual((child.wait(timeout=10), stderr), (1, WRITE_ERROR))
+
     def read_probe(self, fd, data=b''):
         # Load the same checked read boundary used by IMPORT-JSONL-FILE.
         # An invalid real descriptor deterministically produces a kernel error.

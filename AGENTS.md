@@ -30,12 +30,19 @@ python3 regression_fs_test.py bin/dot
 python3 regression_graph_test.py benchmark/bin/dot-zig-full-small bin/dot
 python3 regression_loading_test.py benchmark/bin/dot-zig-full-small bin/dot
 python3 regression_json_test.py bin/dot
+python3 regression_archive_test.py bin/dot
+python3 regression_slugify_test.py bin/dot
+python3 regression_io_test.py bin/dot
+python3 regression_concurrency_test.py bin/dot
 ```
 
 The full harness checks exit status, stdout, stderr, and the complete `.dots`
 tree across command sequences. The edge harness checks large stores, unusual
 paths, JSONL import, configuration, and git index effects. The regression suites
-cover adversarial filesystem, graph/import, selective-loading, and JSON cases.
+cover filesystem, graph/import, selective-loading, JSON, archive transitions,
+slugify failure recovery, I/O failures, and concurrent writers. The I/O suite
+uses the pinned Habu compiler to exercise the actual checked-read boundary.
+The slugify suite uses `cc` for a deterministic rename-failure probe.
 Run them as well. Preserve this comparison contract when changing behavior. The accepted scope for JSONL priority is a
 signed i64 integer or an exactly integral decimal/exponent representation; see
 `docs/parity.md` for the bounded difference from the Zig parser.
@@ -43,7 +50,8 @@ signed i64 integer or an exactly integral decimal/exponent representation; see
 ## Source invariants
 
 - `main.f` implements the CLI and filesystem behavior; `abbrev.f` supplies the
-  abbreviation map used by slugify. Keep both under the Habu build.
+  abbreviation map, `io.f` checks CLI I/O, and `lock.f` serializes mutating
+  commands before they load state. Keep them under the Habu build.
 - `.dots/` is repository task history. Do not migrate, rewrite, or discard it
   as part of a language or build change.
 - Keep generated binaries and compiler cache out of commits. Update the size
