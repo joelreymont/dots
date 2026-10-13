@@ -11,6 +11,7 @@ require lib/utf8-scalar.f
 require lib/fmt.f
 require abbrev.f
 require io.f
+require lock.f
 
 package DOT-READ
 
@@ -2281,6 +2282,14 @@ variable CYCLE-TAIL
    repeat
    GIT-ADD-DOTS ;
 public
+: READ-ONLY-COMMAND? ( ptr u8 n -- bool )
+   2dup s" ls" ARG= if 2drop true exit then
+   2dup s" list" ARG= if 2drop true exit then
+   2dup s" ready" ARG= if 2drop true exit then
+   2dup s" show" ARG= if 2drop true exit then
+   2dup s" find" ARG= if 2drop true exit then
+   2dup s" tree" ARG= if 2drop true exit then
+   2drop false ;
 : MAIN ( -- )
    script-argc 0= if
       1 USE-JSON ! -1 FILTER ! 1 WANT-READY ! false LOAD-ISSUES PRINT-LIST exit
@@ -2291,6 +2300,7 @@ public
    2dup s" --version" ARG= if 2drop VERSION exit then
    2dup s" -v" ARG= if 2drop VERSION exit then
    2dup s" hook" ARG= if 2drop s" Unknown command: hook" FAIL then
+   2dup READ-ONLY-COMMAND? 0= if DOT-LOCK:ACQUIRE then
    2dup s" add" ARG= if 2drop 1 ADD-COMMAND exit then
    2dup s" create" ARG= if 2drop 1 ADD-COMMAND exit then
    2dup s" on" ARG= if 2drop 1 STATUS-MULTI exit then
