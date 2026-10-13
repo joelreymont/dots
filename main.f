@@ -7,6 +7,7 @@ require lib/fs-list.f
 require lib/process-env.f
 require lib/json-write.f
 require lib/json-read.f
+require lib/utf8-scalar.f
 require lib/fmt.f
 require abbrev.f
 
@@ -468,9 +469,18 @@ DYNAMIC-BUFFER ORDER n
    FILTER @ -1 <> if idx F-STATUS REC-CELL @ FILTER @ = exit then
    idx F-STATUS REC-CELL @ 2 <> ;
 
+: JSON-BYTES ( ptr writer ptr u8 n -- ptr writer )
+   {: w:ptr a:ptr u:n :}
+   a u UTF8:VALID? if w a u JSON-WRITE:STRING exit then
+   w JSON-WRITE:ARRAY-START
+   u 0 ?do
+      i 0<> if JSON-WRITE:COMMA then
+      a i + c@ JSON-WRITE:U
+   loop
+   JSON-WRITE:ARRAY-END ;
 : JSON-FIELD-S ( ptr writer n n ptr u8 n -- ptr writer )
    {: w:ptr idx:n field:n key:ptr ku:n :}
-   w key ku idx field FIELD$ JSON-WRITE:FIELD-S ;
+   w key ku JSON-WRITE:KEY idx field FIELD$ JSON-BYTES ;
 : JSON-FIELD-OPT ( ptr writer n n ptr u8 n -- ptr writer )
    {: w:ptr idx:n field:n key:ptr ku:n :}
    field F-CLOSED = if
@@ -478,13 +488,13 @@ DYNAMIC-BUFFER ORDER n
    else
       idx field FIELD$ nip 0= if w key ku JSON-WRITE:FIELD-NULL exit then
    then
-   w key ku idx field FIELD$ JSON-WRITE:FIELD-S ;
+   w key ku JSON-WRITE:KEY idx field FIELD$ JSON-BYTES ;
 : JSON-FIELD-REASON ( ptr writer n -- ptr writer )
    {: w:ptr idx:n :}
    idx F-REASON-PRESENT REC-CELL @ 0= if
       w s" close_reason" JSON-WRITE:FIELD-NULL
    else
-      w s" close_reason" idx F-REASON FIELD$ JSON-WRITE:FIELD-S
+      w s" close_reason" JSON-WRITE:KEY idx F-REASON FIELD$ JSON-BYTES
    then ;
 : JSON-ISSUE ( ptr writer n -- ptr writer )
    {: w:ptr idx:n :}
@@ -1726,19 +1736,6 @@ variable JSONL-DEP-SEEN
 : JSONL-FIND ( ptr u8 n -- JR:reader bool )
    {: key:ptr ku:n :}
    JSONL-START key ku JR:FIND-KEY ;
-: JSONL-STRING-FIELD ( ptr u8 n n -- bool )
-   {: key:ptr ku:n field:n :}
-   key ku JSONL-FIND if
-      JR:TOKEN dup JR:T-STR = if
-         drop JSONL-DECODE-BUF 1048576 JR:STR {: size:n :}
-         JSONL-DECODE-BUF size IMPORT-IDX @ field FIELD!
-         JR:CLOSE true exit
-      then
-      JR:T-NULL = if JR:CLOSE false exit then
-      JR:CLOSE E-JR-MALFORMED throw
-   then JR:CLOSE false ;
-: JSONL-REQUIRED-STRING ( ptr u8 n n -- )
-   JSONL-STRING-FIELD 0= if E-JR-MALFORMED throw then ;
 : JSONL-DECIMAL-DIGIT? ( ptr u8 n n -- bool )
    {: a:ptr u:n at:n :}
    a at + c@ DIGIT? if true exit then
@@ -1831,6 +1828,50 @@ variable JSONL-DEP-SEEN
    ;MATCH {: integer:n :}
    JSONL-HAS-FRAC @ 0<> if OPTION:NONE exit then
    integer OPTION:SOME ;
+variable JSONL-BYTE-U
+: JSONL-BYTE-VALUE ( ptr u8 n -- n )
+   JSONL-DECIMAL MATCH option
+      none OF E-JR-MALFORMED throw ENDOF
+      some OF ENDOF
+   ;MATCH
+   dup 0 < over 255 > or if E-JR-MALFORMED throw then ;
+: JSONL-BYTE-ELEM ( JR:reader -- JR:reader n )
+   JR:TOKEN {: kind:n :}
+   kind JR:T-STR = if
+      JSONL-DECODE-BUF JSONL-BYTE-U @ +
+      1048576 JSONL-BYTE-U @ - JR:STR {: size:n :}
+      JSONL-DECODE-BUF JSONL-BYTE-U @ + size JSONL-BYTE-VALUE exit
+   then
+   kind JR:T-INT = kind JR:T-FLOAT = or if
+      JR:SPAN$ JSONL-BYTE-VALUE exit
+   then
+   E-JR-MALFORMED throw ;
+: JSONL-BYTE-ARRAY ( JR:reader -- JR:reader n )
+   0 JSONL-BYTE-U !
+   begin JR:NEXT dup JR:T-ARR-END <> while
+      drop
+      JSONL-BYTE-U @ 1048576 >= if E-JR-MALFORMED throw then
+      JSONL-BYTE-ELEM JSONL-DECODE-BUF JSONL-BYTE-U @ + c!
+      1 JSONL-BYTE-U +!
+   repeat drop JSONL-BYTE-U @ ;
+: JSONL-STRING-FIELD ( ptr u8 n n -- bool )
+   {: key:ptr ku:n field:n :}
+   key ku JSONL-FIND if
+      JR:TOKEN dup JR:T-STR = if
+         drop JSONL-DECODE-BUF 1048576 JR:STR {: size:n :}
+         JSONL-DECODE-BUF size IMPORT-IDX @ field FIELD!
+         JR:CLOSE true exit
+      then
+      dup JR:T-ARR = if
+         drop JSONL-BYTE-ARRAY {: size:n :}
+         JSONL-DECODE-BUF size IMPORT-IDX @ field FIELD!
+         JR:CLOSE true exit
+      then
+      JR:T-NULL = if JR:CLOSE false exit then
+      JR:CLOSE E-JR-MALFORMED throw
+   then JR:CLOSE false ;
+: JSONL-REQUIRED-STRING ( ptr u8 n n -- )
+   JSONL-STRING-FIELD 0= if E-JR-MALFORMED throw then ;
 : JSONL-PRIORITY ( -- )
    s" priority" JSONL-FIND 0= if JR:CLOSE E-JR-MALFORMED throw then
    JR:TOKEN {: kind:n :}
