@@ -68,8 +68,6 @@ variable FIRST
 variable MATCH-I
 variable SORT-TMP
 variable SCAN-NAME-ONLY
-create TARGET-PATH FS-PATH-CAP allot
-create TARGET-ID 129 allot
 DYNAMIC-BUFFER ORDER n
 
 : FAIL ( ptr u8 n -- ) 1 die ;
@@ -290,33 +288,12 @@ DYNAMIC-BUFFER ORDER n
       then
    loop -1 ;
 
-: PARSE-FILE ( ptr u8 n ptr u8 n bool bool -- )
-   {: path:ptr pu:n id:ptr iu:n archived:bool child:bool :}
-   ISSUE-N @ 1+ REC-CELLS * RECORDS-RESERVE
-   ISSUE-N @ 1+ ORDER-RESERVE
-   ISSUE-N @ CURRENT !
+: PARSE-RECORD ( n -- )
+   {: idx:n :}
+   idx CURRENT !
    0 VALID ! 0 BLOCK-ON ! 0 BLOCK-U !
-   id iu CURRENT @ F-ID FIELD!
-   path pu CURRENT @ F-PATH FIELD!
-   CURRENT @ F-TITLE FIELD-EMPTY
-   CURRENT @ F-DESC FIELD-EMPTY
-   s" task" CURRENT @ F-TYPE FIELD!
-   CURRENT @ F-CREATED FIELD-EMPTY
-   CURRENT @ F-CLOSED FIELD-EMPTY
-   CURRENT @ F-REASON FIELD-EMPTY
-   0 CURRENT @ F-REASON-PRESENT REC-CELL !
-   CURRENT @ F-ASSIGNEE FIELD-EMPTY
-   0 CURRENT @ F-ASSIGNEE-PRESENT REC-CELL !
-   0 CURRENT @ F-CLOSED-PRESENT REC-CELL !
-   CURRENT @ F-PARENT FIELD-EMPTY
-   0 CURRENT @ F-PARENT-PRESENT REC-CELL !
-   0 CURRENT @ F-STATUS REC-CELL !
-   2 CURRENT @ F-PRIORITY REC-CELL !
-   archived if 1 else 0 then CURRENT @ F-ARCHIVED REC-CELL !
-   child if 1 else 0 then CURRENT @ F-CHILD REC-CELL !
-   1 CURRENT @ F-ERROR REC-CELL !
-   ISSUE-N @ 1+ ISSUE-N !
-   SCAN-NAME-ONLY @ 0<> if exit then
+   1 idx F-ERROR REC-CELL !
+   idx F-PATH FIELD$ {: path:ptr pu:n :}
    path pu FILE-SIZE FILE-CAP > if
       s" Unexpected internal error (code: StreamTooLong)" FAIL
    then
@@ -340,6 +317,33 @@ DYNAMIC-BUFFER ORDER n
    CURRENT @ F-CREATED FIELD$ nip 0= if exit then
    0 CURRENT @ F-ERROR REC-CELL ! ;
 
+: PARSE-FILE ( ptr u8 n ptr u8 n bool bool -- )
+   {: path:ptr pu:n id:ptr iu:n archived:bool child:bool :}
+   ISSUE-N @ 1+ REC-CELLS * RECORDS-RESERVE
+   ISSUE-N @ 1+ ORDER-RESERVE
+   ISSUE-N @ CURRENT !
+   id iu CURRENT @ F-ID FIELD!
+   path pu CURRENT @ F-PATH FIELD!
+   CURRENT @ F-TITLE FIELD-EMPTY
+   CURRENT @ F-DESC FIELD-EMPTY
+   CURRENT @ F-BLOCKS FIELD-EMPTY
+   s" task" CURRENT @ F-TYPE FIELD!
+   CURRENT @ F-CREATED FIELD-EMPTY
+   CURRENT @ F-CLOSED FIELD-EMPTY
+   CURRENT @ F-REASON FIELD-EMPTY
+   0 CURRENT @ F-REASON-PRESENT REC-CELL !
+   CURRENT @ F-ASSIGNEE FIELD-EMPTY
+   0 CURRENT @ F-ASSIGNEE-PRESENT REC-CELL !
+   0 CURRENT @ F-CLOSED-PRESENT REC-CELL !
+   CURRENT @ F-PARENT FIELD-EMPTY
+   0 CURRENT @ F-PARENT-PRESENT REC-CELL !
+   0 CURRENT @ F-STATUS REC-CELL !
+   2 CURRENT @ F-PRIORITY REC-CELL !
+   archived if 1 else 0 then CURRENT @ F-ARCHIVED REC-CELL !
+   child if 1 else 0 then CURRENT @ F-CHILD REC-CELL !
+   1 CURRENT @ F-ERROR REC-CELL !
+   ISSUE-N @ 1+ ISSUE-N !
+   SCAN-NAME-ONLY @ 0= if CURRENT @ PARSE-RECORD then ;
 : FILE-ENTRY? ( ptr u8 n -- bool )
    {: name:ptr u:n :}
    u 3 < if false exit then
@@ -410,15 +414,8 @@ DYNAMIC-BUFFER ORDER n
       s" Issue not found: " 1 script-argv$ ISSUE-ERROR
    then
    idx PATH-SLASHES 11 > if s" Issue not found: " 1 script-argv$ ISSUE-ERROR then
-   idx F-PATH FIELD$ {: path:ptr pu:n :}
-   idx F-ID FIELD$ {: id:ptr iu:n :}
-   path TARGET-PATH pu BYTE-COPY
-   id TARGET-ID iu BYTE-COPY
-   0 SCAN-NAME-ONLY !
-   TARGET-PATH pu TARGET-ID iu
-   idx F-ARCHIVED REC-CELL @ 0<>
-   idx F-CHILD REC-CELL @ 0<> PARSE-FILE
-   ISSUE-N @ 1- ;
+   idx PARSE-RECORD
+   idx ;
 
 : BYTE-LESS? ( ptr u8 n ptr u8 n -- bool )
    {: a:ptr au:n b:ptr bu:n :}
@@ -1089,6 +1086,7 @@ variable PARENT-IDX
          s" Error: parent and after cannot be the same issue" FAIL
       then
    then
+   1 SCAN-NAME-ONLY !
    true LOAD-ISSUES LOAD-PREFIX
    -1 AFTER-IDX !
    AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ s" After issue not found: " RESOLVE-LABELED AFTER-IDX ! then
@@ -1146,6 +1144,13 @@ variable CLOSED-TIME-U
          then
       then
    loop false ;
+: LOAD-STATUS-CHILDREN ( n -- )
+   {: idx:n :}
+   ISSUE-N @ 0 ?do
+      i F-ARCHIVED REC-CELL @ 0= i F-ERROR REC-CELL @ 0<> and if
+         i F-PARENT FIELD$ idx F-ID FIELD$ STR= if i PARSE-RECORD then
+      then
+   loop ;
 : ARCHIVE-CHILDREN-CHECK ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
@@ -1191,6 +1196,7 @@ variable CLOSED-TIME-U
    idx F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
    idx F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
    status 2 = if
+      idx LOAD-STATUS-CHILDREN
       idx STATUS-CHILDREN-OPEN? if
          CLOSED-STYLE @ 0= if
             s" Cannot close: children are not all closed" FAIL
@@ -1239,13 +1245,15 @@ variable CLOSED-TIME-U
       1 ARG-I +!
    repeat
    STATUS-INDEX @ 0= if s" Usage: dot off <id> [id2 ...] [-r reason]" FAIL then
+   1 SCAN-NAME-ONLY !
    true LOAD-ISSUES
    STATUS-MODE @ 2 = if
       TIMESTAMP$ {: ts:ptr tu:n :}
       ts CLOSED-TIME tu BYTE-COPY tu CLOSED-TIME-U !
    then
    STATUS-INDEX @ 0 ?do
-      i STATUS-ARGS @ RESOLVE-ARG STATUS-MODE @ STATUS-CHANGE
+      i STATUS-ARGS @ RESOLVE-ARG dup RECORD-PATH? if dup PARSE-RECORD then
+      STATUS-MODE @ STATUS-CHANGE
    loop ;
 : STATUS-SINGLE ( n -- )
    STATUS-MODE !
@@ -1274,7 +1282,9 @@ variable CLOSED-TIME-U
          1 ARG-I +!
       repeat
    then
-   true LOAD-ISSUES 1 RESOLVE-ARG STATUS-MODE @ STATUS-CHANGE ;
+   1 SCAN-NAME-ONLY !
+   true LOAD-ISSUES 1 RESOLVE-ARG dup RECORD-PATH? if dup PARSE-RECORD then
+   STATUS-MODE @ STATUS-CHANGE ;
 : INIT-EMPTY ( -- )
    s" .dots/archive" MAKE-DIRS ;
 : SCANNED-NAME ( n -- ptr u8 n n )
