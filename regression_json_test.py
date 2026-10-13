@@ -29,6 +29,21 @@ def imported(binary, row):
         return saved, json.loads(listed.stdout)[0]
 
 
+def dependency_import(binary, dependency):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        rows = [BASE, BASE | {
+            'id': 'b', 'title': 'B', 'dependencies': [dependency],
+        }]
+        (root / 'import.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        proc = command(binary, root, 'init', '--from-jsonl', 'import.jsonl')
+        files = {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in (root / '.dots').rglob('*.md')
+        }
+        return proc, files
+
+
 def cases(binary):
     saved, item = imported(binary, BASE | {'status': [], 'description': []})
     assert b'status: open\n' in saved
@@ -59,6 +74,33 @@ def cases(binary):
             proc = command(binary, root, 'init', '--from-jsonl', 'import.jsonl')
             assert proc.returncode != 0, value
             assert not (root / '.dots' / 'a.md').exists(), value
+
+    for dependency in (
+        {'depends_on_id': [97], 'type': 'blocks'},
+        {'depends_on_id': 'a', 'type': [98, 108, 111, 99, 107, 115]},
+        {'depends_on_id': [97.0], 'type': ['98', 108, 111, 99, 107, 115]},
+    ):
+        proc, files = dependency_import(binary, dependency)
+        assert proc.returncode == 0, (dependency, proc.stderr)
+        assert b'blocks:\n  - a\n' in files['.dots/b.md'], dependency
+
+    proc, files = dependency_import(binary, {
+        'depends_on_id': [97],
+        'type': [112, 97, 114, 101, 110, 116, 45, 99, 104, 105, 108, 100],
+    })
+    assert proc.returncode == 0, proc.stderr
+    assert '.dots/a/b.md' in files and '.dots/a/a.md' in files
+
+    for dependency in (
+        {'depends_on_id': [256], 'type': 'blocks'},
+        {'depends_on_id': [-1], 'type': 'blocks'},
+        {'depends_on_id': [97], 'type': [1.5]},
+        {'depends_on_id': [97], 'type': [True]},
+        {'depends_on_id': [97], 'type': [[98]]},
+    ):
+        proc, files = dependency_import(binary, dependency)
+        assert proc.returncode != 0, dependency
+        assert '.dots/b.md' not in files, dependency
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

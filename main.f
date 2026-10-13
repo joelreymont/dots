@@ -1862,21 +1862,19 @@ variable JSONL-BYTE-U
       JSONL-BYTE-ELEM JSONL-DECODE-BUF JSONL-BYTE-U @ + c!
       1 JSONL-BYTE-U +!
    repeat drop JSONL-BYTE-U @ ;
+: JSONL-STRING-VALUE ( JR:reader -- JR:reader n )
+   JR:TOKEN dup JR:T-STR = if
+      drop JSONL-DECODE-BUF 1048576 JR:STR exit
+   then
+   JR:T-ARR = if JSONL-BYTE-ARRAY exit then
+   E-JR-MALFORMED throw ;
 : JSONL-STRING-FIELD ( ptr u8 n n -- bool )
    {: key:ptr ku:n field:n :}
    key ku JSONL-FIND if
-      JR:TOKEN dup JR:T-STR = if
-         drop JSONL-DECODE-BUF 1048576 JR:STR {: size:n :}
-         JSONL-DECODE-BUF size IMPORT-IDX @ field FIELD!
-         JR:CLOSE true exit
-      then
-      dup JR:T-ARR = if
-         drop JSONL-BYTE-ARRAY {: size:n :}
-         JSONL-DECODE-BUF size IMPORT-IDX @ field FIELD!
-         JR:CLOSE true exit
-      then
-      JR:T-NULL = if JR:CLOSE false exit then
-      JR:CLOSE E-JR-MALFORMED throw
+      JR:TOKEN JR:T-NULL = if JR:CLOSE false exit then
+      JSONL-STRING-VALUE {: size:n :}
+      JSONL-DECODE-BUF size IMPORT-IDX @ field FIELD!
+      JR:CLOSE true exit
    then JR:CLOSE false ;
 : JSONL-REQUIRED-STRING ( ptr u8 n n -- )
    JSONL-STRING-FIELD 0= if E-JR-MALFORMED throw then ;
@@ -1945,13 +1943,11 @@ variable JSONL-BYTE-U
       then
       JR:NEXT {: token:n :}
       id-key if
-         token JR:T-STR <> if E-JR-MALFORMED throw then
-         JSONL-DECODE-BUF 1048576 JR:STR {: size:n :}
+         JSONL-STRING-VALUE {: size:n :}
          JSONL-DECODE-BUF size DEP-ID!
       else type-key if
          token JR:T-NULL = if -1 DEP-TYPE-U ! else
-            token JR:T-STR <> if E-JR-MALFORMED throw then
-            JSONL-DECODE-BUF 1048576 JR:STR {: size:n :}
+            JSONL-STRING-VALUE {: size:n :}
             JSONL-DECODE-BUF size DEP-TYPE!
          then
       else JR:SKIP-VALUE then then
