@@ -4,89 +4,125 @@ Dots is a native Habu implementation of the CLI and Markdown store from Zig
 revision `f107d0165e2c0f080a911a420e1275433df05f4d`, preserved on the
 [`zig` branch](https://github.com/joelreymont/dots/tree/zig). It does not invoke
 Zig at runtime. The differential reference in `benchmark/zig-full/` has Zig
-0.17 API adaptations and a duplicate-config ownership fix. The reference is
-retained for tests; `main.f` and `abbrev.f` are the product source.
+0.17 API adaptations and a duplicate-config ownership fix. The product source
+is `main.f`, `abbrev.f`, `io.f`, and `lock.f`.
 
 ## Current validation
 
-The 2026-10-13 adversarial pass found defects that the initial 96/60 checks
-missed. The repairs prevent `purge` and `fix` from traversing static symlinks,
-restore orphan visibility in `tree`, preserve imported dependency IDs and
-parent paths, avoid parsing unrelated files for mutations, constrain child
-checks to the actual active parent folder, report the reproduced filesystem
-errors, and preserve Zig JSON byte-string semantics. Permanent minimal
-regressions accompany the repairs.
+The 2026-10-13 adversarial pass completed on source commit `c735764e` and
+binary SHA-256
+`dd71cd5378c2a05fd361f00f8fa0ab49f1cdc5ea795e5171f05353f5e6ea4e0b`.
+All 289 permanent checks, 5,956 copied-store checks, and 2,211 generated
+observations passed. No mutation command targeted a live repository store.
+The installed CLI was not replaced.
 
-The current macOS arm64 binary was built with `sh build.sh` using Habu
-`c53b4d2c`. Compiler SHA-256:
-`ccf0798dd4e11a3ea4308386704bd09a5f183750d18b802b9b2d9c28d6af2b96`.
-Current `main.f` SHA-256:
-`867bacd378a4c2bc85ef1f86b3bff53a4ace4f31aca98704984ef04de99ff783`.
-Current `bin/dot` SHA-256:
-`db3ccd79a409ea4d86c2bb26f2f36703513cc81d462d062d70d727969bf811ca`.
+The repairs cover these reproduced failures:
 
-| Executable, macOS arm64 | Bytes |
-| --- | ---: |
-| Habu, current repaired build | 181,884 |
-| Habu, initial port | 165,372 |
-| Ordinary Zig Small reference | 335,280 |
-| Separately minimized Zig reference | 268,320 |
+- Destructive maintenance following symlinks; invisible orphan tree rows;
+  lost imported dependency bytes and incorrect archived or nested parent paths.
+- Mutations parsing unrelated oversized files or selecting another parent's
+  children; JSON byte arrays and invalid UTF-8 handling.
+- Reopening leaving tasks hidden in the archive; failed moves changing task
+  status; archive symlink writes; nested subtree and ancestor transitions.
+- Slugify losing archived/nested paths or dependency targets, overwriting
+  occupied destinations, or leaving inconsistent references after failure.
+- Failed reads treated as EOF, failed/partial stdout writes, and concurrent
+  status changes leaving duplicate active and archived tasks.
 
-The repaired binary is 45.8% smaller than ordinary Zig Small and 32.2% smaller
-than the minimized reference. Its 16,512-byte increase over the initial port
-includes a 16 KiB Mach-O text-segment alignment step; the `__text` section
-itself grew 5,244 bytes. The size report attributes the current file to
-140,232 bytes of code, 7,383 bytes of embedded data, 30,979 bytes of padding,
-and 3,290 other bytes. No arbitrary-precision numeric tower was added. These
-are executable-size measurements, not runtime speed measurements. Reserved
-runtime capacity is not counted as on-disk data.
+The repaired commands serialize cooperating writers before reading state.
+Archive transitions preserve the original bytes on the tested move/write
+failures. Slugify stages each rename and its dependent rewrites, rolls back
+ordinary failures, and preserves all matching targets of duplicated old IDs.
+Closing a parent requires every descendant affected by the operation to be
+valid and closed.
 
-The rebuilt candidate passes these permanent suites against the ordinary
-Zig Small reference:
+## Permanent suites and review
+
+All **289 checks across ten suites** pass on binary `dd71cd53`:
 
 | Suite | Result |
 | --- | ---: |
-| Full command sequences | 96/96 steps |
+| Full command sequences | 98/98 steps |
 | Focused edges | 60/60 cases |
-| Filesystem regressions | 8/8 cases |
-| Graph/import regressions | 4/4 cases |
-| Selective-loading regressions | 47/47 cases |
-| JSON regressions | 20/20 fixtures |
+| Filesystem | 8/8 cases |
+| Graph/import | 4/4 cases |
+| Selective loading | 47/47 cases |
+| JSON bytes | 20/20 fixtures |
+| Archive transitions | 33/33 cases |
+| Slugify recovery | 7/7 cases |
+| I/O failures | 8/8 cases |
+| Concurrent writers | 4/4 cases |
+
+Independent review reported no blocking findings in the reviewed scope after
+18 final boundary probes. Review rounds also exercised duplicate IDs,
+dependency chains, broken pipes, competing writers, and 16 one-shot injected
+syscall failures across closing, reopening, and slugify. Follow-up review
+verified the affected behavior after every resulting repair. Passing these
+checks does not establish correctness for every filesystem failure or process
+interleaving.
+
+## Copied stores and generated cases
+
+Stable snapshots contained **4,590 files from 11 repositories**. The final
+run passed **5,956/5,956 checks**: 5,522 reads, 287 lifecycle steps, 13 successful
+reopens, 44 each for fix/purge/slugify, and two occupied-destination refusals.
+Read-only commands preserved the copied trees. Slugify preserved **4,578 task
+files**, including 957 archived tasks and 1,177 dependency target references.
+The corpus uses exact comparisons plus the explicit corrected contracts below.
+
+Generated tests added **2,211 observations with zero mismatches**: 720 mixed
+command steps, 951 storage/numeric cases, and 540 dependency observations.
+Directed fixtures additionally check duplicate-ID dependency fan-out and
+readiness, slugify idempotence, nested reopening, descendant close refusal,
+and safe closing of standalone archived tasks beside unrelated records.
+
+## Size
+
+Build with `sh build.sh` and pinned Habu `c53b4d2c`. Compiler SHA-256:
+`ccf0798dd4e11a3ea4308386704bd09a5f183750d18b802b9b2d9c28d6af2b96`.
+
+| Executable, macOS arm64 | Bytes |
+| --- | ---: |
+| Habu, final repaired build | 198,396 |
+| Smallest verified Zig build | 268,320 |
+| Ordinary Zig Small differential reference | 335,280 |
+| Habu, initial port | 165,372 |
+
+The repaired binary is **26.1% smaller than the smallest verified Zig build** and
+40.8% smaller than ordinary Zig Small. The increase from the initial Habu port
+is 33,024 bytes. The repairs add code and cross two 16 KiB Mach-O alignment
+boundaries; the increase is not all useful code or all padding. No arbitrary
+precision, binary128, or hexadecimal numeric parser was added. Reserved
+runtime capacity is distinct from bytes carried in the executable. Exact
+hashes and section totals are in the
+[validation record](../benchmark/results/adversarial-2026-10-13.json).
+The final file contains 155,816 bytes of code, 7,694 bytes of
+embedded data, 31,524 bytes of alignment padding, and 3,362 other bytes.
+The loader restores a 6,202,840-byte data window; 6,195,146 of those bytes do
+not travel in the file. These are size measurements, not speed or memory
+benchmarks.
+
+## Comparison contract
 
 The full and edge harnesses compare exit status, stdout, stderr, and the
-complete `.dots` tree. They normalize generated ID suffixes and timestamps,
-and sort only unspecified `find` ordering within open/closed groups. Duplicate
-config entries compare a unique key/value map because ordering is unspecified.
-The regression suites add explicit assertions and, where relevant, paired
-complete-tree comparisons.
+complete `.dots` tree. They normalize generated suffixes and timestamps, sort
+only unspecified `find` ordering within open/closed groups, and compare
+config entries as a unique key/value map where ordering is unspecified.
 
-A separate run used stable copies of **4,590 files from 11 repositories**.
-It exercised listing, every existing task ID, prefixes, searches, task and
-dependency lifecycles, closing/reopening/removal, hierarchy, and maintenance.
-Of **5,941 command comparisons, 5,939 matched completely**. The other two
-were `slugify` progress-output differences described below; exit status,
-stderr, and resulting files matched. Read-only commands preserved every
-copied store. No test ran a mutation command against a live task store.
+Corrected Zig bugs have explicit expectations. For reopening, both reference
+and Habu commands must succeed; the harness then relocates only the named
+archived path in the disposable Zig fixture before resuming exact comparison.
+Two additional Habu assertions check the reopened active paths, metadata,
+children, and empty output. Slugify archive/nested cases and refusal to close
+over malformed descendants assert the corrected state directly. The Zig
+reference source and executable remain unchanged.
 
-A generated run added **2,211 matching command observations**: 720 mixed
-command steps, 951 malformed-storage/numeric observations, and 540 dependency
-observations. Separate probes covered 18 simultaneous adds (at most six at
-once), two simultaneous closes, and 18 concurrent updates per binary. They
-left complete files, preserved unrelated tasks, and leaked no new temporary
-files. Eight SIGTERM timings per binary left complete tasks or no new task;
-they did not establish interruption during the temporary-file write. Existing
-temporary-file sentinels and external symlink targets were preserved.
-
-The compact [adversarial validation record](../benchmark/results/adversarial-2026-10-13.json)
-records counts, binary measurements, and remaining limits without private task
-contents.
-
-Independent review found and verified two further repairs: byte arrays in
-JSONL dependency fields and incorrect child selection. After those fixes,
-12 independently selected paired cases matched output, errors, return code,
-and complete store contents. The review reported no remaining confirmed
-findings in its scope. Testing and review do not establish correctness for
-every possible filesystem failure or process interleaving.
+Real-store slugify checks compare task contents, archive placement, and the
+set of dependency targets before and after renaming, then require an
+idempotent second pass. A duplicate ID may expand to multiple new IDs;
+checking the target set catches lost edges that a simple count would miss.
+Habu and Tender copies now slugify successfully where Zig fails. Listing and
+search checks after those repairs use an independent file census.
 
 ## Repeat the permanent checks
 
@@ -101,31 +137,41 @@ python3 regression_fs_test.py bin/dot
 python3 regression_graph_test.py benchmark/bin/dot-zig-full-small bin/dot
 python3 regression_loading_test.py benchmark/bin/dot-zig-full-small bin/dot
 python3 regression_json_test.py bin/dot
+python3 regression_archive_test.py bin/dot
+python3 regression_slugify_test.py bin/dot
+python3 regression_io_test.py bin/dot
+python3 regression_concurrency_test.py bin/dot
 ```
 
-All harnesses create disposable synthetic stores. Real task contents are not
-committed as fixtures. Rebuild and rerun after source or toolchain changes.
+All harnesses use disposable stores. The I/O suite uses the pinned compiler
+for a direct failed-read probe; the slugify suite uses `cc` to inject an
+actual rename failure after the original file has moved. Archive tests also
+inject failed writes with a zero file-size limit and ignored `SIGXFSZ`.
+Real task contents are not committed as fixtures. Rebuild and rerun after
+source or toolchain changes.
 
-## Remaining differences and inherited behavior
+## Deliberate behavior and limits
 
-- On two copied stores, both CLIs fail `slugify` with `Issue not found` after
-  some renames. Their resulting trees are identical. Habu prints the completed
-  rename progress; Zig loses part of its buffered stdout on the failure.
-- With a closed stdout pipe, Habu exits via SIGPIPE; Zig reports `WriteFailed`.
-  Both had already created one complete task. This is a diagnostic difference.
-- With a read-only task directory, Habu `add` reports `Permission denied`;
-  the adapted Zig reference aborts with a double-free panic. Neither creates
-  a task in that probe.
-- Both implementations leave a reopened task under `archive/`; reopening does
-  not move it back to active storage.
-- Both can rewrite a task as closed before a failed archive move. The command
-  reports failure, but the status change is not rolled back.
-- Both follow an archive-directory symlink when closing a task. The repaired
-  destructive commands `purge` and `fix` have separate no-follow checks; this
-  is not a general filesystem sandbox or protection against symlink races.
-
-These behaviors limit the parity and readiness claim. The installed CLI was
-not replaced as part of validation.
+- Reopening an archived child restores its subtree and reopens closed
+  ancestors. Existing open/active ancestors and unaffected siblings retain
+  their data. A competing active destination is refused without merging;
+  two such existing conflicts were tested on copied stores.
+- Multi-ID commands commit successful earlier IDs before a later ID fails.
+  Slugify similarly commits one consistent rename at a time. Neither is a
+  transaction over the entire command batch.
+- Cleanup can fail after a successful reopen. The diagnostic explicitly says
+  `Reopened issue; temporary cleanup failed`; the transition remains complete.
+- Directory locks serialize cooperating Dots writers. Direct file editors do
+  not take that lock. Static symlink refusal is not protection against hostile
+  concurrent symlink replacement.
+- Execution evidence here is macOS arm64. Linux-specific syscall paths have
+  not been validated by this run.
+- Injected syscall failures test rollback, not power-loss or process-kill
+  durability across multiple files. A rollback can itself fail if the
+  filesystem keeps failing; no blanket crash-durability guarantee is made.
+- On a read-only task directory, Habu reports `Permission denied`; the adapted
+  Zig reference can abort with a double-free panic. The Habu diagnostic is
+  intentional.
 
 ## Historical evidence
 

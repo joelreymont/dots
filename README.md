@@ -9,10 +9,10 @@ Fast task tracking in plain Markdown files. Dots is a single native Habu CLI;
 tasks live in `.dots/` and can be read, edited, and versioned with ordinary
 file tools. It needs no database or server at runtime.
 
-The current stripped macOS arm64 binary is **181,884 bytes** (about 178 KiB).
-In the same comparison, the ordinary Zig Small build was 335,280 bytes and a
-separately minimized Zig build was 268,320 bytes. See [validation and scope](docs/parity.md)
-for the exact measurements and differential tests. The previous Zig source,
+The current stripped macOS arm64 binary is **198,396 bytes** (about 194 KiB),
+**26.1% smaller** than the smallest verified Zig build (268,320 bytes).
+The ordinary Zig Small reference is 335,280 bytes. See
+[validation and scope](docs/parity.md) for measurements and adversarial tests. The previous Zig source,
 build, CI, and release setup remain on the [`zig` branch](https://github.com/joelreymont/dots/tree/zig).
 
 ## Install from source
@@ -74,7 +74,10 @@ The `-p` option accepts a signed decimal value and clamps it to 0–9; the
 default is 2. A task's ID has a project prefix, a title slug, and an eight
 digit hexadecimal suffix. Commands accept unique ID prefixes. A parent task
 is stored with its children in a directory, and a closed root task moves to
-`.dots/archive/`. The CLI's `--help` output gives a compact command summary.
+`.dots/archive/`. Reopening restores archived tasks to active storage and
+reopens closed ancestors as needed. Conflicting active and archived folders
+are refused without merging. The CLI's `--help` output gives a compact command
+summary.
 
 ## Storage
 
@@ -115,15 +118,20 @@ python3 regression_fs_test.py bin/dot
 python3 regression_graph_test.py benchmark/bin/dot-zig-full-small bin/dot
 python3 regression_loading_test.py benchmark/bin/dot-zig-full-small bin/dot
 python3 regression_json_test.py bin/dot
+python3 regression_archive_test.py bin/dot
+python3 regression_slugify_test.py bin/dot
+python3 regression_io_test.py bin/dot
+python3 regression_concurrency_test.py bin/dot
 ```
 
 They create synthetic stores in system temporary directories; they do not
-modify the repository's `.dots/`. The current port passes 96 command sequence
-steps, 60 focused edges, and the four regression suites for filesystem safety,
-graph/import behavior, selective loading, and JSON byte handling. The broader
-adversarial run also compares copied task stores from 11 repositories; see the
-[validation ledger](docs/parity.md) for results and known differences. Rebuild
-and rerun the harnesses after a toolchain or source change.
+modify the repository's `.dots/`. The current port passes **289 checks across
+10 permanent suites**, including concurrent writers, failed reads and writes,
+archive rollback, symlink refusal, and slugify recovery. The broader adversarial
+run uses copied task stores from 11 repositories; see the
+[validation ledger](docs/parity.md) for results and the comparison contract.
+The I/O suite uses the pinned Habu compiler; the slugify failure probe uses
+`cc`. Rebuild and rerun after a toolchain or source change.
 
 ## Migrating from beads
 

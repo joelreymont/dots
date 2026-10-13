@@ -12,7 +12,7 @@ Run `sh build.sh` from the repository root. The script uses the pinned Habu
 release at `$HABU_ROOT` or `~/.local/lib/habu/c53b4d2c` and writes `bin/dot`.
 The compiler cache, temporary files, and binary are ignored by version control.
 Do not commit them. Measure a release binary with `wc -c < bin/dot`; the
-validated macOS arm64 build is 181,884 bytes.
+validated macOS arm64 build is 198,396 bytes.
 
 ## Test
 
@@ -43,8 +43,10 @@ cover filesystem, graph/import, selective-loading, JSON, archive transitions,
 slugify failure recovery, I/O failures, and concurrent writers. The I/O suite
 uses the pinned Habu compiler to exercise the actual checked-read boundary.
 The slugify suite uses `cc` for a deterministic rename-failure probe.
-Run them as well. Preserve this comparison contract when changing behavior. The accepted scope for JSONL priority is a
-signed i64 integer or an exactly integral decimal/exponent representation; see
+Run all ten suites. Preserve exact differential checks except the explicitly
+asserted bug fixes documented in `docs/parity.md`. The accepted scope for JSONL
+priority is a signed i64 integer or an exactly integral decimal/exponent
+representation; see
 `docs/parity.md` for the bounded difference from the Zig parser.
 
 ## Source invariants
