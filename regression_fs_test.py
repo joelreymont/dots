@@ -143,9 +143,9 @@ class FilesystemRegression(unittest.TestCase):
         result = self.run_dot('close', 'a')
 
         self.assertEqual((result.returncode, result.stdout, result.stderr),
-                         (1, b'', b'Unexpected internal error (code: DirNotEmpty)\n'))
+                         (1, b'', b'Issue already exists\n'))
         self.assertEqual(sentinel.read_text(), 'untouched')
-        self.assertTrue((active / 'a.md').is_file())
+        self.assertEqual((active / 'a.md').read_text(), ISSUE)
 
 
 if __name__ == '__main__':

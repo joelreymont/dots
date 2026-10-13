@@ -735,6 +735,8 @@ FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
    E-FS-IO throw ;
 PROCESS-SYMBOLS
 FUNCTION: RENAME-CALL rename ( ptr u8 ptr u8 -- i32 ) ;FUNCTION
+FUNCTION: RENAME-X-CALL renamex_np ( ptr u8 ptr u8 n -- i32 ) ;FUNCTION
+FUNCTION: RENAME-AT2-CALL renameat2 ( n ptr u8 n ptr u8 n -- i32 ) ;FUNCTION
 FUNCTION: UNLINK-CALL unlink ( ptr u8 -- i32 ) ;FUNCTION
 FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
 : FS-CAUSE ( n -- n )
@@ -745,6 +747,22 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
    src su FS-PATHZ dst du FS-MUT-PATHZ2 RENAME-CALL FS-CAUSE ;
 : RENAME-ISSUE ( ptr u8 n ptr u8 n -- )
    RENAME-CAUSE dup 0<> if FS-MUTATION-ERROR else drop then ;
+\ macOS RENAME_EXCL is 4; Linux RENAME_NOREPLACE is 1 and AT_FDCWD is -100.
+\ Both calls refuse an occupied destination in the same rename operation.
+: RENAME-ISSUE-NOREPLACE ( ptr u8 n ptr u8 n -- )
+   {: src:ptr su:n dst:ptr du:n :}
+   src su FS-PATHZ {: src-z:ptr :}
+   dst du FS-MUT-PATHZ2 {: dst-z:ptr :}
+   HB-TARGET-MACOS? if
+      src-z dst-z 4 RENAME-X-CALL FS-CAUSE
+   else
+      HB-TARGET-LINUX? if
+         -100 src-z -100 dst-z 1 RENAME-AT2-CALL FS-CAUSE
+      else E-FS-IO throw then
+   then
+   dup 17 = if drop s" Issue already exists" FAIL then
+   dup FS-DIR-NOT-EMPTY = if drop s" Issue already exists" FAIL then
+   dup 0<> if FS-MUTATION-ERROR else drop then ;
 : REMOVE-ISSUE-FILE ( ptr u8 n -- )
    FS-PATHZ UNLINK-CALL FS-CAUSE
    dup 0<> if FS-MUTATION-ERROR else drop then ;
@@ -765,6 +783,10 @@ FUNCTION: ACCESS-WRITE access ( ptr u8 n -- i32 ) ;FUNCTION
 PTR-VARIABLE RESERVED-TEMP
 variable RESERVED-U
 variable RESERVED-FD
+-91001 constant E-ISSUE-PERMISSION
+-91002 constant E-ISSUE-WRITE
+-91003 constant E-ISSUE-ISDIR
+-91004 constant E-ISSUE-DIR-NOT-EMPTY
 : RESERVE-STASH ( ptr u8 n -- ptr u8 n )
    {: path:ptr pu:n :}
    path pu RESERVE-SIBLING {: temp:ptr tu:n fd:n :}
@@ -777,31 +799,56 @@ variable RESERVED-FD
    code 0= if RESERVED-TEMP @ RESERVED-U @ RESERVED-FD @ exit then
    code E-FS-OPEN = if
       path pu PARENT-WRITABLE? 0= if
-         FFI:ERRNO FS-ACCESS-DENIED = if s" Permission denied" FAIL then
+         FFI:ERRNO FS-ACCESS-DENIED = if E-ISSUE-PERMISSION throw then
       then
    then
    code throw ;
-: WRITE-ATOMIC ( ptr u8 n ptr u8 n -- )
+: WRITE-ATOMIC-THROW ( ptr u8 n ptr u8 n -- )
    {: path:ptr pu:n src:ptr su:n :}
    path pu RESERVE-ISSUE-SIBLING {: temp:ptr tu:n fd:n :}
    0 begin dup su < while
       {: off:n :}
       fd src off + su off - write {: count:n :}
       count 0 <= if
-         fd close temp tu REMOVE-FILE s" I/O error" FAIL
+         fd close temp tu REMOVE-FILE E-ISSUE-WRITE throw
       then
       off count +
    repeat drop
    fd FSYNC-CALL 0<> if
-      fd close temp tu REMOVE-FILE s" I/O error" FAIL
+      fd close temp tu REMOVE-FILE E-ISSUE-WRITE throw
    then
    fd close
    temp tu path pu RENAME-CAUSE {: reason:n :}
    reason 0<> if
       temp tu REMOVE-FILE
-      path pu DIR? if s" Unexpected internal error (code: IsDir)" FAIL then
-      reason FS-MUTATION-ERROR
+      path pu DIR? if E-ISSUE-ISDIR throw then
+      reason FS-ACCESS-DENIED = if E-ISSUE-PERMISSION throw then
+      reason FS-DIR-NOT-EMPTY = if E-ISSUE-DIR-NOT-EMPTY throw then
+      E-FS-IO throw
    then ;
+: REPORT-ISSUE-WRITE-ERROR ( n -- )
+   dup E-ISSUE-PERMISSION = if drop s" Permission denied" FAIL then
+   dup E-ISSUE-WRITE = if drop s" I/O error" FAIL then
+   dup E-ISSUE-ISDIR = if drop s" Unexpected internal error (code: IsDir)" FAIL then
+   dup E-ISSUE-DIR-NOT-EMPTY = if
+      drop s" Unexpected internal error (code: DirNotEmpty)" FAIL
+   then
+   throw ;
+PTR-VARIABLE WRITE-PATH
+variable WRITE-PATH-U
+PTR-VARIABLE WRITE-SRC
+variable WRITE-SRC-U
+: WRITE-ATOMIC ( ptr u8 n ptr u8 n -- )
+   {: path:ptr pu:n src:ptr su:n :}
+   path WRITE-PATH ! pu WRITE-PATH-U !
+   src WRITE-SRC ! su WRITE-SRC-U !
+   [: WRITE-PATH @ WRITE-PATH-U @ WRITE-SRC @ WRITE-SRC-U @
+      WRITE-ATOMIC-THROW ;] catch
+   dup 0<> if REPORT-ISSUE-WRITE-ERROR else drop then ;
+: SAVE-RECORD-THROW ( n -- )
+   {: idx:n :}
+   idx SERIALIZE
+   idx F-PATH FIELD$ OUT$ WRITE-ATOMIC-THROW ;
 : SAVE-RECORD ( n -- )
    {: idx:n :}
    idx SERIALIZE
@@ -1183,39 +1230,71 @@ variable CLOSED-TIME-U
          then
       then
    loop ;
-: REBASE-ARCHIVED-CHILDREN ( n -- )
-   {: idx:n :}
+: STATUS-CHILD-AT? ( n n bool -- bool )
+   {: child:n parent:n archived:bool :}
+   archived if
+      child F-ARCHIVED REC-CELL @ 0= if false exit then
+   else
+      child F-ARCHIVED REC-CELL @ 0<> if false exit then
+   then
+   child PATH-SLASHES archived if 3 else 2 then <> if false exit then
+   child F-PARENT FIELD$ parent F-ID FIELD$ STR= ;
+: REBASE-STATUS-CHILDREN ( n bool bool -- )
+   {: idx:n from-archive:bool to-archive:bool :}
    ISSUE-N @ 0 ?do
-      i idx ACTIVE-CHILD? if
-         1 i F-ARCHIVED REC-CELL !
-         SB-RESET s" .dots/archive/" SB-APPEND idx F-ID FIELD$ SB-APPEND
+      i idx from-archive STATUS-CHILD-AT? if
+         to-archive if 1 else 0 then i F-ARCHIVED REC-CELL !
+         SB-RESET to-archive if s" .dots/archive/" else s" .dots/" then
+         SB-APPEND idx F-ID FIELD$ SB-APPEND
          47 SB-APPEND-C i F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$
          i F-PATH FIELD!
       then
    loop ;
+: ASSERT-ARCHIVE-REAL ( -- )
+   s" .dots/archive" SYMLINK? if s" Unsafe archive symlink" FAIL then ;
+: MOVE-STATUS-PATH ( n bool -- )
+   {: idx:n to-archive:bool :}
+   idx F-ARCHIVED REC-CELL @ 0<> {: from-archive:bool :}
+   from-archive if
+      to-archive if exit then
+   else
+      to-archive 0= if exit then
+   then
+   idx F-CHILD REC-CELL @ 0<> if exit then
+   ASSERT-ARCHIVE-REAL
+   idx F-ID FIELD$ {: id:ptr iu:n :}
+   SB-RESET from-archive if s" .dots/archive/" else s" .dots/" then
+   SB-APPEND id iu SB-APPEND SB$ PATH-ONE!
+   PATH-ONE$ DIR? {: folder:bool :}
+   folder 0= if idx F-PATH FIELD$ PATH-ONE! then
+   SB-RESET to-archive if s" .dots/archive/" else s" .dots/" then
+   SB-APPEND id iu SB-APPEND
+   folder 0= if s" .md" SB-APPEND then
+   SB$ PATH-TWO!
+   PATH-ONE$ PATH-TWO$ RENAME-ISSUE-NOREPLACE
+   folder if
+      SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C id iu SB-APPEND s" .md" SB-APPEND SB$
+      idx F-PATH FIELD!
+      idx from-archive to-archive REBASE-STATUS-CHILDREN
+   else
+      PATH-TWO$ idx F-PATH FIELD!
+   then
+   to-archive if 1 else 0 then idx F-ARCHIVED REC-CELL ! ;
+: ARCHIVE-STATUS-UNCHECKED ( n -- ) true MOVE-STATUS-PATH ;
 : ARCHIVE-STATUS ( n -- )
    {: idx:n :}
    idx F-ARCHIVED REC-CELL @ 0<> if exit then
    idx F-CHILD REC-CELL @ 0<> if exit then
-   idx F-ID FIELD$ {: id:ptr iu:n :}
-   SB-RESET s" .dots/" SB-APPEND id iu SB-APPEND SB$ PATH-ONE!
-   PATH-ONE$ DIR? if
-      idx ARCHIVE-CHILDREN-CHECK
-      SB-RESET s" .dots/archive/" SB-APPEND id iu SB-APPEND SB$ PATH-TWO!
-      PATH-ONE$ PATH-TWO$ RENAME-ISSUE
-      SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C id iu SB-APPEND s" .md" SB-APPEND SB$
-      idx F-PATH FIELD! idx REBASE-ARCHIVED-CHILDREN
-   else
-      SB-RESET s" .dots/archive/" SB-APPEND id iu SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
-      idx F-PATH FIELD$ PATH-TWO$ RENAME-ISSUE
-      PATH-TWO$ idx F-PATH FIELD!
-   then
-   1 idx F-ARCHIVED REC-CELL ! ;
+   idx ARCHIVE-CHILDREN-CHECK
+   idx ARCHIVE-STATUS-UNCHECKED ;
+: UNARCHIVE-STATUS ( n -- ) false MOVE-STATUS-PATH ;
+variable STATUS-SAVE-IDX
 : STATUS-CHANGE ( n n -- )
    {: idx:n status:n :}
    idx RECORD-PATH? 0= if s" Issue not found" FAIL then
    idx F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
    idx F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
+   idx F-ARCHIVED REC-CELL @ 0<> if ASSERT-ARCHIVE-REAL then
    status 2 = if
       idx LOAD-STATUS-CHILDREN
       idx STATUS-CHILDREN-OPEN? if
@@ -1227,6 +1306,18 @@ variable CLOSED-TIME-U
             SB-RESET prefix pu SB-APPEND id iu SB-APPEND suffix su SB-APPEND SB$ FAIL
          then
       then
+   then
+   0
+   status 2 = if
+      idx F-ARCHIVED REC-CELL @ 0= idx F-CHILD REC-CELL @ 0= and if
+         drop idx ARCHIVE-STATUS 1
+      then
+   else
+      idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0= and if
+         drop idx UNARCHIVE-STATUS 2
+      then
+   then {: moved:n :}
+   status 2 = if
       CLOSED-TIME-U @ 0 > if
          CLOSED-TIME CLOSED-TIME-U @ idx F-CLOSED FIELD!
       else TIMESTAMP$ idx F-CLOSED FIELD! then
@@ -1241,8 +1332,13 @@ variable CLOSED-TIME-U
       0 idx F-REASON-PRESENT REC-CELL !
    then
    status idx F-STATUS REC-CELL !
-   idx SAVE-RECORD
-   status 2 = if idx ARCHIVE-STATUS then ;
+   idx STATUS-SAVE-IDX !
+   [: STATUS-SAVE-IDX @ SAVE-RECORD-THROW ;] catch {: code:n :}
+   code 0<> if
+      moved 1 = if idx UNARCHIVE-STATUS then
+      moved 2 = if idx ARCHIVE-STATUS-UNCHECKED then
+      code REPORT-ISSUE-WRITE-ERROR
+   then ;
 : RESOLVE-ARG ( n -- n )
    {: arg:n :}
    arg script-argv$ RESOLVE ;
