@@ -2,6 +2,8 @@
 """Archive transitions and failure atomicity in disposable Dots stores."""
 
 import os
+import resource
+import signal
 from pathlib import Path
 import shutil
 import subprocess
@@ -197,6 +199,32 @@ class ArchiveRegression(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((archived / 'p.md').read_bytes(), parent)
         self.assertFalse((self.dots / 'container').exists())
+
+    def test_post_move_write_failure_removes_created_active_parent(self):
+        archived = self.dots / 'archive/container/p'
+        archived.mkdir(parents=True)
+        parent = issue('Parent', 'closed')
+        child = issue('Child', 'closed')
+        (archived / 'p.md').write_bytes(parent)
+        (archived / 'c.md').write_bytes(child)
+        before = sorted(str(p.relative_to(self.dots)) for p in self.dots.rglob('*'))
+
+        def fail_writes():
+            signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+
+        result = subprocess.run([str(BINARY), 'on', 'p'], cwd=self.root,
+                                capture_output=True, timeout=8,
+                                env=dict(os.environ, NO_COLOR='1'),
+                                preexec_fn=fail_writes)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'I/O error', result.stderr)
+        self.assertEqual((archived / 'p.md').read_bytes(), parent)
+        self.assertEqual((archived / 'c.md').read_bytes(), child)
+        self.assertFalse((self.dots / 'container').exists())
+        self.assertEqual(sorted(str(p.relative_to(self.dots)) for p in self.dots.rglob('*')),
+                         before)
 
     def test_nested_reopen_rejects_symlinked_active_parent(self):
         archived = self.dots / 'archive/container/p'
