@@ -1372,8 +1372,15 @@ variable CLOSED-TIME-U
    idx F-STATUS REC-CELL @ 2 = if false exit then
    idx PATH-SLASHES 2 > if false exit then
    idx F-PARENT FIELD$ dup 0= if 2drop true exit then
-   FIND-EXACT dup -1 = if drop true exit then
-   F-ERROR REC-CELL @ 0<> ;
+   {: parent:ptr pu:n :}
+   SB-RESET s" .dots/" SB-APPEND parent pu SB-APPEND
+   47 SB-APPEND-C parent pu SB-APPEND s" .md" SB-APPEND SB$
+   {: path:ptr plen:n :}
+   ISSUE-N @ 0 ?do
+      i F-PATH FIELD$ path plen STR= i F-ERROR REC-CELL @ 0= and if
+         false unloop exit
+      then
+   loop true ;
 : PRINT-TREE-ROOT ( n -- )
    {: idx:n :}
    91 emit idx F-ID FIELD$ type s" ] " type
@@ -1846,6 +1853,12 @@ variable JSONL-DEP-SEEN
    IMPORT-IDX @ F-REASON FIELD-EMPTY ;
 : IMPORT-DEP-ADD ( ptr u8 n -- )
    {: a:ptr u:n :}
+   a u VALID-ID? 0= if
+      \ One empty entry preserves the post-create warning for this dependency.
+      IMPORT-DEP-U @ 1+ IMPORT-DEP-BUF-RESERVE
+      10 IMPORT-DEP-U @ IMPORT-DEP-BUF c!
+      1 IMPORT-DEP-U +! exit
+   then
    IMPORT-DEP-U @ u + 1+ IMPORT-DEP-BUF-RESERVE
    a IMPORT-DEP-U @ IMPORT-DEP-BUF u BYTE-COPY
    10 IMPORT-DEP-U @ u + IMPORT-DEP-BUF c!
@@ -1993,13 +2006,12 @@ variable CYCLE-TAIL
       SB-RESET s" .dots/" SB-APPEND parent pu SB-APPEND
       47 SB-APPEND-C parent pu SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
       PATH-ONE$ PATH-TWO$ RENAME-FILE
-   then
-   parent pu FIND-EXACT dup -1 <> if
-      {: parent-idx:n :}
-      SB-RESET s" .dots/" SB-APPEND parent pu SB-APPEND
-      47 SB-APPEND-C parent pu SB-APPEND s" .md" SB-APPEND SB$
-      parent-idx F-PATH FIELD!
-   else drop then ;
+      ISSUE-N @ 0 ?do
+         i F-PATH FIELD$ PATH-ONE$ STR= if
+            PATH-TWO$ i F-PATH FIELD!
+         then
+      loop
+   then ;
 : IMPORT-DUPLICATE? ( -- bool )
    IMPORT-IDX @ 0 ?do
       i F-ID FIELD$ IMPORT-IDX @ F-ID FIELD$ STR= if true unloop exit then
