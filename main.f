@@ -718,13 +718,57 @@ variable OUT-U
    else 2drop then ;
 PROCESS-SYMBOLS
 FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
-: ATOMIC-RENAME ( ptr u8 n ptr u8 n -- ptr u8 n ptr u8 n )
-   {: temp:ptr tu:n path:ptr pu:n :}
-   temp tu path pu RENAME-FILE
-   temp tu path pu ;
+13 constant FS-ACCESS-DENIED
+: FS-DIR-NOT-EMPTY ( -- n ) HB-TARGET-MACOS? if 66 else 39 then ;
+: FS-RENAME-ERROR ( n -- )
+   dup FS-ACCESS-DENIED = if drop s" Permission denied" FAIL then
+   FS-DIR-NOT-EMPTY = if
+      s" Unexpected internal error (code: DirNotEmpty)" FAIL
+   then
+   E-FS-IO throw ;
+PROCESS-SYMBOLS
+FUNCTION: RENAME-CALL rename ( ptr u8 ptr u8 -- i32 ) ;FUNCTION
+: RENAME-CAUSE ( ptr u8 n ptr u8 n -- n )
+   {: src:ptr su:n dst:ptr du:n :}
+   src su FS-PATHZ dst du FS-MUT-PATHZ2 RENAME-CALL 0< if
+      FFI:ERRNO dup 0= if drop -1 then exit
+   then
+   0 ;
+: RENAME-ISSUE ( ptr u8 n ptr u8 n -- )
+   RENAME-CAUSE dup 0<> if FS-RENAME-ERROR else drop then ;
+PROCESS-SYMBOLS
+FUNCTION: ACCESS-WRITE access ( ptr u8 n -- i32 ) ;FUNCTION
+: PARENT-WRITABLE? ( ptr u8 n -- bool )
+   {: path:ptr pu:n :}
+   pu begin dup 0 > while
+      dup 1- path + c@ 47 = if
+         1- path swap FS-PATHZ 2 ACCESS-WRITE 0= exit
+      then
+      1-
+   repeat drop
+   s" ." FS-PATHZ 2 ACCESS-WRITE 0= ;
+PTR-VARIABLE RESERVED-TEMP
+variable RESERVED-U
+variable RESERVED-FD
+: RESERVE-STASH ( ptr u8 n -- ptr u8 n )
+   {: path:ptr pu:n :}
+   path pu RESERVE-SIBLING {: temp:ptr tu:n fd:n :}
+   temp RESERVED-TEMP ! tu RESERVED-U ! fd RESERVED-FD !
+   path pu ;
+: RESERVE-ISSUE-SIBLING ( ptr u8 n -- ptr u8 n n )
+   {: path:ptr pu:n :}
+   path pu [: RESERVE-STASH ;] catch {: code:n :}
+   2drop
+   code 0= if RESERVED-TEMP @ RESERVED-U @ RESERVED-FD @ exit then
+   code E-FS-OPEN = if
+      path pu PARENT-WRITABLE? 0= if
+         FFI:ERRNO FS-ACCESS-DENIED = if s" Permission denied" FAIL then
+      then
+   then
+   code throw ;
 : WRITE-ATOMIC ( ptr u8 n ptr u8 n -- )
    {: path:ptr pu:n src:ptr su:n :}
-   path pu RESERVE-SIBLING {: temp:ptr tu:n fd:n :}
+   path pu RESERVE-ISSUE-SIBLING {: temp:ptr tu:n fd:n :}
    0 begin dup su < while
       {: off:n :}
       fd src off + su off - write {: count:n :}
@@ -737,12 +781,11 @@ FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
       fd close temp tu REMOVE-FILE s" I/O error" FAIL
    then
    fd close
-   temp tu path pu [: ATOMIC-RENAME ;] catch {: rename-code:n :}
-   2drop 2drop
-   rename-code 0<> if
+   temp tu path pu RENAME-CAUSE {: reason:n :}
+   reason 0<> if
       temp tu REMOVE-FILE
       path pu DIR? if s" Unexpected internal error (code: IsDir)" FAIL then
-      rename-code throw
+      reason FS-RENAME-ERROR
    then ;
 : SAVE-RECORD ( n -- )
    {: idx:n :}
@@ -1133,12 +1176,12 @@ variable CLOSED-TIME-U
    PATH-ONE$ DIR? if
       idx ARCHIVE-CHILDREN-CHECK
       SB-RESET s" .dots/archive/" SB-APPEND id iu SB-APPEND SB$ PATH-TWO!
-      PATH-ONE$ PATH-TWO$ RENAME-FILE
+      PATH-ONE$ PATH-TWO$ RENAME-ISSUE
       SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C id iu SB-APPEND s" .md" SB-APPEND SB$
       idx F-PATH FIELD! idx REBASE-ARCHIVED-CHILDREN
    else
       SB-RESET s" .dots/archive/" SB-APPEND id iu SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
-      idx F-PATH FIELD$ PATH-TWO$ RENAME-FILE
+      idx F-PATH FIELD$ PATH-TWO$ RENAME-ISSUE
       PATH-TWO$ idx F-PATH FIELD!
    then
    1 idx F-ARCHIVED REC-CELL ! ;
@@ -1242,6 +1285,7 @@ variable CLOSED-TIME-U
    {: depth:n plen:n :}
    depth MAX-DEPTH 1- >= if s" I/O error" FAIL then
    depth PATH-AT {: path:ptr :}
+   path plen SYMLINK? if path plen REMOVE-FILE exit then
    SCAN-NAMES-U @ {: begin-at:n :}
    path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
    SCAN-NAMES-U @ {: end-at:n :}
@@ -1263,7 +1307,7 @@ variable CLOSED-TIME-U
    path 0 PATH-AT pu BYTE-COPY
    0 pu REMOVE-DEEP-TREE ;
 : PURGE-COMMAND ( -- )
-   s" .dots/archive" MAKE-DIRS
+   s" .dots/archive" SYMLINK? 0= if s" .dots/archive" MAKE-DIRS then
    s" .dots/archive" REMOVE-ISSUE-TREE
    s" .dots/archive" MAKE-DIRS
    s" Archive purged" type cr ;
@@ -1389,6 +1433,7 @@ create FIX-FOLDER-ROW 256 allot
    SB-RESET s" .dots/" SB-APPEND FIX-FOLDER-ROW fu SB-APPEND
    SB$ 1 PATH-AT swap BYTE-COPY
    1 PATH-AT {: path:ptr :}
+   path fu 6 + SYMLINK? if exit then
    SCAN-NAMES-U @ {: begin-at:n :}
    path fu 6 + [: GATHER-SCAN-NAME ;] FS-LIST:EACH
    SCAN-NAMES-U @ {: end-at:n :}
@@ -1398,8 +1443,10 @@ create FIX-FOLDER-ROW 256 allot
       at SCANNED-NAME {: name:ptr nu:n next:n :}
       name nu FILE-ENTRY? if
          FIX-FOLDER-ROW fu name nu FIX-PATHS
-         PATH-ONE$ FILE? if
-            PATH-TWO$ FILE? PATH-TWO$ DIR? or if s" Issue already exists" FAIL then
+         PATH-ONE$ SYMLINK? 0= PATH-ONE$ FILE? and if
+            PATH-TWO$ SYMLINK? PATH-TWO$ FILE? or PATH-TWO$ DIR? or if
+               s" Issue already exists" FAIL
+            then
             1 FIX-COUNT +!
          then
       then
@@ -1410,7 +1457,9 @@ create FIX-FOLDER-ROW 256 allot
       at SCANNED-NAME {: name:ptr nu:n next:n :}
       name nu FILE-ENTRY? if
          FIX-FOLDER-ROW fu name nu FIX-PATHS
-         PATH-ONE$ FILE? if PATH-ONE$ PATH-TWO$ RENAME-FILE then
+         PATH-ONE$ SYMLINK? 0= PATH-ONE$ FILE? and if
+            PATH-ONE$ PATH-TWO$ RENAME-FILE
+         then
       then
       next
    repeat drop
@@ -1430,7 +1479,7 @@ create FIX-FOLDER-ROW 256 allot
       at SCANNED-NAME {: name:ptr nu:n next:n :}
       name nu s" archive" STR= 0= if
          SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ PATH-TWO!
-         PATH-TWO$ DIR? if
+         PATH-TWO$ SYMLINK? 0= PATH-TWO$ DIR? and if
             name nu FIX-PARENT-VALID? 0= if name nu FIX-FOLDER then
          then
       then
