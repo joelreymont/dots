@@ -1,5 +1,6 @@
-.zig-cache/
-zig-out/
-zig-pkg/
-SESSION.md
+bin/
+benchmark/bin/
+.build/
+__pycache__/
 .jj-ws/
+SESSION.md

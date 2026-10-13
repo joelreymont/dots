@@ -1,6 +1,6 @@
-# Dots - Agent Instructions
+# Dots agent instructions
 
-Fast CLI issue tracker in Zig with markdown storage.
+Dots is a native Habu CLI that stores tasks as Markdown in `.dots/`.
 
 ## Communication
 
@@ -8,127 +8,43 @@ Always refer to the user as Mr. Picklesworth.
 
 ## Build
 
-```bash
-zig build -Doptimize=ReleaseSmall
-strip zig-out/bin/dot
-```
+Run `sh build.sh` from the repository root. The script uses the pinned Habu
+release at `$HABU_ROOT` or `~/.local/lib/habu/c53b4d2c` and writes `bin/dot`.
+The compiler cache, temporary files, and binary are ignored by version control.
+Do not commit them. Measure a release binary with `wc -c < bin/dot`; the
+accepted macOS arm64 build was 165,372 bytes.
 
 ## Test
 
-```bash
-zig build test
+The parity harnesses use the adapted full Zig reference in
+`benchmark/zig-full/`, built with Zig 0.17. It has API compatibility changes
+and one duplicate-config ownership fix relative to the preserved `zig` branch.
+They run against synthetic stores in temporary directories and compare the
+Habu binary with the reference after every command:
+
+```sh
+sh benchmark/build-zig.sh
+python3 test.py --full benchmark/bin/dot-zig-full-small bin/dot
+python3 edge_test.py benchmark/bin/dot-zig-full-small bin/dot
 ```
 
-## References
+The first harness checks exit status, stdout, stderr, and the complete `.dots`
+tree across command sequences. The second checks large stores, unusual paths,
+JSONL import, configuration, and git index effects. Preserve this comparison
+contract when changing behavior. The accepted scope for JSONL priority is a
+signed i64 integer or an exactly integral decimal/exponent representation; see
+`docs/parity.md` for the bounded difference from the Zig parser.
 
-- [Zig 0.15 API](docs/zig-0.15-api.md) - Critical API changes for comptime, ArrayList, JSON, I/O
+## Source invariants
 
-## Zig Guidelines
-
-### Zig 0.15 Patterns
-- See `docs/zig-0.15-api.md` for API reference
-- ArrayList is unmanaged: `var list = std.ArrayList(T){};` + pass allocator to methods
-- Alignment enum: `alignedAlloc(u8, .@"16", size)`
-
-### Import Once, Reference via Namespace
-```zig
-// WRONG: Multiple imports from same module
-const Type = @import("type.zig").Type;
-const Primitive = @import("type.zig").Primitive;
-
-// RIGHT: Import module once, use namespace
-const types = @import("type.zig");
-// Then use: types.Type, types.Primitive
-```
-
-### Allocator First
-Allocator is ALWAYS the first argument to any function that allocates:
-```zig
-// RIGHT
-pub fn init(allocator: std.mem.Allocator) Self { ... }
-
-// WRONG
-pub fn init(config: Config, allocator: std.mem.Allocator) Self { ... }
-```
-
-### ArrayList Batch Append
-When adding multiple known items to an ArrayList, use a static array + appendSlice:
-```zig
-// WRONG: Append items one by one
-try list.append(allocator, a);
-try list.append(allocator, b);
-try list.append(allocator, c);
-
-// RIGHT: Create static array, appendSlice once
-const items = [_]T{ a, b, c };
-try list.appendSlice(allocator, &items);
-```
-
-### Avoid Allocation When Possible
-- Use stack arrays for small fixed-size data
-- Prefer slices over ArrayList when size is known
-- Use comptime for constant data
-
-### Static String Comparison - Use Comptime Maps
-Instead of chaining `std.mem.eql` comparisons, use comptime string maps:
-
-```zig
-// WRONG - Linear chain of comparisons
-fn parseStatus(s: []const u8) ?Status {
-    if (std.mem.eql(u8, s, "open")) return .open;
-    if (std.mem.eql(u8, s, "active")) return .active;
-    if (std.mem.eql(u8, s, "closed")) return .closed;
-    return null;
-}
-
-// RIGHT - Comptime static string map
-const status_map = std.StaticStringMap(Status).initComptime(.{
-    .{ "open", .open },
-    .{ "active", .active },
-    .{ "closed", .closed },
-});
-
-fn parseStatus(s: []const u8) ?Status {
-    return status_map.get(s);
-}
-```
-
-### JSON - Always Use Typed Structs
-Never manipulate JSON as dynamic `std.json.Value`. Always define typed structs:
-
-```zig
-// WRONG - Dynamic JSON access
-const parsed = try std.json.parseFromSlice(std.json.Value, allocator, input, .{});
-const obj = parsed.value.object;
-const name = obj.get("name").?.string;  // Runtime errors, no type safety
-
-// RIGHT - Typed struct
-const Config = struct {
-    name: []const u8,
-    count: i32 = 0,
-    optional: ?[]const u8 = null,
-};
-const parsed = try std.json.parseFromSlice(Config, allocator, input, .{
-    .ignore_unknown_fields = true,
-});
-const config = parsed.value;  // Type-safe access: config.name, config.count
-```
-
-## Binary Size Tracking
-
-After rebuilding dots with `zig build -Doptimize=ReleaseSmall`, check the binary size:
-
-```bash
-ls -lh zig-out/bin/dot
-```
-
-Compare against README.md line 7 and line 275 which state the current size.
-
-If the size differs significantly (plus or minus 50KB), update:
-1. Line 7: `Minimal task tracker... (X.XMB vs 19MB)...`
-2. Line 275: `| Binary | 19 MB | X.X MB | NNx smaller |`
-
-Calculate the "Nx smaller" as `19 / size_in_mb` rounded to nearest integer.
-
-Current documented size: 1.2MB
-Current actual size: around 910KB (0.9MB) -> needs update to "21x smaller"
+- `main.f` implements the CLI and filesystem behavior; `abbrev.f` supplies the
+  abbreviation map used by slugify. Keep both under the Habu build.
+- `.dots/` is repository task history. Do not migrate, rewrite, or discard it
+  as part of a language or build change.
+- Keep generated binaries and compiler cache out of commits. Update the size
+  claim in README only after measuring a rebuilt, stripped binary on the same
+  target platform.
+- Keep the adapted Zig source under `benchmark/` as a differential reference,
+  not as the product build. The root source and build are Habu.
+- Do not restore the Zig CI or release workflow without a verified Habu
+  bootstrap and release process for every supported runner and target.

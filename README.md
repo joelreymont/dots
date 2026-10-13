@@ -2,324 +2,131 @@
 
 # dots
 
-> **Fast, minimal task tracking with plain markdown files — no database required**
+Fast task tracking in plain Markdown files. Dots is a single native Habu CLI;
+tasks live in `.dots/` and can be read, edited, and versioned with ordinary
+file tools. It needs no database or server at runtime.
 
-Minimal task tracker for AI coding agents.
+The accepted stripped macOS arm64 binary is **165,372 bytes** (about 162 KiB).
+In the same comparison, the ordinary Zig Small build was 335,280 bytes and a
+separately minimized Zig build was 268,320 bytes. See [validation and scope](docs/parity.md)
+for the exact measurements and differential tests. The previous Zig source,
+build, CI, and release setup remain on the [`zig` branch](https://github.com/joelreymont/dots/tree/zig).
 
-| | beads (SQLite) | dots (markdown) |
-|---|---:|---:|
-| Binary | 25 MB | **200 KB** (125x smaller) |
-| Lines of code | 115,000 | **2,800** (41x less) |
-| Dependencies | Go, SQLite/Wasm | None |
-| Portability | Rebuild per platform | Copy `.dots/` anywhere |
+## Install from source
 
-## What is dots?
+Install the pinned Habu release
+`c53b4d2c` at `~/.local/lib/habu/c53b4d2c`, or set `HABU_ROOT` to its root.
+The root must contain `bin/hb` and `tools/hb-build.f`.
 
-A CLI task tracker with **zero dependencies** — tasks are plain markdown files with YAML frontmatter in `.dots/`. No database, no server, no configuration. Copy the folder between machines, commit to git, edit with any tool. Parent-child relationships map to folders. Each task has an ID, title, status, priority, and optional dependencies.
-
-## Contributing
-
-Please open an issue with the details of the feature you want, including the AI prompt if possible, instead of submitting PRs.
-
-## Installation
-
-### Homebrew
-
-```bash
-brew install joelreymont/tap/dots
-```
-
-### From source (requires Zig 0.15+)
-
-```bash
+```sh
 git clone https://github.com/joelreymont/dots.git
 cd dots
-zig build -Doptimize=ReleaseSmall
-cp zig-out/bin/dot ~/.local/bin/
-```
-
-### Verify installation
-
-```bash
+sh build.sh
+install -m 755 bin/dot ~/.local/bin/dot
 dot --version
-# Output: dots 0.6.4
 ```
 
-## Quick Start
+`build.sh` writes the binary to `bin/dot` and uses private caches under
+`.build/`. These outputs are ignored by version control. The CLI currently
+prints `dots 0.6.4 (f107d016)` for `--version` to match the reference CLI.
 
-```bash
-# Initialize in current directory
+## Quick start
+
+```sh
 dot init
-# Creates: .dots/ directory (added to git if in repo)
-
-# Add a task
-dot add "Fix the login bug"
-# Output: dots-a1b2c3d4e5f6a7b8
-
-# List tasks
+dot add "Design API" -p 1 -d "REST endpoints"
+dot "Write tests"                  # Quick add
 dot ls
-# Output: [a1b2c3d] o Fix the login bug
-
-# Start working
-dot on a1b2c3d
-# Output: (none, task marked active)
-
-# Complete task
-dot off a1b2c3d -r "Fixed in commit abc123"
-# Output: (none, task marked done and archived)
-```
-
-## Command Reference
-
-### Initialize
-
-```bash
-dot init
-```
-Creates `.dots/` directory. Runs `git add .dots` if in a git repository. Safe to run if already exists.
-
-### Add Task
-
-```bash
-dot add "title" [-p PRIORITY] [-d "description"] [-P PARENT_ID] [-a AFTER_ID] [--json]
-dot "title"  # shorthand for: dot add "title"
-```
-
-Options:
-- `-p N`: Priority 0-4 (0 = highest, default 2)
-- `-d "text"`: Long description (markdown body of the file)
-- `-P ID`: Parent task ID (creates folder hierarchy)
-- `-a ID`: Blocked by task ID (dependency)
-- `--json`: Output created task as JSON
-
-Examples:
-```bash
-dot add "Design API" -p 1
-# Output: dots-1a2b3c4d5e6f7890
-
-dot add "Implement API" -a dots-1a2b3c4d -d "REST endpoints for user management"
-# Output: dots-3c4d5e6f7a8b9012
-
-dot add "Write tests" --json
-# Output: {"id":"dots-5e6f7a8b9012cdef","title":"Write tests","status":"open","priority":2,...}
-```
-
-### List Tasks
-
-```bash
-dot ls [--status STATUS] [--json]
-```
-
-Options:
-- `--status`: Filter by `open`, `active`, or `done` (default: shows open + active)
-- `--json`: Output as JSON array
-
-Output format (text):
-```
-[1a2b3c4] o Design API        # o = open
-[3c4d5e6] > Implement API     # > = active
-[5e6f7a8] x Write tests       # x = done
-```
-
-### Start Working
-
-```bash
-dot on <id> [id2 ...]
-```
-Marks task(s) as `active`. Use when you begin working on tasks. Supports short ID prefixes.
-
-### Complete Task
-
-```bash
-dot off <id> [id2 ...] [-r "reason"]
-```
-Marks task(s) as `done` and archives them. Optional reason applies to all. Root tasks are moved to `.dots/archive/`. Child tasks wait for parent to close before moving.
-
-### Show Task Details
-
-```bash
+dot ready
+dot on <id>
+dot off <id> -r "Shipped"
 dot show <id>
 ```
 
-Output:
-```
-ID:       dots-1a2b3c4d5e6f7890
-Title:    Design API
-Status:   open
-Priority: 1
-Desc:     REST endpoints for user management
-Created:  2024-12-24T10:30:00Z
-```
+`dot init` creates `.dots/` and stages it with git when run in a git
+repository. Running `dot` with no arguments prints ready tasks as JSON.
 
-### Remove Task
+## Commands
 
-```bash
-dot rm <id> [id2 ...]
-```
-Permanently deletes task file(s). If removing a parent, children are also deleted.
+| Command | Action |
+| --- | --- |
+| `dot add "title" [-p N] [-d TEXT] [-P PARENT] [-a BLOCKER] [--json]` | Create a task; `create` is an alias. |
+| `dot "title"` | Add a task without writing `add`. |
+| `dot ls [--status open\|active\|done] [--json]` | List tasks; `list` is an alias. By default, closed tasks are omitted. |
+| `dot ready [--json]` | List open, unblocked tasks. |
+| `dot show ID` | Show a task, resolving a unique ID prefix. |
+| `dot find QUERY` | Search task details, including the archive. |
+| `dot on ID [ID ...]` | Mark tasks active; `it` is an alias. |
+| `dot off ID [ID ...] [-r REASON]` | Close tasks; `done` is an alias. |
+| `dot update ID --status STATUS` | Change a task status. |
+| `dot close ID [--reason REASON]` | Close one task. |
+| `dot tree [ID]` | Show task hierarchy. |
+| `dot rm ID [ID ...]` | Delete tasks; `delete` is an alias. |
+| `dot fix` | Promote children of missing parent tasks. |
+| `dot slugify` | Rename IDs to title slugs and update references. |
+| `dot purge` | Delete the archive. |
+| `dot init --from-jsonl FILE` | Import tasks from a JSONL export. |
 
-### Show Ready Tasks
+The `-p` option accepts a signed decimal value and clamps it to 0–9; the
+default is 2. A task's ID has a project prefix, a title slug, and an eight
+digit hexadecimal suffix. Commands accept unique ID prefixes. A parent task
+is stored with its children in a directory, and a closed root task moves to
+`.dots/archive/`. The CLI's `--help` output gives a compact command summary.
 
-```bash
-dot ready [--json]
-```
-Lists tasks that are `open` and have no blocking dependencies (or blocker is `done`).
+## Storage
 
-### Show Hierarchy
-
-```bash
-dot tree [id]
-```
-
-Without arguments: shows all open root dots and their children.
-With `id`: shows that specific dot's tree (including closed children).
-
-Output:
-```
-[1a2b3c4] o Build auth system
-  +- [2b3c4d5] o Design schema
-  +- [3c4d5e6] o Implement endpoints (blocked)
-  +- [4d5e6f7] o Write tests (blocked)
-```
-
-### Fix Orphans
-
-```bash
-dot fix
-```
-Promotes orphaned children to root and removes missing parent folders.
-
-### Search Tasks
-
-```bash
-dot find "query"
-```
-Case-insensitive search across title, description, close-reason, created-at, and closed-at. Shows open dots first, then archived.
-
-### Purge Archive
-
-```bash
-dot purge
-```
-Permanently deletes all archived (completed) tasks from `.dots/archive/`.
-
-## Storage Format
-
-Tasks are stored as markdown files with YAML frontmatter in `.dots/`:
-
-```
-.dots/
-  a1b2c3d4e5f6a7b8.md              # Root dot (no children)
-  f9e8d7c6b5a49382/                # Parent with children
-    f9e8d7c6b5a49382.md            # Parent dot file
-    1a2b3c4d5e6f7890.md            # Child dot
-  archive/                          # Closed dots
-    oldtask12345678.md             # Archived root dot
-    oldparent1234567/              # Archived tree
-      oldparent1234567.md
-      oldchild23456789.md
-  config                            # ID prefix setting
-```
-
-### File Format
+Each task is a Markdown file with YAML frontmatter. For example:
 
 ```markdown
 ---
-title: Fix the bug
+title: Design API
 status: open
-priority: 2
+priority: 1
 issue-type: task
-assignee: joel
-created-at: 2024-12-24T10:30:00Z
+created-at: 2026-01-01T00:00:00Z
 blocks:
-  - a3f2b1c8d9e04a7b
+  - dots-design-schema-1234abcd
 ---
 
-Description as markdown body here.
+Describe the work here.
 ```
 
-### ID Format
+The `.dots/config` file stores the project ID prefix. Parent task folders hold
+their task file and child files. Closed root tasks live under `.dots/archive/`.
+The complete storage and command compatibility contract is in
+[the parity ledger](docs/parity.md).
 
-IDs have the format `{prefix}-{slug}-{hex}` where:
-- `prefix`: Project prefix from `.dots/config` (default: `dots`)
-- `slug`: URL-safe abbreviation of the title (max 32 chars)
-- `hex`: 8-character random hex suffix
+## Test
 
-Example: `dots-fix-user-auth-a3f2b1c8`
+The Python harnesses compare `bin/dot` with the adapted full Zig reference
+under `benchmark/zig-full/`. Zig 0.17 is required for the reference build.
+Its source has API compatibility changes and a narrow duplicate-config
+ownership fix relative to the `zig` branch:
 
-The slug uses common abbreviations (authentication→auth, configuration→config, etc.) and truncates at word boundaries. Run `dot slugify` to rename existing IDs to include slugs.
-
-Commands accept short prefixes:
-
-```bash
-dot on a3f2b1    # Matches dots-fix-user-auth-a3f2b1c8
-dot show a3f     # Error if ambiguous (multiple matches)
+```sh
+sh build.sh
+sh benchmark/build-zig.sh
+python3 test.py --full benchmark/bin/dot-zig-full-small bin/dot
+python3 edge_test.py benchmark/bin/dot-zig-full-small bin/dot
 ```
 
-### Slugify
-
-```bash
-dot slugify
-```
-Renames all issue IDs (including archived) to include slugs based on their titles. Preserves the hex suffix and updates all dependency references.
-
-### Status Flow
-
-```
-open -> active -> done (archived)
-```
-
-- `open`: Task created, not started
-- `active`: Currently being worked on
-- `done`: Completed, moved to archive
-
-### Priority Scale
-
-- `0`: Critical
-- `1`: High
-- `2`: Normal (default)
-- `3`: Low
-- `4`: Backlog
-
-### Dependencies
-
-- `parent (-P)`: Creates folder hierarchy. Parent folder contains child files.
-- `blocks (-a)`: Stored in frontmatter. Task blocked until all blockers are `done`.
-
-### Archive Behavior
-
-When a task is marked done:
-- **Root tasks**: Immediately moved to `.dots/archive/`
-- **Child tasks**: Stay in parent folder until parent is closed
-- **Parent tasks**: Only archive when ALL children are closed (moves entire folder)
-
-## Agent Integration
-
-dots is a pure CLI tool. For Claude Code and Codex integration (session management, auto-continuation, context clearing), use [banjo](https://github.com/joelreymont/banjo).
+They create synthetic stores in system temporary directories; they do not
+modify the repository's `.dots/`. The accepted port passed 96 command sequence
+steps and 60 focused edges against both ordinary and minimized Zig binaries.
+The current repository revision should be rebuilt and checked after a toolchain
+or source change.
 
 ## Migrating from beads
 
-If you have existing tasks in `.beads/beads.db`, use the migration script:
+If you have existing tasks in `.beads/beads.db`, run `./migrate-dots.sh`.
+The script requires `sqlite3` and `jq` and verifies the imported data before
+prompting to delete the old store.
 
-```bash
-./migrate-dots.sh
-```
+## Contributing
 
-This exports your tasks from SQLite and imports them as markdown files. The script verifies the migration was successful before prompting you to delete the old `.beads/` directory.
-
-Requirements: `sqlite3` and `jq` must be installed.
-
-## Why dots?
-
-| Feature | Description |
-|---------|-------------|
-| Markdown files | Human-readable, git-friendly storage |
-| YAML frontmatter | Structured metadata with flexible body |
-| Folder hierarchy | Parent-child relationships as directories |
-| Short IDs | Type `a3f` instead of `dots-a3f2b1c8d9e04a7b` |
-| Archive | Completed tasks out of sight, available if needed |
-| Zero dependencies | Single binary, no runtime requirements |
+Please open an issue with the feature details, including the AI prompt if
+applicable, before submitting a pull request.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

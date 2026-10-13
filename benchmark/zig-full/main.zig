@@ -4,9 +4,23 @@ const Allocator = std.mem.Allocator;
 const storage_mod = @import("storage.zig");
 const build_options = @import("build_options");
 
-const libc = @cImport({
-    @cInclude("time.h");
-});
+const libc = struct {
+    pub const time_t = c_long;
+    pub const struct_tm = extern struct {
+        tm_sec: c_int,
+        tm_min: c_int,
+        tm_hour: c_int,
+        tm_mday: c_int,
+        tm_mon: c_int,
+        tm_year: c_int,
+        tm_wday: c_int,
+        tm_yday: c_int,
+        tm_isdst: c_int,
+        tm_gmtoff: c_long,
+        tm_zone: ?[*:0]const u8,
+    };
+    pub extern "c" fn localtime_r(*const time_t, *struct_tm) ?*struct_tm;
+};
 
 const Storage = storage_mod.Storage;
 const Issue = storage_mod.Issue;
@@ -58,8 +72,8 @@ pub fn main(init: std.process.Init) void {
 fn run(init: std.process.Init) !void {
     app_io = init.io;
 
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer if (gpa.deinit() == .leak) @panic("memory leak detected");
+    var gpa: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    defer if (gpa.deinit() != 0) @panic("memory leak detected");
     const allocator = gpa.allocator();
 
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -111,14 +125,14 @@ var stderr_writer: ?std.Io.File.Writer = null;
 
 fn stdout() *std.Io.Writer {
     if (stdout_writer == null) {
-        stdout_writer = std.Io.File.stdout().writer(app_io, &stdout_buffer);
+        stdout_writer = std.Io.File.stdout().writerStreaming(app_io, &stdout_buffer);
     }
     return &stdout_writer.?.interface;
 }
 
 fn stderr() *std.Io.Writer {
     if (stderr_writer == null) {
-        stderr_writer = std.Io.File.stderr().writer(app_io, &stderr_buffer);
+        stderr_writer = std.Io.File.stderr().writerStreaming(app_io, &stderr_buffer);
     }
     return &stderr_writer.?.interface;
 }

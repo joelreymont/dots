@@ -2236,9 +2236,10 @@ pub const Storage = struct {
                     self.allocator.free(v);
                     return err;
                 };
-                // Free old entry if duplicate key in file
+                // fetchPut keeps the existing key allocation on this Zig
+                // version; only the value is replaced by the new allocation.
                 if (result) |old| {
-                    self.allocator.free(old.key);
+                    self.allocator.free(k);
                     self.allocator.free(old.value);
                 }
             }

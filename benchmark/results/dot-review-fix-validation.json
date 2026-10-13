@@ -1,0 +1,139 @@
+{
+  "pinned_habu_release": "c53b4d2c",
+  "upstream_reference": "dots-f107d0165e2c0f080a911a420e1275433df05f4d",
+  "before_snapshot": "/tmp/dots-review-fix-before-2z7kcki1",
+  "before_source_sha256": "43b32d9b599c9814221eed86017f36565da31c7c1e59f2b796d9787bf206f6da",
+  "before_edge_test_sha256": "95576f24dd234be0abf5f745c4a4b4909e7f84e7822e42d451c0c92b0af866e5",
+  "wide_precision_before_removal_snapshot": "/tmp/dots-wide-before-removal-22lnrz_n",
+  "source": {
+    "path": "main.f",
+    "bytes": 73543,
+    "sha256": "7ca835b7547c2e27aaa74a890ebb7341285aabde6e87b0c07d4ba99695f777c4"
+  },
+  "edge_test": {
+    "path": "edge_test.py",
+    "bytes": 18786,
+    "sha256": "8e1128bdf509d97b865b86d05b61fe6131a0b72d68e9246486ca29b931b54c27"
+  },
+  "full_test": {
+    "path": "test.py",
+    "bytes": 20115,
+    "sha256": "66bfe630cb43b456c8f43c50c5404bb85928c3e12b15f12c0dd5cf112847c1e7"
+  },
+  "habu_binary": {
+    "path": "bin/dot",
+    "bytes": 165372,
+    "sha256": "5439c8622ed61c6b0f1029676f533e40a1940403249e45934fef33b72452eea0"
+  },
+  "zig_baseline_binary": {
+    "path": "benchmark/bin/dot-zig-full-small",
+    "bytes": 335280,
+    "sha256": "f8ae9725bbdf232e742486da6169fa69c52b16af74812d1fc6985d4fce25a152"
+  },
+  "zig_smallest_binary": {
+    "path": "benchmark/bin/dot-zig-smallest",
+    "bytes": 268320,
+    "sha256": "5cb198e29f113319bee787505d669a20e89bb156d783962da16cc9e10398a31e"
+  },
+  "adapted_zig_storage": {
+    "path": "benchmark/zig-full/storage.zig",
+    "bytes": 84664,
+    "sha256": "88fc6f01f15613315b029f5c4a8892457ff529c633c82bab5755c0fd33ec280b"
+  },
+  "zig_smallest_measurement": {
+    "path": "benchmark/results/zig-smallest-measurement.json",
+    "bytes": 2742,
+    "sha256": "2fbcab06d2753a3029ac251923b7f2e71772eebc9a49dd71a409b34f953a5144"
+  },
+  "habu_size_report": {
+    "path": "benchmark/results/dot-review-fix-build.json",
+    "bytes": 1141,
+    "sha256": "dedb1f3e9c57df6eedc1c4aefa0312ce6906e1a41562fab2527e7503e5f67662"
+  },
+  "checks": [
+    {
+      "kind": "full",
+      "zig_reference": "baseline",
+      "command": "python3 test.py --full benchmark/bin/dot-zig-full-small bin/dot",
+      "passed": 96,
+      "total": 96,
+      "log": {
+        "path": "benchmark/results/dot-review-fix-full-baseline.log",
+        "bytes": 3805,
+        "sha256": "dbef2d83a48793df531049e09f64b5548119678a2e707d356d10f53c7e99d1e2"
+      },
+      "run_dir": "full-parity-myvnjwal",
+      "result_json": {
+        "path": "benchmark/results/dot-review-fix-full-baseline.json",
+        "bytes": 1568029,
+        "sha256": "af8a4eec896a3bf049819978eea6e3bd64de9529edab885a87877c9a4c132f00"
+      }
+    },
+    {
+      "kind": "edge",
+      "zig_reference": "baseline",
+      "command": "python3 edge_test.py benchmark/bin/dot-zig-full-small bin/dot",
+      "passed": 60,
+      "total": 60,
+      "log": {
+        "path": "benchmark/results/dot-review-fix-edge-baseline.log",
+        "bytes": 1526,
+        "sha256": "0bf6e78d0765678eda9cc41ffd57453a7ccc1caf846f574645727338beb2ed56"
+      },
+      "run_dir": "full-edge-2oektwki",
+      "result_json": {
+        "path": "benchmark/results/dot-review-fix-edge-baseline.json",
+        "bytes": 66969,
+        "sha256": "6936a2c30ddad61c443d3c4e391966179769844f7a94bdc8c5836e04c696a462"
+      }
+    },
+    {
+      "kind": "full",
+      "zig_reference": "smallest",
+      "command": "python3 test.py --full benchmark/bin/dot-zig-smallest bin/dot",
+      "passed": 96,
+      "total": 96,
+      "log": {
+        "path": "benchmark/results/dot-review-fix-full-minimal.log",
+        "bytes": 3805,
+        "sha256": "73a59adfc0dbf4edfae75e9be1e88c81da68b462aea1e511f43d6949f4a30f7c"
+      },
+      "run_dir": "full-parity-sn6ybso7",
+      "result_json": {
+        "path": "benchmark/results/dot-review-fix-full-minimal.json",
+        "bytes": 1568027,
+        "sha256": "f864adf7cff57e779aa1d138d56fc59f5b7b8b9d8643a56c7cff3288e94dc11c"
+      }
+    },
+    {
+      "kind": "edge",
+      "zig_reference": "smallest",
+      "command": "python3 edge_test.py benchmark/bin/dot-zig-smallest bin/dot",
+      "passed": 60,
+      "total": 60,
+      "log": {
+        "path": "benchmark/results/dot-review-fix-edge-minimal.log",
+        "bytes": 1526,
+        "sha256": "47b70a3f28e0e4b3944e966b73d8b2f9e85d678c4af249279cd43075ed6a7bdd"
+      },
+      "run_dir": "full-edge-kdwmy43o",
+      "result_json": {
+        "path": "benchmark/results/dot-review-fix-edge-minimal.json",
+        "bytes": 66967,
+        "sha256": "ab7643441e23e1144443ea9210e17d4da3537f576daaa423226c663f927827db"
+      }
+    }
+  ],
+  "memory_report": {
+    "path": "benchmark/results/dot-review-fix-memory.json",
+    "bytes": 2063,
+    "sha256": "a2aa2acf68786b32c6269e8d93f7098c47fbaa64d94bbf705ae4442128dd3516"
+  },
+  "review_diff": {
+    "path": "benchmark/results/dot-review-fix.diff",
+    "bytes": 16260,
+    "sha256": "6001f3680e36b0d9d36f1f6449010e1c71a8546a4df47715d2b00d3d52e4259e"
+  },
+  "intentional_numeric_input_limit": "Exact-integral decimal/exponent i64 priorities only; excludes Zig binary128 rounding of nonintegral values and quoted hex floats by user choice.",
+  "review_findings": "Five confirmed findings in /tmp/dots-final-focused-review.md; corrected in main.f and edge_test.py within bounded numeric-input scope."
+}
