@@ -1215,7 +1215,11 @@ variable CLOSED-TIME-U
    child parent = if false exit then
    parent F-PATH FIELD$ {: pp:ptr ppu:n :}
    pp ppu STATUS-DIR-U {: pdir:n :}
-   pdir s" .dots" nip <= if false exit then
+   parent F-ARCHIVED REC-CELL @ 0<> if
+      pdir s" .dots/archive" nip <= if false exit then
+   else
+      pdir s" .dots" nip <= if false exit then
+   then
    child F-PATH FIELD$ {: cp:ptr cpu:n :}
    cpu pdir <= if false exit then
    cp pdir pp pdir STR= 0= if false exit then

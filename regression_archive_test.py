@@ -373,6 +373,40 @@ class ArchiveRegression(unittest.TestCase):
         self.assertEqual((archived / 'deep/leaf.md').read_bytes(), leaf)
         self.assertEqual(active.read_bytes(), active_leaf)
 
+    def test_archived_single_ignores_unrelated_archive_entries_on_close(self):
+        archive = self.dots / 'archive'
+        single = archive / 'a.md'
+        unrelated = archive / 'b.md'
+        nested = archive / 'other/deep.md'
+        nested.parent.mkdir()
+        nested_bytes = issue('Other nested task')
+        nested.write_bytes(nested_bytes)
+        for content in (issue('B'), b'not frontmatter\n',
+                        issue('B', 'unknown')):
+            with self.subTest(unrelated=content):
+                single.write_bytes(issue('A', 'active'))
+                unrelated.write_bytes(content)
+
+                self.ok('close', 'a')
+
+                self.assertIn(b'status: closed', single.read_bytes())
+                self.assertEqual(unrelated.read_bytes(), content)
+                self.assertEqual(nested.read_bytes(), nested_bytes)
+
+    def test_active_single_still_ignores_unrelated_siblings_on_close(self):
+        active = self.dots / 'a.md'
+        unrelated = self.dots / 'b.md'
+        unrelated_bytes = b'not frontmatter\n'
+        active.write_bytes(issue('A'))
+        unrelated.write_bytes(unrelated_bytes)
+
+        self.ok('close', 'a')
+
+        self.assertFalse(active.exists())
+        self.assertIn(b'status: closed',
+                      (self.dots / 'archive/a.md').read_bytes())
+        self.assertEqual(unrelated.read_bytes(), unrelated_bytes)
+
     def test_orphan_ancestor_folder_moves_without_new_parent_task(self):
         archived = self.dots / 'archive/container/p'
         archived.mkdir(parents=True)
