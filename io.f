@@ -1,6 +1,6 @@
 \ Checked CLI I/O: partial writes continue; failed reads are not EOF.
-require lib/process.f
-require lib/fmt.f
+require src/lib/process.f
+require src/lib/fmt.f
 
 package DOT-IO
 create CHAR-BUF 1 allot

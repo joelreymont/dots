@@ -1,8 +1,8 @@
 \ Serialize dot writers before they load any issue state. The current directory
 \ exists even for `dot init`, and locking it leaves no persistent lock file.
-require lib/fs.f
-require lib/process.f
-require lib/ffi-abi.f
+require src/lib/fs.f
+require src/lib/process.f
+require src/lib/ffi-abi.f
 
 package DOT-LOCK
 PROCESS-SYMBOLS

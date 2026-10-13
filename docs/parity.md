@@ -78,8 +78,10 @@ and safe closing of standalone archived tasks beside unrelated records.
 
 ## Size
 
-Build with `sh build.sh` and pinned Habu `c53b4d2c`. Compiler SHA-256:
-`ccf0798dd4e11a3ea4308386704bd09a5f183750d18b802b9b2d9c28d6af2b96`.
+Build with `sh build.sh`, which uses the installed `hb` on `PATH`. The
+validation evidence below was produced with Habu `c53b4d2c`, compiler SHA-256
+`ccf0798dd4e11a3ea4308386704bd09a5f183750d18b802b9b2d9c28d6af2b96`. A rebuild
+with Habu `436ff134` measured 198,396 bytes and passed all ten permanent suites.
 
 | Executable, macOS arm64 | Bytes |
 | --- | ---: |
@@ -143,7 +145,7 @@ python3 regression_io_test.py bin/dot
 python3 regression_concurrency_test.py bin/dot
 ```
 
-All harnesses use disposable stores. The I/O suite uses the pinned compiler
+All harnesses use disposable stores. The I/O suite uses the installed `hb`
 for a direct failed-read probe; the slugify suite uses `cc` to inject an
 actual rename failure after the original file has moved. Archive tests also
 inject failed writes with a zero file-size limit and ignored `SIGXFSZ`.

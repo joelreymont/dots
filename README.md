@@ -17,9 +17,10 @@ build, CI, and release setup remain on the [`zig` branch](https://github.com/joe
 
 ## Install from source
 
-Install the pinned Habu release
-`c53b4d2c` at `~/.local/lib/habu/c53b4d2c`, or set `HABU_ROOT` to its root.
-The root must contain `bin/hb` and `tools/hb-build.f`.
+Install Habu so that `hb` on `PATH` resolves to an installed release, normally
+`~/.local/bin/hb` through `~/.local/lib/habu/current`. `build.sh` builds from
+that release's root, which must contain `bin/hb` and `tools/hb-build.f`. To
+build with another Habu, put its `bin/hb` first on `PATH`.
 
 ```sh
 git clone https://github.com/joelreymont/dots.git
@@ -130,7 +131,7 @@ modify the repository's `.dots/`. The current port passes **289 checks across
 archive rollback, symlink refusal, and slugify recovery. The broader adversarial
 run uses copied task stores from 11 repositories; see the
 [validation ledger](docs/parity.md) for results and the comparison contract.
-The I/O suite uses the pinned Habu compiler; the slugify failure probe uses
+The I/O suite uses the installed `hb`; the slugify failure probe uses
 `cc`. Rebuild and rerun after a toolchain or source change.
 
 ## Migrating from beads

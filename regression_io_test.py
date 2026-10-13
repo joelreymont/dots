@@ -10,7 +10,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 BINARY = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 else ROOT / 'bin/dot'
-HABU = Path(os.environ.get('HABU_ROOT', Path.home() / '.local/lib/habu/c53b4d2c'))
 WRITE_ERROR = b'Unexpected internal error (code: WriteFailed)\n'
 
 
@@ -95,8 +94,8 @@ class IORegression(unittest.TestCase):
         script.write_text(f'require {ROOT / "io.f"}\ncreate BUF 32 allot\n'
                           f': PROBE ( -- ) {fd} BUF 32 DOT-IO:READ-CHUNK '
                           'BUF swap DOT-IO:PRINT ;\nPROBE\n')
-        return subprocess.run([str(HABU / 'bin/hb'), '--load', str(script)],
-                              cwd=HABU, input=data, capture_output=True, timeout=10)
+        return subprocess.run(['hb', '--load', str(script)],
+                              cwd=self.root, input=data, capture_output=True, timeout=10)
 
     def test_failed_read_is_not_eof(self):
         result = self.read_probe(-1)

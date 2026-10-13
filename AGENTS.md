@@ -8,8 +8,10 @@ Always refer to the user as Mr. Picklesworth.
 
 ## Build
 
-Run `sh build.sh` from the repository root. The script uses the pinned Habu
-release at `$HABU_ROOT` or `~/.local/lib/habu/c53b4d2c` and writes `bin/dot`.
+Run `sh build.sh` from the repository root. The script builds with the
+installed Habu that `hb` on `PATH` resolves to and writes `bin/dot`.
+Always use the current Habu; never pin a Habu revision in scripts, tests or
+docs.
 The compiler cache, temporary files, and binary are ignored by version control.
 Do not commit them. Measure a release binary with `wc -c < bin/dot`; the
 validated macOS arm64 build is 198,396 bytes.
@@ -41,7 +43,7 @@ tree across command sequences. The edge harness checks large stores, unusual
 paths, JSONL import, configuration, and git index effects. The regression suites
 cover filesystem, graph/import, selective-loading, JSON, archive transitions,
 slugify failure recovery, I/O failures, and concurrent writers. The I/O suite
-uses the pinned Habu compiler to exercise the actual checked-read boundary.
+uses the installed `hb` to exercise the actual checked-read boundary.
 The slugify suite uses `cc` for a deterministic rename-failure probe.
 Run all ten suites. Preserve exact differential checks except the explicitly
 asserted bug fixes documented in `docs/parity.md`. The accepted scope for JSONL
