@@ -10,6 +10,7 @@ require lib/json-read.f
 require lib/utf8-scalar.f
 require lib/fmt.f
 require abbrev.f
+require io.f
 
 package DOT-READ
 
@@ -511,9 +512,9 @@ DYNAMIC-BUFFER ORDER n
    JSON-WRITE:OBJECT-END ;
 : PRINT-ISSUE ( n -- )
    {: idx:n :}
-   s" [" type idx F-ID FIELD$ type s" ] " type
-   idx F-STATUS REC-CELL @ STATUS>CHAR emit 32 emit
-   idx F-TITLE FIELD$ type cr ;
+   s" [" DOT-IO:PRINT idx F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
+   idx F-STATUS REC-CELL @ STATUS>CHAR DOT-IO:PRINT-BYTE 32 DOT-IO:PRINT-BYTE
+   idx F-TITLE FIELD$ DOT-IO:PRINT DOT-IO:NL ;
 : PRINT-LIST ( -- )
    SORT-ISSUES
    USE-JSON @ 0<> if
@@ -527,7 +528,7 @@ DYNAMIC-BUFFER ORDER n
             1 FIRST !
          then
       loop
-      JSON-WRITE:ARRAY-END dup JSON-WRITE:$ type cr JSON-WRITE:CLOSE
+      JSON-WRITE:ARRAY-END dup JSON-WRITE:$ DOT-IO:PRINT DOT-IO:NL JSON-WRITE:CLOSE
       JSON-OUT-BUF BUF:DISPOSE
    else
       ISSUE-N @ 0 ?do i ORDER @ dup SHOW-IN-LIST? if PRINT-ISSUE else drop then loop
@@ -573,49 +574,49 @@ DYNAMIC-BUFFER ORDER n
    then
    idx F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
    idx F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
-   s" ID:       " type idx F-ID FIELD$ type cr
-   s" Title:    " type idx F-TITLE FIELD$ type cr
-   s" Status:   " type idx F-STATUS REC-CELL @ STATUS>DISPLAY type cr
-   s" Priority: " type idx F-PRIORITY REC-CELL @ FMT:.INT cr
-   idx F-DESC FIELD$ dup 0<> if s" Desc:     " type type cr else 2drop then
-   s" Created:  " type idx F-CREATED FIELD$ type cr
-   idx F-CLOSED FIELD$ dup 0<> if s" Closed:   " type type cr else 2drop then
+   s" ID:       " DOT-IO:PRINT idx F-ID FIELD$ DOT-IO:PRINT DOT-IO:NL
+   s" Title:    " DOT-IO:PRINT idx F-TITLE FIELD$ DOT-IO:PRINT DOT-IO:NL
+   s" Status:   " DOT-IO:PRINT idx F-STATUS REC-CELL @ STATUS>DISPLAY DOT-IO:PRINT DOT-IO:NL
+   s" Priority: " DOT-IO:PRINT idx F-PRIORITY REC-CELL @ DOT-IO:INT DOT-IO:NL
+   idx F-DESC FIELD$ dup 0<> if s" Desc:     " DOT-IO:PRINT DOT-IO:PRINT DOT-IO:NL else 2drop then
+   s" Created:  " DOT-IO:PRINT idx F-CREATED FIELD$ DOT-IO:PRINT DOT-IO:NL
+   idx F-CLOSED FIELD$ dup 0<> if s" Closed:   " DOT-IO:PRINT DOT-IO:PRINT DOT-IO:NL else 2drop then
    idx F-REASON-PRESENT REC-CELL @ 0<> if
-      s" Reason:   " type idx F-REASON FIELD$ type cr
+      s" Reason:   " DOT-IO:PRINT idx F-REASON FIELD$ DOT-IO:PRINT DOT-IO:NL
    then ;
 
 : ARG= ( ptr u8 n ptr u8 n -- bool ) STR= ;
 : USAGE ( -- )
-   s" dots - Connect the dots" type cr cr
-   s" Usage: dot [command] [options]" type cr cr
-   s" Commands:" type cr
-   s"   dot " type 34 emit s" title" type 34 emit s"                   Quick add a dot" type cr
-   s"   dot add " type 34 emit s" title" type 34 emit s"  [options]    Add a dot (-p priority, -d desc, -P parent, -a after)" type cr
-   s"   dot ls [--status S] [--json] List dots" type cr
-   s"   dot on <id>                  Start working (turn it on!)" type cr
-   s"   dot off <id> [-r reason]     Complete (" type 34 emit s" cross it off" type 34 emit s" )" type cr
-   s"   dot rm <id>                  Remove a dot" type cr
-   s"   dot show <id>                Show dot details" type cr
-   s"   dot ready [--json]           Show unblocked dots" type cr
-   s"   dot tree [id]                Show hierarchy (with id: includes closed children)" type cr
-   s"   dot fix                      Repair missing parents" type cr
-   s"   dot find " type 34 emit s" query" type 34 emit s"              Search all dots (open first, then archived)" type cr
-   s"   dot purge                    Delete archived dots" type cr
-   s"   dot init                     Initialize .dots directory" type cr cr
-   s" Examples:" type cr
-   s"   dot " type 34 emit s" Fix the bug" type 34 emit cr
-   s"   dot add " type 34 emit s" Design API" type 34 emit s"  -p 1 -d " type 34 emit s" REST endpoints" type 34 emit cr
-   s"   dot add " type 34 emit s" Implement" type 34 emit s"  -P dots-1 -a dots-2" type cr
-   s"   dot on dots-3" type cr
-   s"   dot off dots-3 -r " type 34 emit s" shipped" type 34 emit cr ;
-: VERSION ( -- ) s" dots 0.6.4 (f107d016)" type cr ;
+   s" dots - Connect the dots" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Usage: dot [command] [options]" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Commands:" DOT-IO:PRINT DOT-IO:NL
+   s"   dot " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" title" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"                   Quick add a dot" DOT-IO:PRINT DOT-IO:NL
+   s"   dot add " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" title" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"  [options]    Add a dot (-p priority, -d desc, -P parent, -a after)" DOT-IO:PRINT DOT-IO:NL
+   s"   dot ls [--status S] [--json] List dots" DOT-IO:PRINT DOT-IO:NL
+   s"   dot on <id>                  Start working (turn it on!)" DOT-IO:PRINT DOT-IO:NL
+   s"   dot off <id> [-r reason]     Complete (" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" cross it off" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" )" DOT-IO:PRINT DOT-IO:NL
+   s"   dot rm <id>                  Remove a dot" DOT-IO:PRINT DOT-IO:NL
+   s"   dot show <id>                Show dot details" DOT-IO:PRINT DOT-IO:NL
+   s"   dot ready [--json]           Show unblocked dots" DOT-IO:PRINT DOT-IO:NL
+   s"   dot tree [id]                Show hierarchy (with id: includes closed children)" DOT-IO:PRINT DOT-IO:NL
+   s"   dot fix                      Repair missing parents" DOT-IO:PRINT DOT-IO:NL
+   s"   dot find " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" query" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"              Search all dots (open first, then archived)" DOT-IO:PRINT DOT-IO:NL
+   s"   dot purge                    Delete archived dots" DOT-IO:PRINT DOT-IO:NL
+   s"   dot init                     Initialize .dots directory" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Examples:" DOT-IO:PRINT DOT-IO:NL
+   s"   dot " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" Fix the bug" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE DOT-IO:NL
+   s"   dot add " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" Design API" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"  -p 1 -d " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" REST endpoints" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE DOT-IO:NL
+   s"   dot add " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" Implement" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"  -P dots-1 -a dots-2" DOT-IO:PRINT DOT-IO:NL
+   s"   dot on dots-3" DOT-IO:PRINT DOT-IO:NL
+   s"   dot off dots-3 -r " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" shipped" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE DOT-IO:NL ;
+: VERSION ( -- ) s" dots 0.6.4 (f107d016)" DOT-IO:PRINT DOT-IO:NL ;
 : FIND-USAGE ( -- )
-   s" Usage: dot find <query>" type cr cr
-   s" Search all dots (open first, then archived)." type cr cr
-   s" Searches: title, description, close-reason, created-at, closed-at" type cr cr
-   s" Examples:" type cr
-   s"   dot find " type 34 emit s" auth" type 34 emit s"       Search for dots mentioning auth" type cr
-   s"   dot find " type 34 emit s" 2026-01" type 34 emit s"    Find dots from January 2026" type cr ;
+   s" Usage: dot find <query>" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Search all dots (open first, then archived)." DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Searches: title, description, close-reason, created-at, closed-at" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Examples:" DOT-IO:PRINT DOT-IO:NL
+   s"   dot find " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" auth" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"       Search for dots mentioning auth" DOT-IO:PRINT DOT-IO:NL
+   s"   dot find " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" 2026-01" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"    Find dots from January 2026" DOT-IO:PRINT DOT-IO:NL ;
 : UNSUPPORTED ( -- ) s" Unsupported command" FAIL ;
 : PARSE-LIST-ARGS ( n -- )
    0 USE-JSON ! -1 FILTER ! 0 WANT-READY !
@@ -1181,9 +1182,9 @@ variable PARENT-IDX
    s" --json" ARG-AT? if
       JSON-OUT-BUF 1024 BUF:N>BLEN BUF:INIT
       JSON-W JSON-OUT-BUF JSON-WRITE:OPEN-BUF
-      idx JSON-ISSUE dup JSON-WRITE:$ type cr JSON-WRITE:CLOSE
+      idx JSON-ISSUE dup JSON-WRITE:$ DOT-IO:PRINT DOT-IO:NL JSON-WRITE:CLOSE
       JSON-OUT-BUF BUF:DISPOSE
-   else idx F-ID FIELD$ type cr then ;
+   else idx F-ID FIELD$ DOT-IO:PRINT DOT-IO:NL then ;
 
 variable STATUS-TARGET
 PTR-VARIABLE REASON-A
@@ -1437,7 +1438,7 @@ variable STATUS-SAVE-IDX
    s" .dots/archive" SYMLINK? 0= if s" .dots/archive" MAKE-DIRS then
    s" .dots/archive" REMOVE-ISSUE-TREE
    s" .dots/archive" MAKE-DIRS
-   s" Archive purged" type cr ;
+   s" Archive purged" DOT-IO:PRINT DOT-IO:NL ;
 : REMOVE-BLOCK-REFERENCE ( n n -- )
    {: idx:n deleted:n :}
    idx F-ERROR REC-CELL @ 0<> if exit then
@@ -1482,13 +1483,13 @@ variable STATUS-SAVE-IDX
    true LOAD-ISSUES
    script-argc 1 ?do i RESOLVE-ARG RM-ONE loop ;
 : TREE-HELP ( -- )
-   s" Usage: dot tree [id]" type cr cr
-   s" Show dot hierarchy." type cr cr
-   s" Without arguments: shows all open root dots and their children." type cr
-   s" With id: shows that specific dot's tree (including closed children)." type cr cr
-   s" Examples:" type cr
-   s"   dot tree                    Show all open root dots" type cr
-   s"   dot tree my-project         Show specific dot and its children" type cr ;
+   s" Usage: dot tree [id]" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Show dot hierarchy." DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Without arguments: shows all open root dots and their children." DOT-IO:PRINT DOT-IO:NL
+   s" With id: shows that specific dot's tree (including closed children)." DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
+   s" Examples:" DOT-IO:PRINT DOT-IO:NL
+   s"   dot tree                    Show all open root dots" DOT-IO:PRINT DOT-IO:NL
+   s"   dot tree my-project         Show specific dot and its children" DOT-IO:PRINT DOT-IO:NL ;
 : STATUS-SYMBOL ( n -- ptr u8 n )
    dup 0 = if drop s" ○" exit then
    dup 1 = if drop s" >" exit then
@@ -1510,18 +1511,18 @@ variable STATUS-SAVE-IDX
    loop true ;
 : PRINT-TREE-ROOT ( n -- )
    {: idx:n :}
-   91 emit idx F-ID FIELD$ type s" ] " type
-   idx F-STATUS REC-CELL @ STATUS-SYMBOL type 32 emit
-   idx F-TITLE FIELD$ type cr
+   91 DOT-IO:PRINT-BYTE idx F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
+   idx F-STATUS REC-CELL @ STATUS-SYMBOL DOT-IO:PRINT 32 DOT-IO:PRINT-BYTE
+   idx F-TITLE FIELD$ DOT-IO:PRINT DOT-IO:NL
    ISSUE-N @ 0 ?do
       i ORDER @ {: child:n :}
       child F-ERROR REC-CELL @ 0= child F-ARCHIVED REC-CELL @ 0= and if
          child PATH-SLASHES 2 = if
             child F-PARENT FIELD$ idx F-ID FIELD$ STR= if
-               s"   └─ [" type child F-ID FIELD$ type s" ] " type
-               child F-STATUS REC-CELL @ STATUS-SYMBOL type 32 emit
-               child F-TITLE FIELD$ type
-               child BLOCKED? if s"  (blocked)" type then cr
+               s"   └─ [" DOT-IO:PRINT child F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
+               child F-STATUS REC-CELL @ STATUS-SYMBOL DOT-IO:PRINT 32 DOT-IO:PRINT-BYTE
+               child F-TITLE FIELD$ DOT-IO:PRINT
+               child BLOCKED? if s"  (blocked)" DOT-IO:PRINT then DOT-IO:NL
             then
          then
       then
@@ -1619,10 +1620,10 @@ create FIX-FOLDER-ROW 256 allot
       then
       next
    repeat drop
-   FIX-FOLDERS @ 0= if s" No fixes needed" type cr exit then
-   s" Fixed " type FIX-FOLDERS @ FMT:.INT
-   s"  orphan parent(s), moved " type FIX-FILES @ FMT:.INT
-   s"  file(s)" type cr ;
+   FIX-FOLDERS @ 0= if s" No fixes needed" DOT-IO:PRINT DOT-IO:NL exit then
+   s" Fixed " DOT-IO:PRINT FIX-FOLDERS @ DOT-IO:INT
+   s"  orphan parent(s), moved " DOT-IO:PRINT FIX-FILES @ DOT-IO:INT
+   s"  file(s)" DOT-IO:PRINT DOT-IO:NL ;
 FUNCTION: STDERR-WRITE write ( n ptr u8 n -- n ) ;FUNCTION
 create OLD-ID-ROW 129 allot
 variable OLD-ID-U
@@ -1758,7 +1759,7 @@ variable SLUG-PARENT-SLASH
    RENAMED-ID$ idx F-ID FIELD!
    idx RENAME-PATH
    ISSUE-N @ 0 ?do i REWRITE-OLD-BLOCKS loop
-   OLD-ID$ type s"  -> " type RENAMED-ID$ type cr
+   OLD-ID$ DOT-IO:PRINT s"  -> " DOT-IO:PRINT RENAMED-ID$ DOT-IO:PRINT DOT-IO:NL
    1 SLUG-RENAMED +! ;
 create GIT-EXEC-ROW PATH-CAP allot
 : GIT-ADD-DOTS ( -- )
@@ -1786,7 +1787,7 @@ create GIT-EXEC-ROW PATH-CAP allot
    true LOAD-ISSUES LOAD-PREFIX
    0 SLUG-RENAMED !
    ISSUE-N @ 0 ?do i SLUGIFY-ONE loop
-   s" Slugified " type SLUG-RENAMED @ FMT:.INT s"  issue(s)" type cr
+   s" Slugified " DOT-IO:PRINT SLUG-RENAMED @ DOT-IO:INT s"  issue(s)" DOT-IO:PRINT DOT-IO:NL
    GIT-ADD-DOTS ;
 
 \ JSONL migration uses the checked JSON cursor and keeps each source line live
@@ -2246,7 +2247,7 @@ variable CYCLE-TAIL
    path pu FS-PATHZ open-rd {: fd:n :}
    fd 0 < if s" I/O error" FAIL then
    begin
-      fd JSONL-CHUNK 8192 read JSONL-CHUNK-U !
+      fd JSONL-CHUNK 8192 DOT-IO:READ-CHUNK JSONL-CHUNK-U !
       JSONL-CHUNK-U @ 0 >
    while
       JSONL-CHUNK-U @ 0 ?do
@@ -2264,8 +2265,8 @@ variable CYCLE-TAIL
    fd close
    IMPORT-ARCHIVE-CLOSED
    IMPORTED-N @ 0 > if
-      s" Imported " type IMPORTED-N @ FMT:.INT
-      s"  issues from " type path pu type cr
+      s" Imported " DOT-IO:PRINT IMPORTED-N @ DOT-IO:INT
+      s"  issues from " DOT-IO:PRINT path pu DOT-IO:PRINT DOT-IO:NL
    then
    IMPORT-SKIPPED-N @ s"  issues due to errors" WARN-IMPORT-NUM
    DEP-SKIPPED-N @ s"  dependencies due to errors" WARN-IMPORT-NUM ;

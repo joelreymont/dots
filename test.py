@@ -384,10 +384,60 @@ def full_main():
                     'stderr': normalize_full(err, ids[side]),
                     'tree': tree_snapshot(root, ids[side]),
                 })
+            if (argv and argv[0] == 'on' and
+                    observations[0]['exit'] == observations[1]['exit'] == 0):
+                # Historical Zig reopens the record but leaves its path in
+                # archive. Rebase only the named, successfully reopened roots
+                # in the disposable reference copy, then compare everything.
+                for token in argv[1:]:
+                    ref_id = ids[0].get(token[1:], token) if token.startswith('@') else token
+                    new_id = ids[1].get(token[1:], token) if token.startswith('@') else token
+                    for suffix in ('', '.md'):
+                        old = roots[0] / '.dots/archive' / (ref_id + suffix)
+                        new = roots[1] / '.dots' / (new_id + suffix)
+                        target = roots[0] / '.dots' / (ref_id + suffix)
+                        if old.exists() and new.exists() and not target.exists():
+                            old.rename(target)
+                observations[0]['tree'] = tree_snapshot(roots[0], ids[0])
             equal = observations[0] == observations[1]
             report.append({'sequence':name, 'step':step, 'argv':argv,
                            'passed':equal, 'observations':observations})
             print(('PASS ' if equal else 'FAIL ') + name + ':' + str(step) + ' ' + repr(argv), flush=True)
+    # Reopening an archived root intentionally differs from the historical Zig
+    # reference. Exercise that behavior on the Habu side with a concrete
+    # storage and metadata contract, leaving every other comparison exact.
+    for parent in (False, True):
+        root = run / ('reopen-parent' if parent else 'reopen-root')
+        root.mkdir()
+        old = 'archive/p/p.md' if parent else 'archive/old.md'
+        ident = 'p' if parent else 'old'
+        put(root, old, issue('Archived root', 'closed', extra=
+                            'closed-at: 2026-02-04T00:00:00Z\nclose-reason: Old fix'))
+        if parent:
+            put(root, 'archive/p/c.md', issue('Archived child', 'closed'))
+            child_before = (root / '.dots/archive/p/c.md').read_bytes()
+        proc = subprocess.run([binaries[1], 'on', ident], cwd=root, env=env,
+                              capture_output=True, timeout=10)
+        task = root / '.dots' / (f'{ident}/{ident}.md' if parent else 'old.md')
+        content = task.read_text() if task.is_file() else ''
+        errors = []
+        if proc.returncode != 0: errors.append('reopen command failed')
+        if proc.stdout or proc.stderr: errors.append('unexpected reopen output')
+        if not task.is_file(): errors.append('reopened task missing from active storage')
+        if (root / '.dots' / old).exists(): errors.append('old archive task remains')
+        if '\nstatus: active\n' not in content: errors.append('active status not persisted')
+        if 'closed-at:' in content or 'close-reason:' in content:
+            errors.append('closed metadata not cleared')
+        if parent and ((root / '.dots/p/c.md').read_bytes()
+                       if (root / '.dots/p/c.md').is_file() else None) != child_before:
+            errors.append('archived child not preserved during parent reopen')
+        report.append({'sequence':'reopen-contract', 'step':int(parent),
+                       'argv':['on', ident], 'passed':not errors,
+                       'errors':errors, 'observations':[{'habu_exit':proc.returncode,
+                           'stdout':proc.stdout.decode(errors='replace'),
+                           'stderr':proc.stderr.decode(errors='replace'),
+                           'tree':tree_snapshot(root, {})}]})
+        print(('PASS ' if not errors else 'FAIL ') + 'reopen-contract:' + str(int(parent)), flush=True)
     result = {'binaries':binaries, 'passed':sum(x['passed'] for x in report),
               'total':len(report), 'steps':report}
     (run / 'full-results.json').write_text(json.dumps(result, indent=2) + '\n')

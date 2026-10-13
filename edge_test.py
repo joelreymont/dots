@@ -369,6 +369,14 @@ def main():
         same = observed[0] == observed[1]
         if case in ('slugify-archived-parent', 'slugify-deep'):
             same = corrected_slugify_case(case, roots, observed)
+        if case == 'close-malformed-child':
+            # Failure must preserve the parent; Zig rewrites it as closed.
+            same = all(side['rc'] == 1 and side['stdout_bytes'] == 0 and
+                       side['stderr'] == 'Invalid issue frontmatter\n'
+                       for side in observed)
+            same = same and (roots[1] / '.dots/p/p.md').read_text() == issue('Parent')
+            same = same and (roots[1] / '.dots/p/bad.md').read_text() == 'not frontmatter\n'
+            same = same and not any((roots[1] / '.dots/archive').iterdir())
         if case == 'multi-off-time':
             same = same and all(side['same_closed_at'] for side in observed)
         if case == 'rewrite-mode':
