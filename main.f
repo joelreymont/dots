@@ -1202,11 +1202,23 @@ variable CLOSED-TIME-U
    {: idx:n :}
    idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and if false exit then
    idx F-PATH FIELD$ FILE? ;
+: STATUS-DIR-U ( ptr u8 n -- n )
+   {: path:ptr pu:n :}
+   pu begin dup 0 > while
+      dup 1- path + c@ 47 = if 1- exit then
+      1-
+   repeat drop 0 ;
 : ACTIVE-CHILD? ( n n -- bool )
    {: child:n parent:n :}
+   parent F-CHILD REC-CELL @ 0<> if false exit then
    child F-ARCHIVED REC-CELL @ 0<> if false exit then
-   child PATH-SLASHES 2 <> if false exit then
-   child F-PARENT FIELD$ parent F-ID FIELD$ STR= ;
+   child parent = if false exit then
+   parent F-PATH FIELD$ {: pp:ptr ppu:n :}
+   pp ppu STATUS-DIR-U {: pdir:n :}
+   pdir s" .dots" nip <= if false exit then
+   child F-PATH FIELD$ {: cp:ptr cpu:n :}
+   cp cpu STATUS-DIR-U pdir <> if false exit then
+   cp pdir pp pdir STR= ;
 : STATUS-CHILDREN-OPEN? ( n -- bool )
    {: idx:n :}
    ISSUE-N @ 0 ?do
@@ -1232,28 +1244,49 @@ variable CLOSED-TIME-U
          then
       then
    loop ;
-: STATUS-CHILD-AT? ( n n bool -- bool )
-   {: child:n parent:n archived:bool :}
-   archived if
-      child F-ARCHIVED REC-CELL @ 0= if false exit then
-   else
-      child F-ARCHIVED REC-CELL @ 0<> if false exit then
-   then
-   child PATH-SLASHES archived if 3 else 2 then <> if false exit then
-   child F-PARENT FIELD$ parent F-ID FIELD$ STR= ;
-: REBASE-STATUS-CHILDREN ( n bool bool -- )
-   {: idx:n from-archive:bool to-archive:bool :}
+: STATUS-IN-SUBTREE? ( ptr u8 n ptr u8 n -- bool )
+   {: path:ptr pu:n root:ptr ru:n :}
+   pu ru < if false exit then
+   path ru root ru STR= 0= if false exit then
+   pu ru = if true exit then
+   path ru + c@ 47 = ;
+: REBASE-STATUS-SUBTREE ( ptr u8 n ptr u8 n -- )
+   {: old:ptr ou:n new:ptr nu:n :}
+   nu 14 >= if new 14 s" .dots/archive/" STR= else false then
+   {: archived:bool :}
    ISSUE-N @ 0 ?do
-      i idx from-archive STATUS-CHILD-AT? if
-         to-archive if 1 else 0 then i F-ARCHIVED REC-CELL !
-         SB-RESET to-archive if s" .dots/archive/" else s" .dots/" then
-         SB-APPEND idx F-ID FIELD$ SB-APPEND
-         47 SB-APPEND-C i F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$
+      i F-PATH FIELD$ {: path:ptr pu:n :}
+      path pu old ou STATUS-IN-SUBTREE? if
+         SB-RESET new nu SB-APPEND path ou + pu ou - SB-APPEND SB$
          i F-PATH FIELD!
+         archived if 1 else 0 then i F-ARCHIVED REC-CELL !
       then
    loop ;
+: REBASE-STATUS-MOVED ( -- ) PATH-ONE$ PATH-TWO$ REBASE-STATUS-SUBTREE ;
 : ASSERT-ARCHIVE-REAL ( -- )
    s" .dots/archive" SYMLINK? if s" Unsafe archive symlink" FAIL then ;
+: ASSERT-ARCHIVE-PATH-REAL ( ptr u8 n -- )
+   {: path:ptr pu:n :}
+   ASSERT-ARCHIVE-REAL
+   s" .dots/archive/" nip begin dup pu < while
+      path over + c@ 47 = if
+         path over SYMLINK? if s" Unsafe archive symlink" FAIL then
+      then
+      1+
+   repeat drop
+   path pu SYMLINK? if s" Unsafe archive symlink" FAIL then ;
+: STATUS-ENSURE-ARCHIVE-PARENT ( ptr u8 n -- )
+   {: path:ptr pu:n :}
+   path pu STATUS-DIR-U {: parent-u:n :}
+   s" .dots/archive" nip parent-u >= if exit then
+   s" .dots/archive" nip 1+ begin dup parent-u < while
+      path over + c@ 47 = if
+         path over SYMLINK? if s" Unsafe archive symlink" FAIL then
+      then
+      1+
+   repeat drop
+   path parent-u SYMLINK? if s" Unsafe archive symlink" FAIL then
+   path parent-u MAKE-DIRS ;
 : MOVE-STATUS-PATH ( n bool -- )
    {: idx:n to-archive:bool :}
    idx F-ARCHIVED REC-CELL @ 0<> {: from-archive:bool :}
@@ -1264,24 +1297,20 @@ variable CLOSED-TIME-U
    then
    idx F-CHILD REC-CELL @ 0<> if exit then
    ASSERT-ARCHIVE-REAL
-   idx F-ID FIELD$ {: id:ptr iu:n :}
-   SB-RESET from-archive if s" .dots/archive/" else s" .dots/" then
-   SB-APPEND id iu SB-APPEND SB$ PATH-ONE!
-   PATH-ONE$ DIR? {: folder:bool :}
-   folder 0= if idx F-PATH FIELD$ PATH-ONE! then
+   idx F-PATH FIELD$ {: path:ptr pu:n :}
+   path pu STATUS-DIR-U {: dir-u:n :}
+   from-archive if s" .dots/archive" nip else s" .dots" nip then
+   {: base-u:n :}
+   dir-u base-u > if path dir-u else path pu then PATH-ONE!
+   PATH-ONE$ {: src:ptr su:n :}
    SB-RESET to-archive if s" .dots/archive/" else s" .dots/" then
-   SB-APPEND id iu SB-APPEND
-   folder 0= if s" .md" SB-APPEND then
+   SB-APPEND
+   src from-archive if 14 else 6 then +
+   su from-archive if 14 else 6 then - SB-APPEND
    SB$ PATH-TWO!
+   to-archive if PATH-TWO$ STATUS-ENSURE-ARCHIVE-PARENT then
    PATH-ONE$ PATH-TWO$ RENAME-ISSUE-NOREPLACE
-   folder if
-      SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C id iu SB-APPEND s" .md" SB-APPEND SB$
-      idx F-PATH FIELD!
-      idx from-archive to-archive REBASE-STATUS-CHILDREN
-   else
-      PATH-TWO$ idx F-PATH FIELD!
-   then
-   to-archive if 1 else 0 then idx F-ARCHIVED REC-CELL ! ;
+   REBASE-STATUS-MOVED ;
 : ARCHIVE-STATUS-UNCHECKED ( n -- ) true MOVE-STATUS-PATH ;
 : ARCHIVE-STATUS ( n -- )
    {: idx:n :}
@@ -1290,9 +1319,146 @@ variable CLOSED-TIME-U
    idx ARCHIVE-CHILDREN-CHECK
    idx ARCHIVE-STATUS-UNCHECKED ;
 : UNARCHIVE-STATUS ( n -- ) false MOVE-STATUS-PATH ;
+256 constant REOPEN-MAX
+create REOPEN-INDICES REOPEN-MAX cells allot
+create REOPEN-BACKUP-PATHS REOPEN-MAX 1024 * allot
+create REOPEN-BACKUP-US REOPEN-MAX cells allot
+create REOPEN-SOURCE 512 allot
+variable REOPEN-SOURCE-U
+create REOPEN-DEST 512 allot
+variable REOPEN-DEST-U
+variable REOPEN-N
+variable REOPEN-BACKUPS
+variable REOPEN-CLEAN-ERROR
+variable REOPEN-TARGET
+variable REOPEN-WANTED-STATUS
+: REOPEN-SOURCE$ ( -- ptr u8 n ) REOPEN-SOURCE REOPEN-SOURCE-U @ ;
+: REOPEN-DEST$ ( -- ptr u8 n ) REOPEN-DEST REOPEN-DEST-U @ ;
+: REOPEN-INDEX ( n -- n ) cells REOPEN-INDICES + @ ;
+: REOPEN-BACKUP$ ( n -- ptr u8 n )
+   {: at:n :}
+   at 1024 * REOPEN-BACKUP-PATHS +
+   at cells REOPEN-BACKUP-US + @ ;
+: REOPEN-ADD ( n -- )
+   REOPEN-N @ REOPEN-MAX >= if CAP-FAIL then
+   REOPEN-N @ cells REOPEN-INDICES + !
+   1 REOPEN-N +! ;
+: REOPEN-COLLECT ( n -- )
+   {: idx:n :}
+   0 REOPEN-N !
+   ISSUE-N @ 0 ?do
+      i idx <> i F-ARCHIVED REC-CELL @ 0<> and
+      i F-CHILD REC-CELL @ 0= and if
+         i F-PATH FIELD$ {: path:ptr pu:n :}
+         path pu STATUS-DIR-U {: dir-u:n :}
+         idx F-PATH FIELD$ path dir-u STATUS-IN-SUBTREE?
+         dir-u s" .dots/archive" nip > and if
+            path pu ASSERT-ARCHIVE-PATH-REAL
+            i PARSE-RECORD
+            i F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
+            i F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
+            i F-STATUS REC-CELL @ 2 = if i REOPEN-ADD then
+         then
+      then
+   loop
+   idx REOPEN-ADD ;
+: REOPEN-ROOTS! ( n -- )
+   F-PATH FIELD$ {: path:ptr pu:n :}
+   s" .dots/archive/" nip {: base-u:n :}
+   path base-u + pu base-u - 47 INDEX-OF MATCH option
+      none OF pu ENDOF
+      some OF IDX>N base-u + ENDOF
+   ;MATCH {: root-u:n :}
+   root-u 512 >= if CAP-FAIL then
+   path REOPEN-SOURCE root-u BYTE-COPY
+   root-u REOPEN-SOURCE-U !
+   SB-RESET s" .dots/" SB-APPEND
+   path base-u + root-u base-u - SB-APPEND
+   SB$ {: dst:ptr du:n :}
+   du 512 >= if CAP-FAIL then
+   dst REOPEN-DEST du BYTE-COPY
+   du REOPEN-DEST-U ! ;
+: REOPEN-STAGE-ONE ( n -- )
+   {: at:n :}
+   at REOPEN-INDEX F-PATH FIELD$ {: path:ptr pu:n :}
+   path pu FILE-SIZE FILE-CAP > if E-ISSUE-WRITE throw then
+   path pu FILE-BUF FILE-CAP READ-ALL {: size:n :}
+   path pu RESERVE-ISSUE-SIBLING {: temp:ptr tu:n fd:n :}
+   tu 1024 >= if
+      fd close temp tu REMOVE-FILE E-FS-CAPACITY throw
+   then
+   temp at 1024 * REOPEN-BACKUP-PATHS + tu BYTE-COPY
+   tu at cells REOPEN-BACKUP-US + !
+   0 begin dup size < while
+      {: off:n :}
+      fd FILE-BUF off + size off - write {: count:n :}
+      count 0 <= if
+         fd close temp tu REMOVE-FILE E-ISSUE-WRITE throw
+      then
+      off count +
+   repeat drop
+   fd FSYNC-CALL 0<> if
+      fd close temp tu REMOVE-FILE E-ISSUE-WRITE throw
+   then
+   fd close
+   1 REOPEN-BACKUPS +! ;
+: REOPEN-STAGE-ALL ( -- )
+   0 REOPEN-BACKUPS !
+   REOPEN-N @ 0 ?do i REOPEN-STAGE-ONE loop ;
+: REOPEN-CHANGE-RECORDS ( -- )
+   REOPEN-N @ 0 ?do
+      i REOPEN-INDEX {: idx:n :}
+      idx F-CLOSED FIELD-EMPTY idx F-REASON FIELD-EMPTY
+      0 idx F-CLOSED-PRESENT REC-CELL !
+      0 idx F-REASON-PRESENT REC-CELL !
+      idx REOPEN-TARGET @ = if REOPEN-WANTED-STATUS @ else 0 then
+      idx F-STATUS REC-CELL !
+   loop ;
+: REOPEN-WRITE-ALL ( -- )
+   REOPEN-N @ 0 ?do i REOPEN-INDEX SAVE-RECORD-THROW loop ;
+: REOPEN-FINISH ( -- )
+   REOPEN-SOURCE$ REOPEN-DEST$ REBASE-STATUS-SUBTREE
+   REOPEN-STAGE-ALL
+   REOPEN-CHANGE-RECORDS
+   REOPEN-WRITE-ALL ;
+: REOPEN-RESTORE ( -- )
+   REOPEN-BACKUPS @ 0 ?do
+      i REOPEN-BACKUP$ i REOPEN-INDEX F-PATH FIELD$ RENAME-ISSUE
+   loop ;
+: REOPEN-CLEAN-BACKUPS ( -- )
+   0 REOPEN-CLEAN-ERROR !
+   REOPEN-BACKUPS @ 0 ?do
+      i REOPEN-BACKUP$ FS-PATHZ UNLINK-CALL FS-CAUSE
+      dup 0<> if REOPEN-CLEAN-ERROR ! else drop then
+   loop
+   REOPEN-CLEAN-ERROR @ 0<> if
+      s" Reopened issue; temporary cleanup failed" FAIL
+   then ;
+: REOPEN-ARCHIVED ( n n -- )
+   {: idx:n status:n :}
+   idx F-PATH FIELD$ ASSERT-ARCHIVE-PATH-REAL
+   idx REOPEN-COLLECT
+   idx REOPEN-ROOTS!
+   idx REOPEN-TARGET ! status REOPEN-WANTED-STATUS !
+   0 REOPEN-BACKUPS !
+   REOPEN-SOURCE$ REOPEN-DEST$ RENAME-ISSUE-NOREPLACE
+   [: REOPEN-FINISH ;] catch {: code:n :}
+   code 0<> if
+      REOPEN-RESTORE
+      REOPEN-DEST$ REOPEN-SOURCE$ RENAME-ISSUE-NOREPLACE
+      REOPEN-DEST$ REOPEN-SOURCE$ REBASE-STATUS-SUBTREE
+      code REPORT-ISSUE-WRITE-ERROR
+   then
+   REOPEN-CLEAN-BACKUPS ;
 variable STATUS-SAVE-IDX
 : STATUS-CHANGE ( n n -- )
    {: idx:n status:n :}
+   idx F-ARCHIVED REC-CELL @ 0<> status 2 <> and if
+      idx F-PATH FIELD$ FILE? 0= if s" Issue not found" FAIL then
+      idx F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
+      idx F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
+      idx status REOPEN-ARCHIVED exit
+   then
    idx RECORD-PATH? 0= if s" Issue not found" FAIL then
    idx F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
    idx F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
@@ -1314,10 +1480,6 @@ variable STATUS-SAVE-IDX
       idx F-ARCHIVED REC-CELL @ 0= idx F-CHILD REC-CELL @ 0= and if
          drop idx ARCHIVE-STATUS 1
       then
-   else
-      idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0= and if
-         drop idx UNARCHIVE-STATUS 2
-      then
    then {: moved:n :}
    status 2 = if
       CLOSED-TIME-U @ 0 > if
@@ -1338,7 +1500,6 @@ variable STATUS-SAVE-IDX
    [: STATUS-SAVE-IDX @ SAVE-RECORD-THROW ;] catch {: code:n :}
    code 0<> if
       moved 1 = if idx UNARCHIVE-STATUS then
-      moved 2 = if idx ARCHIVE-STATUS-UNCHECKED then
       code REPORT-ISSUE-WRITE-ERROR
    then ;
 : RESOLVE-ARG ( n -- n )
@@ -1371,7 +1532,7 @@ variable STATUS-SAVE-IDX
       ts CLOSED-TIME tu BYTE-COPY tu CLOSED-TIME-U !
    then
    STATUS-INDEX @ 0 ?do
-      i STATUS-ARGS @ RESOLVE-ARG dup RECORD-PATH? if dup PARSE-RECORD then
+      i STATUS-ARGS @ RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
       STATUS-MODE @ STATUS-CHANGE
    loop ;
 : STATUS-SINGLE ( n -- )
@@ -1402,7 +1563,7 @@ variable STATUS-SAVE-IDX
       repeat
    then
    1 SCAN-NAME-ONLY !
-   true LOAD-ISSUES 1 RESOLVE-ARG dup RECORD-PATH? if dup PARSE-RECORD then
+   true LOAD-ISSUES 1 RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
    STATUS-MODE @ STATUS-CHANGE ;
 : INIT-EMPTY ( -- )
    s" .dots/archive" MAKE-DIRS ;

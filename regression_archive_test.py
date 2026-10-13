@@ -68,6 +68,135 @@ class ArchiveRegression(unittest.TestCase):
         self.assertIn(b'status: active', (parent / 'p.md').read_bytes())
         self.assertIn(b'status: active', (parent / 'child.md').read_bytes())
 
+    def test_direct_archived_child_reopens_parent_and_preserves_siblings(self):
+        archived = self.dots / 'archive/p'
+        archived.mkdir()
+        (archived / 'p.md').write_bytes(issue('Parent', 'closed'))
+        (archived / 'c.md').write_bytes(issue('Child', 'closed'))
+        sibling = issue('Sibling', 'closed').replace(b'---\n\n', b'blocks:\n  - c\n---\n\n')
+        (archived / 's.md').write_bytes(sibling)
+
+        self.ok('on', 'c')
+
+        active = self.dots / 'p'
+        self.assertFalse(archived.exists())
+        self.assertIn(b'status: open', (active / 'p.md').read_bytes())
+        self.assertIn(b'status: active', (active / 'c.md').read_bytes())
+        self.assertEqual((active / 's.md').read_bytes(), sibling)
+
+    def test_nested_archived_child_reopens_each_closed_ancestor(self):
+        archived = self.dots / 'archive/container'
+        (archived / 'p').mkdir(parents=True)
+        (archived / 'container.md').write_bytes(issue('Container', 'closed'))
+        (archived / 'p/p.md').write_bytes(issue('Parent', 'closed'))
+        (archived / 'p/leaf.md').write_bytes(issue('Child', 'closed'))
+        sibling = issue('Sibling', 'closed')
+        (archived / 'p/s.md').write_bytes(sibling)
+        outer_sibling = issue('Outer sibling', 'closed')
+        (archived / 'outer.md').write_bytes(outer_sibling)
+
+        self.ok('on', 'leaf')
+
+        active = self.dots / 'container'
+        self.assertFalse(archived.exists())
+        self.assertIn(b'status: open', (active / 'container.md').read_bytes())
+        self.assertIn(b'status: open', (active / 'p/p.md').read_bytes())
+        self.assertIn(b'status: active', (active / 'p/leaf.md').read_bytes())
+        self.assertEqual((active / 'p/s.md').read_bytes(), sibling)
+        self.assertEqual((active / 'outer.md').read_bytes(), outer_sibling)
+
+    def test_nested_archived_parent_preserves_its_folder(self):
+        archived = self.dots / 'archive/container/p'
+        archived.mkdir(parents=True)
+        (archived / 'p.md').write_bytes(issue('Parent', 'closed'))
+        child = issue('Child', 'closed')
+        (archived / 'c.md').write_bytes(child)
+
+        self.ok('on', 'p')
+
+        self.assertFalse((self.dots / 'archive/container').exists())
+        self.assertIn(b'status: active', (self.dots / 'container/p/p.md').read_bytes())
+        self.assertEqual((self.dots / 'container/p/c.md').read_bytes(), child)
+        self.assertFalse((self.dots / 'p.md').exists())
+
+    def test_nested_parent_refuses_close_while_child_is_open(self):
+        folder = self.dots / 'container/p'
+        folder.mkdir(parents=True)
+        parent = issue('Parent')
+        child = issue('Child')
+        (folder / 'p.md').write_bytes(parent)
+        (folder / 'leaf.md').write_bytes(child)
+
+        result = self.run_dot('close', 'p')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'children are not all closed', result.stderr)
+        self.assertEqual((folder / 'p.md').read_bytes(), parent)
+        self.assertEqual((folder / 'leaf.md').read_bytes(), child)
+        self.assertFalse((self.dots / 'archive/container').exists())
+
+    def test_orphan_ancestor_folder_moves_without_new_parent_task(self):
+        archived = self.dots / 'archive/container/p'
+        archived.mkdir(parents=True)
+        (archived / 'p.md').write_bytes(issue('Parent', 'closed'))
+
+        self.ok('on', 'p')
+
+        self.assertIn(b'status: active', (self.dots / 'container/p/p.md').read_bytes())
+        self.assertFalse((self.dots / 'container/container.md').exists())
+
+    def test_malformed_ancestor_refuses_child_reopen_without_changes(self):
+        archived = self.dots / 'archive/p'
+        archived.mkdir()
+        malformed = b'not frontmatter\n'
+        child = issue('Child', 'closed')
+        (archived / 'p.md').write_bytes(malformed)
+        (archived / 'c.md').write_bytes(child)
+
+        result = self.run_dot('on', 'c')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((archived / 'p.md').read_bytes(), malformed)
+        self.assertEqual((archived / 'c.md').read_bytes(), child)
+        self.assertFalse((self.dots / 'p').exists())
+
+    def test_readonly_ancestor_rolls_back_child_reopen(self):
+        archived = self.dots / 'archive/p'
+        archived.mkdir()
+        parent = issue('Parent', 'closed')
+        child = issue('Child', 'closed')
+        (archived / 'p.md').write_bytes(parent)
+        (archived / 'c.md').write_bytes(child)
+        archived.chmod(0o555)
+        self.addCleanup(archived.chmod, 0o755)
+
+        result = self.run_dot('on', 'c')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((archived / 'p.md').read_bytes(), parent)
+        self.assertEqual((archived / 'c.md').read_bytes(), child)
+        self.assertFalse((self.dots / 'p').exists())
+
+    def test_competing_active_and_archive_folders_refuse_without_merging(self):
+        active = self.dots / 'p'
+        active.mkdir()
+        active_child = issue('Active child')
+        (active / 'existing.md').write_bytes(active_child)
+        archived = self.dots / 'archive/p'
+        archived.mkdir()
+        parent = issue('Parent', 'closed')
+        child = issue('Child', 'closed')
+        (archived / 'p.md').write_bytes(parent)
+        (archived / 'c.md').write_bytes(child)
+
+        result = self.run_dot('on', 'p')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'Issue already exists', result.stderr)
+        self.assertEqual((active / 'existing.md').read_bytes(), active_child)
+        self.assertEqual((archived / 'p.md').read_bytes(), parent)
+        self.assertEqual((archived / 'c.md').read_bytes(), child)
+
     def test_multi_id_close_and_reopen(self):
         for name in ('a', 'b'):
             (self.dots / f'{name}.md').write_bytes(issue(name))
