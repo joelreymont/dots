@@ -2,11 +2,14 @@
 
 # dots
 
+> **Validation:** the adversarial repairs and expanded regression suites are
+> documented in [validation and remaining limits](docs/parity.md).
+
 Fast task tracking in plain Markdown files. Dots is a single native Habu CLI;
 tasks live in `.dots/` and can be read, edited, and versioned with ordinary
 file tools. It needs no database or server at runtime.
 
-The accepted stripped macOS arm64 binary is **165,372 bytes** (about 162 KiB).
+The current stripped macOS arm64 binary is **181,884 bytes** (about 178 KiB).
 In the same comparison, the ordinary Zig Small build was 335,280 bytes and a
 separately minimized Zig build was 268,320 bytes. See [validation and scope](docs/parity.md)
 for the exact measurements and differential tests. The previous Zig source,
@@ -108,13 +111,19 @@ sh build.sh
 sh benchmark/build-zig.sh
 python3 test.py --full benchmark/bin/dot-zig-full-small bin/dot
 python3 edge_test.py benchmark/bin/dot-zig-full-small bin/dot
+python3 regression_fs_test.py bin/dot
+python3 regression_graph_test.py benchmark/bin/dot-zig-full-small bin/dot
+python3 regression_loading_test.py benchmark/bin/dot-zig-full-small bin/dot
+python3 regression_json_test.py bin/dot
 ```
 
 They create synthetic stores in system temporary directories; they do not
-modify the repository's `.dots/`. The accepted port passed 96 command sequence
-steps and 60 focused edges against both ordinary and minimized Zig binaries.
-The current repository revision should be rebuilt and checked after a toolchain
-or source change.
+modify the repository's `.dots/`. The current port passes 96 command sequence
+steps, 60 focused edges, and the four regression suites for filesystem safety,
+graph/import behavior, selective loading, and JSON byte handling. The broader
+adversarial run also compares copied task stores from 11 repositories; see the
+[validation ledger](docs/parity.md) for results and known differences. Rebuild
+and rerun the harnesses after a toolchain or source change.
 
 ## Migrating from beads
 

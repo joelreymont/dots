@@ -12,7 +12,7 @@ Run `sh build.sh` from the repository root. The script uses the pinned Habu
 release at `$HABU_ROOT` or `~/.local/lib/habu/c53b4d2c` and writes `bin/dot`.
 The compiler cache, temporary files, and binary are ignored by version control.
 Do not commit them. Measure a release binary with `wc -c < bin/dot`; the
-accepted macOS arm64 build was 165,372 bytes.
+validated macOS arm64 build is 181,884 bytes.
 
 ## Test
 
@@ -26,12 +26,17 @@ Habu binary with the reference after every command:
 sh benchmark/build-zig.sh
 python3 test.py --full benchmark/bin/dot-zig-full-small bin/dot
 python3 edge_test.py benchmark/bin/dot-zig-full-small bin/dot
+python3 regression_fs_test.py bin/dot
+python3 regression_graph_test.py benchmark/bin/dot-zig-full-small bin/dot
+python3 regression_loading_test.py benchmark/bin/dot-zig-full-small bin/dot
+python3 regression_json_test.py bin/dot
 ```
 
-The first harness checks exit status, stdout, stderr, and the complete `.dots`
-tree across command sequences. The second checks large stores, unusual paths,
-JSONL import, configuration, and git index effects. Preserve this comparison
-contract when changing behavior. The accepted scope for JSONL priority is a
+The full harness checks exit status, stdout, stderr, and the complete `.dots`
+tree across command sequences. The edge harness checks large stores, unusual
+paths, JSONL import, configuration, and git index effects. The regression suites
+cover adversarial filesystem, graph/import, selective-loading, and JSON cases.
+Run them as well. Preserve this comparison contract when changing behavior. The accepted scope for JSONL priority is a
 signed i64 integer or an exactly integral decimal/exponent representation; see
 `docs/parity.md` for the bounded difference from the Zig parser.
 
