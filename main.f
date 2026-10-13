@@ -1208,10 +1208,10 @@ variable CLOSED-TIME-U
       dup 1- path + c@ 47 = if 1- exit then
       1-
    repeat drop 0 ;
-: ACTIVE-DESCENDANT? ( n n -- bool )
+: STATUS-DESCENDANT? ( n n -- bool )
    {: child:n parent:n :}
    parent F-CHILD REC-CELL @ 0<> if false exit then
-   child F-ARCHIVED REC-CELL @ 0<> if false exit then
+   child F-ARCHIVED REC-CELL @ parent F-ARCHIVED REC-CELL @ <> if false exit then
    child parent = if false exit then
    parent F-PATH FIELD$ {: pp:ptr ppu:n :}
    pp ppu STATUS-DIR-U {: pdir:n :}
@@ -1223,21 +1223,29 @@ variable CLOSED-TIME-U
 : STATUS-CHILDREN-OPEN? ( n -- bool )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i idx ACTIVE-DESCENDANT? i F-ERROR REC-CELL @ 0= and if
+      i idx STATUS-DESCENDANT? i F-ERROR REC-CELL @ 0= and if
          i F-STATUS REC-CELL @ 2 <> if true unloop exit then
       then
    loop false ;
 : LOAD-STATUS-CHILDREN ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i idx ACTIVE-DESCENDANT? i F-ERROR REC-CELL @ 0<> and if
+      i idx STATUS-DESCENDANT? i F-ERROR REC-CELL @ 0<> and if
          i PARSE-RECORD
+      then
+   loop ;
+: VALIDATE-STATUS-DESCENDANTS ( n -- )
+   {: idx:n :}
+   ISSUE-N @ 0 ?do
+      i idx STATUS-DESCENDANT? if
+         i F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
+         i F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
       then
    loop ;
 : ARCHIVE-CHILDREN-CHECK ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i idx ACTIVE-DESCENDANT? if
+      i idx STATUS-DESCENDANT? if
          i F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
          i F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
          i F-STATUS REC-CELL @ 2 <> if
@@ -1523,6 +1531,7 @@ variable STATUS-SAVE-IDX
    idx F-ARCHIVED REC-CELL @ 0<> if ASSERT-ARCHIVE-REAL then
    status 2 = if
       idx LOAD-STATUS-CHILDREN
+      idx VALIDATE-STATUS-DESCENDANTS
       idx STATUS-CHILDREN-OPEN? if
          CLOSED-STYLE @ 0= if
             s" Cannot close: children are not all closed" FAIL

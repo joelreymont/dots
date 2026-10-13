@@ -318,6 +318,61 @@ class ArchiveRegression(unittest.TestCase):
         self.assertEqual((nested / 'p.md').read_bytes(), nested_parent)
         self.assertEqual((nested / 'leaf.md').read_bytes(), nested_child)
 
+    def _seed_archived_parent_and_nested_leaf(self, leaf):
+        archived = self.dots / 'archive/p'
+        nested = archived / 'deep'
+        nested.mkdir(parents=True)
+        parent = issue('Parent', 'active')
+        (archived / 'p.md').write_bytes(parent)
+        (nested / 'leaf.md').write_bytes(leaf)
+        return archived, parent
+
+    def test_archived_parent_refuses_close_with_open_nested_descendant(self):
+        leaf = issue('Leaf')
+        archived, parent = self._seed_archived_parent_and_nested_leaf(leaf)
+
+        result = self.run_dot('close', 'p')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'children are not all closed', result.stderr)
+        self.assertEqual((archived / 'p.md').read_bytes(), parent)
+        self.assertEqual((archived / 'deep/leaf.md').read_bytes(), leaf)
+
+    def test_archived_parent_refuses_close_with_malformed_nested_descendant(self):
+        leaf = b'not frontmatter\n'
+        archived, parent = self._seed_archived_parent_and_nested_leaf(leaf)
+
+        result = self.run_dot('close', 'p')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((archived / 'p.md').read_bytes(), parent)
+        self.assertEqual((archived / 'deep/leaf.md').read_bytes(), leaf)
+
+    def test_archived_parent_refuses_close_with_invalid_nested_status(self):
+        leaf = issue('Leaf', 'unknown')
+        archived, parent = self._seed_archived_parent_and_nested_leaf(leaf)
+
+        result = self.run_dot('close', 'p')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'Invalid issue status', result.stderr)
+        self.assertEqual((archived / 'p.md').read_bytes(), parent)
+        self.assertEqual((archived / 'deep/leaf.md').read_bytes(), leaf)
+
+    def test_archived_parent_closes_with_closed_nested_descendant(self):
+        leaf = issue('Leaf', 'closed')
+        archived, _ = self._seed_archived_parent_and_nested_leaf(leaf)
+        active_leaf = issue('Unrelated active leaf')
+        active = self.dots / 'p/deep/leaf.md'
+        active.parent.mkdir(parents=True)
+        active.write_bytes(active_leaf)
+
+        self.ok('close', 'p')
+
+        self.assertIn(b'status: closed', (archived / 'p.md').read_bytes())
+        self.assertEqual((archived / 'deep/leaf.md').read_bytes(), leaf)
+        self.assertEqual(active.read_bytes(), active_leaf)
+
     def test_orphan_ancestor_folder_moves_without_new_parent_task(self):
         archived = self.dots / 'archive/container/p'
         archived.mkdir(parents=True)
