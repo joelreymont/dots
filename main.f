@@ -1665,54 +1665,62 @@ variable SLUG-CHANGED
    SB-RESET PREFIX$ SB-APPEND 45 SB-APPEND-C
    SLUG-ROW SLUG-U @ SB-APPEND 45 SB-APPEND-C
    HEX-ROW 8 SB-APPEND SB$ NEW-ID! ;
-: REBASE-RENAMED-CHILDREN ( -- )
-   SB-RESET s" .dots/" SB-APPEND OLD-ID$ SB-APPEND 47 SB-APPEND-C
-   SB$ PATH-ONE!
+variable SLUG-LAST-SLASH
+variable SLUG-PARENT-SLASH
+: REBASE-RENAMED-CHILDREN ( ptr u8 n ptr u8 n -- )
+   {: old-dir:ptr old-u:n new-dir:ptr new-u:n :}
    ISSUE-N @ 0 ?do
-      i F-PARENT FIELD$ OLD-ID$ STR= if
-         RENAMED-ID$ i F-PARENT FIELD!
-      then
-      i F-PATH FIELD$ PATH-ONE$ STARTS-WITH? if
-         i F-PATH FIELD$ {: old-path:ptr old-u:n :}
-         SB-RESET s" .dots/" SB-APPEND RENAMED-ID$ SB-APPEND
-         47 SB-APPEND-C
-         old-path PATH-ONE-U @ + old-u PATH-ONE-U @ - SB-APPEND SB$
-         i F-PATH FIELD!
+      i F-PATH FIELD$ {: old-path:ptr path-u:n :}
+      old-path path-u old-dir old-u STARTS-WITH?
+      path-u old-u > and if
+         old-path old-u + c@ 47 = if
+            SB-RESET new-dir new-u SB-APPEND
+            old-path old-u + path-u old-u - SB-APPEND SB$
+            i F-PATH FIELD!
+            i F-PARENT FIELD$ OLD-ID$ STR= if
+               RENAMED-ID$ i F-PARENT FIELD!
+            then
+         then
       then
    loop ;
 : RENAME-PATH ( n -- )
    {: idx:n :}
-   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0= and
-   idx PATH-SLASHES 3 = and if
-      s" Missing issue file or directory in .dots" FAIL
-   then
-   idx F-ARCHIVED REC-CELL @ 0= idx F-CHILD REC-CELL @ 0= and if
-      SB-RESET s" .dots/" SB-APPEND OLD-ID$ SB-APPEND SB$ PATH-ONE!
-      PATH-ONE$ DIR? if
-         SB-RESET s" .dots/" SB-APPEND RENAMED-ID$ SB-APPEND SB$ PATH-TWO!
-         PATH-ONE$ PATH-TWO$ RENAME-FILE
-         REBASE-RENAMED-CHILDREN
-         SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C OLD-ID$ SB-APPEND
-         s" .md" SB-APPEND SB$ PATH-ONE!
-         SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C RENAMED-ID$ SB-APPEND
-         s" .md" SB-APPEND SB$ idx F-PATH FIELD!
-         idx SAVE-RECORD
-         PATH-ONE$ REMOVE-FILE
-         exit
+   idx F-PATH FIELD$ PATH-ONE!
+   -1 SLUG-LAST-SLASH ! -1 SLUG-PARENT-SLASH !
+   PATH-ONE-U @ 0 ?do
+      PATH-ONE i + c@ 47 = if
+         SLUG-LAST-SLASH @ SLUG-PARENT-SLASH !
+         i SLUG-LAST-SLASH !
+      then
+   loop
+   SLUG-LAST-SLASH @ -1 = if s" Missing issue file or directory in .dots" FAIL then
+   \ A self-named file inside a same-named folder owns that folder.
+   \ Preserve its location under .dots or .dots/archive when moving it.
+   idx F-CHILD REC-CELL @ 0= SLUG-PARENT-SLASH @ -1 <> and if
+      PATH-ONE SLUG-PARENT-SLASH @ 1+ +
+      SLUG-LAST-SLASH @ SLUG-PARENT-SLASH @ - 1-
+      OLD-ID$ STR= if
+         PATH-ONE SLUG-LAST-SLASH @ DIR? if
+            SB-RESET PATH-ONE SLUG-PARENT-SLASH @ 1+ SB-APPEND
+            RENAMED-ID$ SB-APPEND SB$ PATH-TWO!
+            PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$ RENAME-ISSUE
+            PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$
+            REBASE-RENAMED-CHILDREN
+            SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C
+            OLD-ID$ SB-APPEND s" .md" SB-APPEND SB$ PATH-ONE!
+            SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C
+            RENAMED-ID$ SB-APPEND s" .md" SB-APPEND SB$
+            idx F-PATH FIELD!
+            idx SAVE-RECORD
+            PATH-ONE$ REMOVE-FILE
+            exit
+         then
       then
    then
-   idx F-PATH FIELD$ PATH-ONE!
-   SB-RESET s" .dots/" SB-APPEND
-   idx F-PATH FIELD$ {: old-path:ptr old-u:n :}
-   idx F-CHILD REC-CELL @ 0<> idx F-ARCHIVED REC-CELL @ 0= or if
-      old-path 6 + old-u 6 - 47 INDEX-OF MATCH option
-         none OF ENDOF
-         some OF old-path 6 + swap IDX>N SB-APPEND 47 SB-APPEND-C ENDOF
-      ;MATCH
-   then
+   \ A simple issue or child stays in its current active/archive folder.
+   SB-RESET PATH-ONE SLUG-LAST-SLASH @ 1+ SB-APPEND
    RENAMED-ID$ SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
    PATH-TWO$ idx F-PATH FIELD!
-   0 idx F-ARCHIVED REC-CELL !
    idx SAVE-RECORD
    PATH-ONE$ REMOVE-FILE ;
 : REWRITE-OLD-BLOCKS ( n -- )
@@ -1730,7 +1738,7 @@ variable SLUG-CHANGED
    repeat drop
    SLUG-CHANGED @ 0<> if
       0 BLOCK-BUF BLOCK-U @ idx F-BLOCKS FIELD!
-      idx RECORD-PATH? 0= if s" Issue not found" FAIL then
+      idx F-PATH FIELD$ FILE? 0= if s" Issue not found" FAIL then
       idx SAVE-RECORD
    then ;
 : SLUGIFY-ONE ( n -- )
@@ -1746,7 +1754,7 @@ variable SLUG-CHANGED
       s"  already exists" SB-APPEND 10 SB-APPEND-C
       SB$ 2 -rot STDERR-WRITE drop exit
    then
-   idx RECORD-PATH? 0= if s" Issue not found" FAIL then
+   idx F-PATH FIELD$ FILE? 0= if s" Issue not found" FAIL then
    RENAMED-ID$ idx F-ID FIELD!
    idx RENAME-PATH
    ISSUE-N @ 0 ?do i REWRITE-OLD-BLOCKS loop

@@ -234,6 +234,61 @@ def run(binary, root, command, case):
     return result
 
 
+def corrected_slugify_case(case, roots, observed):
+    # The Zig reference cannot rename archived children and flattens nested
+    # parent folders. Keep those outcomes visible while requiring the corrected
+    # Habu tree, complete progress, and preserved task contents.
+    zig, habu = observed
+    zig_root, habu_root = roots
+    def files(root):
+        return {str(path.relative_to(root / '.dots')): path.read_text()
+                for path in (root / '.dots').rglob('*.md')}
+    zig_files, habu_files = files(zig_root), files(habu_root)
+    if case == 'slugify-archived-parent':
+        expected_zig = {'archive/a-12345678/a-12345678.md',
+                        'archive/a-12345678/c-12345678.md'}
+        expected_habu = {
+            'archive/p-archived-parent-12345678/p-archived-parent-12345678.md':
+                ('Archived parent', 'closed'),
+            'archive/p-archived-parent-12345678/p-archived-child-12345678.md':
+                ('Archived child', 'closed'),
+        }
+        progress = {'c-12345678 -> p-archived-child-12345678',
+                    'a-12345678 -> p-archived-parent-12345678'}
+        reference_ok = (zig['rc'] == 1 and zig['stdout_start'] == '' and
+                        zig['stderr'] == 'Issue not found\n' and
+                        set(zig_files) == expected_zig)
+    else:
+        expected_zig = {'p-a-parent-12345678/p-a-parent-12345678.md',
+                        'p-a-parent-12345678/p-b-parent-12345678.md',
+                        'p-a-parent-12345678/p-x-leaf-12345678.md'}
+        expected_habu = {
+            'p-a-parent-12345678/p-a-parent-12345678.md': ('A parent', 'open'),
+            'p-a-parent-12345678/a+a/p-b-parent-12345678/p-b-parent-12345678.md':
+                ('B parent', 'open'),
+            'p-a-parent-12345678/a+a/p-b-parent-12345678/p-x-leaf-12345678.md':
+                ('X leaf', 'open'),
+        }
+        progress = {'a-12345678 -> p-a-parent-12345678',
+                    'b-12345678 -> p-b-parent-12345678',
+                    'x-12345678 -> p-x-leaf-12345678'}
+        reference_ok = (zig['rc'] == 0 and zig['stderr'] == '' and
+                        set(zig_files) == expected_zig)
+    lines = habu['stdout_start'].splitlines()
+    corrected_ok = (habu['rc'] == 0 and habu['stderr'] == '' and
+                    len(lines) == len(progress) + 1 and
+                    set(lines[:-1]) == progress and
+                    lines[-1] == f'Slugified {len(progress)} issue(s)' and
+                    set(habu_files) == set(expected_habu))
+    if not corrected_ok:
+        return False
+    for path, (title, status) in expected_habu.items():
+        content = habu_files[path]
+        if f'title: {title}\n' not in content or f'status: {status}\n' not in content:
+            return False
+    return reference_ok
+
+
 def main():
     if len(sys.argv) != 3:
         raise SystemExit('usage: edge_test.py ZIG-FULL HABU')
@@ -304,12 +359,16 @@ def main():
     results = []
     for case, command in cases:
         observed = []
+        roots = []
         for side, binary in enumerate(binaries):
             root = folder / str(side) / case / 'site'
             root.mkdir(parents=True)
             seed(root, case)
+            roots.append(root)
             observed.append(run(binary, root, command, case))
         same = observed[0] == observed[1]
+        if case in ('slugify-archived-parent', 'slugify-deep'):
+            same = corrected_slugify_case(case, roots, observed)
         if case == 'multi-off-time':
             same = same and all(side['same_closed_at'] for side in observed)
         if case == 'rewrite-mode':
