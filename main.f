@@ -1153,26 +1153,29 @@ variable CLOSED-TIME-U
    {: idx:n :}
    idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and if false exit then
    idx F-PATH FIELD$ FILE? ;
+: ACTIVE-CHILD? ( n n -- bool )
+   {: child:n parent:n :}
+   child F-ARCHIVED REC-CELL @ 0<> if false exit then
+   child PATH-SLASHES 2 <> if false exit then
+   child F-PARENT FIELD$ parent F-ID FIELD$ STR= ;
 : STATUS-CHILDREN-OPEN? ( n -- bool )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i F-ARCHIVED REC-CELL @ 0= i F-ERROR REC-CELL @ 0= and if
-         i F-PARENT FIELD$ idx F-ID FIELD$ STR= if
-            i F-STATUS REC-CELL @ 2 <> if true unloop exit then
-         then
+      i idx ACTIVE-CHILD? i F-ERROR REC-CELL @ 0= and if
+         i F-STATUS REC-CELL @ 2 <> if true unloop exit then
       then
    loop false ;
 : LOAD-STATUS-CHILDREN ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i F-ARCHIVED REC-CELL @ 0= i F-ERROR REC-CELL @ 0<> and if
-         i F-PARENT FIELD$ idx F-ID FIELD$ STR= if i PARSE-RECORD then
+      i idx ACTIVE-CHILD? i F-ERROR REC-CELL @ 0<> and if
+         i PARSE-RECORD
       then
    loop ;
 : ARCHIVE-CHILDREN-CHECK ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i F-PARENT FIELD$ idx F-ID FIELD$ STR= if
+      i idx ACTIVE-CHILD? if
          i F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
          i F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
          i F-STATUS REC-CELL @ 2 <> if
@@ -1183,7 +1186,7 @@ variable CLOSED-TIME-U
 : REBASE-ARCHIVED-CHILDREN ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i F-PARENT FIELD$ idx F-ID FIELD$ STR= if
+      i idx ACTIVE-CHILD? if
          1 i F-ARCHIVED REC-CELL !
          SB-RESET s" .dots/archive/" SB-APPEND idx F-ID FIELD$ SB-APPEND
          47 SB-APPEND-C i F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$

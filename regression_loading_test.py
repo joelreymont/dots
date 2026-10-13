@@ -120,6 +120,17 @@ def main():
                   lambda root: seed(root, [('a/a.md', issue('A')),
                                            ('a/child.md', issue('Child', 'closed'))], 'archive'),
                   [(['off', 'child', 'a'], None)], ['ok']))
+    for folder in ('other/a', 'archive/other/a'):
+        for state, content in (('open', issue('Unrelated', 'open')),
+                               ('closed', issue('Unrelated', 'closed')),
+                               ('oversized', BIG)):
+            for cmd in (['off', 'a'], ['close', 'a'],
+                        ['update', 'a', '--status', 'closed']):
+                cases.append((f'unrelated-parent-name-{folder}-{state}-{cmd[0]}',
+                              lambda root, f=folder, c=content: seed(
+                                  root, [('a/a.md', issue('A')),
+                                         (f + '/old.md', c)], None),
+                              [(cmd, None)], ['ok']))
     for case in cases:
         run_case(zig, habu, *case)
     print(f'{len(cases)} loading regressions passed')
