@@ -73,15 +73,12 @@ variable MATCH-I
 \ the files SCAN-KEEP? admits and leaves their parsing to the command. Its keys
 \ are the ids or prefixes it names, back to back in SCAN-KEY-BYTES, each ending
 \ at its SCAN-KEY-ENDS offset. SCAN-FAMILY adds what a status change reaches
-\ beyond its keys; add's TAIL-ROW holds its new id's tail.
+\ beyond its keys.
 variable SCAN-KEYED
 DYNAMIC-BUFFER SCAN-KEY-BYTES u8
 DYNAMIC-BUFFER SCAN-KEY-ENDS n
 variable SCAN-KEY-N
 variable SCAN-FAMILY
-\ "-slug-hex": a dash, a slug of at most 30 bytes, a dash and 8 hex digits.
-create TAIL-ROW 40 allot
-variable TAIL-U
 DYNAMIC-BUFFER ORDER n
 DYNAMIC-BUFFER SORT-BUF n
 
@@ -365,15 +362,12 @@ DYNAMIC-BUFFER SORT-BUF n
    loop drop false ;
 \ Below is set under a directory a key starts and owner for a folder's own
 \ file in the archive. With SCAN-FAMILY these are kept: the descendants and the
-\ archived ancestors a status change reaches. The tail keeps any file that
-\ could hold add's new id.
+\ archived ancestors a status change reaches.
 : SCAN-KEEP? ( ptr u8 n bool bool -- bool )
    {: id:ptr iu:n below:bool owner:bool :}
    SCAN-KEYED @ 0= below or if true exit then
    SCAN-FAMILY @ 0<> owner and if true exit then
-   id iu KEY-PREFIX? if true exit then
-   TAIL-U @ 0 > if id iu TAIL-ROW TAIL-U @ ENDS-WITH? exit then
-   false ;
+   id iu KEY-PREFIX? ;
 
 \ A separate names and path buffer per level permits recursive scans.
 : SCAN-DIR ( n n bool bool -- )
@@ -1048,16 +1042,13 @@ variable PAD-COPY
       slug SLUG-ROW final BYTE-COPY final SLUG-U !
    then
    SLUG-ROW SLUG-U @ ;
-\ A new id is the prefix and a tail drawn from the title before the walk, so
-\ the walk keeps only the files that could already hold it.
-: NEW-TAIL! ( ptr u8 n -- )
+\ A new id is the prefix, the title's slug and a random suffix.
+: NEW-ID$ ( ptr u8 n -- ptr u8 n )
    SLUGIFY$ 2drop
    RANDOM-SUFFIX drop HEX-ROW 8 BYTE-COPY
-   SB-RESET 45 SB-APPEND-C SLUG-ROW SLUG-U @ SB-APPEND 45 SB-APPEND-C
-   HEX-ROW 8 SB-APPEND SB$ {: tail:ptr tu:n :}
-   tail TAIL-ROW tu BYTE-COPY tu TAIL-U ! ;
-: NEW-ID$ ( -- ptr u8 n )
-   SB-RESET PREFIX$ SB-APPEND TAIL-ROW TAIL-U @ SB-APPEND SB$ ;
+   SB-RESET PREFIX$ SB-APPEND 45 SB-APPEND-C
+   SLUG-ROW SLUG-U @ SB-APPEND 45 SB-APPEND-C
+   HEX-ROW 8 SB-APPEND SB$ ;
 
 create PATH-ONE 512 allot
 variable PATH-ONE-U
@@ -1134,6 +1125,53 @@ variable PARENT-IDX
    0 idx F-ERROR REC-CELL !
    0 idx F-CHILD REC-CELL !
    idx ;
+\ Add's duplicate check is the reference's findIssuePath. It probes the id's
+\ file and its folder's own file at the top of .dots and in the archive, then
+\ searches as searchForIssue does: every entry down to ten levels below .dots
+\ that lstat types a directory, so never a symlink, and that is not named
+\ archive is probed for the id's file.
+10 constant SEARCH-DEPTH
+: ID-AT? ( ptr u8 n ptr u8 n bool -- bool )
+   {: dir:ptr du:n id:ptr iu:n folder:bool :}
+   SB-RESET dir du SB-APPEND id iu SB-APPEND
+   folder if 47 SB-APPEND-C id iu SB-APPEND then
+   s" .md" SB-APPEND SB$ FS-TRY-STAT ;
+\ True when a directory below the depth's path, depth levels under .dots,
+\ holds the id's file.
+: SEARCH-DIR ( n n ptr u8 n -- bool )
+   {: depth:n plen:n id:ptr iu:n :}
+   depth SEARCH-DEPTH >= if false exit then
+   depth PATH-AT {: path:ptr :}
+   SCAN-NAMES-U @ {: begin-at:n :}
+   path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
+   SCAN-NAMES-U @ {: end-at:n :}
+   begin-at begin dup end-at < while
+      {: at:n :}
+      at SCAN-NAMES c@ at 1+ SCAN-NAMES c@ 256 * + {: nu:n :}
+      at 2 + SCAN-NAMES {: name:ptr :}
+      name nu s" archive" STR= 0= if
+         path plen name nu depth 1+ PATH-AT PATH-JOIN {: child-u:n :}
+         depth 1+ PATH-AT {: child:ptr :}
+         child child-u FS-TRY-LSTAT-MODE MATCH option
+            none OF false ENDOF
+            some OF S-IFMT and S-IFDIR = ENDOF
+         ;MATCH if
+            SB-RESET child child-u SB-APPEND 47 SB-APPEND-C id iu SB-APPEND
+            s" .md" SB-APPEND SB$ FS-TRY-STAT if true exit then
+            depth 1+ child-u id iu RECURSE if true exit then
+         then
+      then
+      at nu 2 + +
+   repeat drop false ;
+: ID-TAKEN? ( ptr u8 n -- bool )
+   {: id:ptr iu:n :}
+   s" .dots/" id iu false ID-AT? if true exit then
+   s" .dots/" id iu true ID-AT? if true exit then
+   s" .dots/archive/" id iu false ID-AT? if true exit then
+   s" .dots/archive/" id iu true ID-AT? if true exit then
+   0 SCAN-NAMES-U !
+   s" .dots" 0 PATH-AT swap BYTE-COPY
+   0 s" .dots" nip id iu SEARCH-DIR ;
 : MAKE-CHILD-FOLDER ( n -- )
    {: parent:n :}
    SB-RESET s" .dots/" SB-APPEND parent F-ID FIELD$ SB-APPEND SB$ PATH-ONE!
@@ -1175,18 +1213,21 @@ variable PARENT-IDX
       PARENT-A @ PARENT-U @ AFTER-A @ AFTER-U @ STR=
       s" Error: parent and after cannot be the same issue" ?FAIL
    then
-   1 SCAN-KEYED !
-   AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ SCAN-KEY+ then
-   PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ SCAN-KEY+ then
-   TITLE-A @ TITLE-U @ NEW-TAIL!
-   true LOAD-ISSUES LOAD-PREFIX
+   \ Only -a and -P name tasks to load; ID-TAKEN? looks for the new id itself.
+   AFTER-SET @ 0<> PARENT-SET @ 0<> or if
+      1 SCAN-KEYED !
+      AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ SCAN-KEY+ then
+      PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ SCAN-KEY+ then
+      true LOAD-ISSUES
+   else s" .dots/archive" MAKE-DIRS then
+   LOAD-PREFIX
    -1 AFTER-IDX !
    AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ s" After issue not found: " RESOLVE-LABELED AFTER-IDX ! then
    -1 PARENT-IDX !
    PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ s" Parent issue not found: " RESOLVE-LABELED PARENT-IDX ! then
-   NEW-ID$ 2dup VALID-ID? 0= s" Invalid issue id" ?FAIL
-   2dup FIND-EXACT -1 <> s" Issue already exists" ?FAIL
+   TITLE-A @ TITLE-U @ NEW-ID$ 2dup VALID-ID? 0= s" Invalid issue id" ?FAIL
    NEW-RECORD {: idx:n :}
+   idx F-ID FIELD$ ID-TAKEN? s" Issue already exists" ?FAIL
    TITLE-A @ TITLE-U @ idx F-TITLE FIELD!
    DESC-U @ 0 > if DESC-A @ DESC-U @ idx F-DESC FIELD! then
    ADD-PRIORITY @ idx F-PRIORITY REC-CELL !
@@ -1202,7 +1243,12 @@ variable PARENT-IDX
    then
    SB-RESET s" .dots/" SB-APPEND
    PARENT-IDX @ -1 <> if PARENT-IDX @ F-ID FIELD$ SB-APPEND 47 SB-APPEND-C then
-   idx F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$
+   idx F-ID FIELD$ SB-APPEND
+   \ With no parent, a folder already named after the task holds it.
+   PARENT-IDX @ -1 = if
+      SB$ DIR? if 47 SB-APPEND-C idx F-ID FIELD$ SB-APPEND then
+   then
+   s" .md" SB-APPEND SB$
    idx F-PATH FIELD!
    idx SAVE-RECORD
    s" --json" ARG-AT? if
