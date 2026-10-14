@@ -303,9 +303,10 @@ DYNAMIC-BUFFER ORDER n
    0 VALID ! 0 BLOCK-ON ! 0 BLOCK-U !
    1 idx F-ERROR REC-CELL !
    idx F-PATH FIELD$ {: path:ptr pu:n :}
-   path pu FILE-SIZE FILE-CAP >
+   path pu [: 2dup FILE-BUF FILE-CAP READ-ALL FILE-U ! ;] catch
+   dup E-FS-CAPACITY =
    s" Unexpected internal error (code: StreamTooLong)" ?FAIL
-   path pu FILE-BUF FILE-CAP READ-ALL FILE-U !
+   dup 0<> if throw then drop 2drop
    FILE-BUF FILE-U @ 0 NEXT-LINE {: head:ptr hu:n off:n more:bool :}
    head hu s" ---" STR= 0= if exit then
    more 0= if exit then
@@ -918,8 +919,6 @@ variable PAD-COPY
 : LOAD-PREFIX ( -- )
    0 CONFIG-U !
    s" .dots/config" FILE? if
-      s" .dots/config" FILE-SIZE 65536 >
-      s" Unexpected internal error (code: StreamTooLong)" ?FAIL
       [: s" .dots/config" CONFIG-ROW 65536 READ-ALL CONFIG-U ! ;] catch
       dup E-FS-CAPACITY =
       s" Unexpected internal error (code: StreamTooLong)" ?FAIL
@@ -1397,8 +1396,10 @@ variable REOPEN-PARENT-KEEP-U
 : REOPEN-STAGE-ONE ( n -- )
    {: at:n :}
    at REOPEN-INDEX F-PATH FIELD$ {: path:ptr pu:n :}
-   path pu FILE-SIZE FILE-CAP > if E-ISSUE-WRITE throw then
-   path pu FILE-BUF FILE-CAP READ-ALL {: size:n :}
+   path pu [: 2dup FILE-BUF FILE-CAP READ-ALL FILE-U ! ;] catch
+   dup E-FS-CAPACITY = if E-ISSUE-WRITE throw then
+   dup 0<> if throw then drop 2drop
+   FILE-U @ {: size:n :}
    path pu RESERVE-ISSUE-SIBLING {: temp:ptr tu:n fd:n :}
    tu 1024 >= if fd temp tu E-FS-CAPACITY TEMP-THROW then
    temp at 1024 * REOPEN-BACKUP-PATHS + tu BYTE-COPY
