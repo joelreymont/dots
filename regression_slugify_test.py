@@ -21,8 +21,55 @@ def issue(title, marker, *, status='open', blocks=()):
     return '\n'.join(lines) + f'\n---\n\n{marker}\n'
 
 
+INTERPOSE_HEADER = '''#include <errno.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+static int should_fail(const char *dst) {
+    const char *target = getenv("DOTS_TEST_RENAME_TARGET");
+    if (!target || !strstr(dst, target)) return 0;
+    const char *path = getenv("DOTS_TEST_RENAME_MARKER");
+    const char *probe = getenv("DOTS_TEST_RENAME_PROBE");
+    if (path && probe) {
+        int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            const char *state = access(probe, F_OK) == -1 ? "moved" : "present";
+            write(fd, state, strlen(state));
+            close(fd);
+        }
+    }
+    errno = EACCES;
+    return 1;
+}
+'''
+INTERPOSE_DARWIN = '''#include <stdio.h>
+#include <stdint.h>
+static int fail_renamex(const char *src, const char *dst, unsigned int flags) {
+    if (should_fail(dst)) return -1;
+    return renamex_np(src, dst, flags);
+}
+__attribute__((used)) static struct { const void *replacement; const void *replacee; }
+    interpose __attribute__((section("__DATA,__interpose"))) =
+    { (const void *)(uintptr_t)&fail_renamex, (const void *)(uintptr_t)&renamex_np };
+'''
+INTERPOSE_LINUX = '''#define _GNU_SOURCE
+#include <dlfcn.h>
+int renameat2(int olddirfd, const char *src, int newdirfd,
+              const char *dst, unsigned int flags) {
+    if (should_fail(dst)) return -1;
+    int (*next)(int, const char *, int, const char *, unsigned int) =
+        dlsym(RTLD_NEXT, "renameat2");
+    return next(olddirfd, src, newdirfd, dst, flags);
+}
+'''
+
+
 class SlugifyRegression(unittest.TestCase):
     def setUp(self):
+        self.new_store()
+
+    def new_store(self):
         temp = tempfile.TemporaryDirectory(prefix='dots-slugify-regression-')
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -44,6 +91,35 @@ class SlugifyRegression(unittest.TestCase):
     def tree(self):
         return {str(path.relative_to(self.dots)): path.read_bytes()
                 for path in self.dots.rglob('*.md')}
+
+    def snapshot(self):
+        return {str(path.relative_to(self.dots)):
+                None if path.is_dir() else path.read_bytes()
+                for path in self.dots.rglob('*')}
+
+    def run_failing_rename(self, target, probe):
+        """Run slugify while a no-replace rename to a destination containing
+        target fails with EACCES; report whether probe had moved by then."""
+        if sys.platform not in ('darwin', 'linux') or not shutil.which('cc'):
+            self.skipTest('rename interposition requires a C compiler')
+        marker = self.root / 'intercepted'
+        source = self.root / 'interpose.c'
+        if sys.platform == 'darwin':
+            library = self.root / 'interpose.dylib'
+            body, preload = INTERPOSE_DARWIN, 'DYLD_INSERT_LIBRARIES'
+            command = ['cc', '-dynamiclib', '-o', str(library), str(source)]
+        else:
+            library = self.root / 'interpose.so'
+            body, preload = INTERPOSE_LINUX, 'LD_PRELOAD'
+            command = ['cc', '-shared', '-fPIC', '-o', str(library),
+                       str(source), '-ldl']
+        source.write_text(INTERPOSE_HEADER + body)
+        subprocess.run(command, check=True, capture_output=True, timeout=30)
+        result = self.run_dot(env={preload: str(library),
+                                   'DOTS_TEST_RENAME_TARGET': target,
+                                   'DOTS_TEST_RENAME_PROBE': probe,
+                                   'DOTS_TEST_RENAME_MARKER': str(marker)})
+        return result, marker.read_text() if marker.exists() else None
 
     def test_archived_folders_children_and_all_dependency_rewrites(self):
         old = {
@@ -157,72 +233,16 @@ class SlugifyRegression(unittest.TestCase):
         self.assertFalse(list(self.dots.rglob('*.tmp-*')))
 
     def test_failed_commit_rename_rolls_back_every_file(self):
-        if sys.platform not in ('darwin', 'linux') or not shutil.which('cc'):
-            self.skipTest('rename interposition requires a C compiler')
         original = self.dots / 'old-12345678.md'
         dependent = self.dots / 'archive' / 'dependent-22222222.md'
         original.write_text(issue('Target', 'target-marker'))
         dependent.write_text(issue('Dependent', 'dependent-marker', status='closed',
                                    blocks=('old-12345678',)))
         before = self.tree()
-        marker = self.root / 'intercepted'
-        source = self.root / 'interpose.c'
-        library = self.root / ('interpose.dylib' if sys.platform == 'darwin'
-                               else 'interpose.so')
-        header = '''#include <errno.h>
-#include <fcntl.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-static int should_fail(const char *dst) {
-    if (!strstr(dst, "case-target-12345678.md")) return 0;
-    const char *path = getenv("DOTS_TEST_RENAME_MARKER");
-    if (path) {
-        int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
-        if (fd >= 0) {
-            const char *state = access(".dots/old-12345678.md", F_OK) == -1
-                ? "moved" : "present";
-            write(fd, state, strlen(state));
-            close(fd);
-        }
-    }
-    errno = EACCES;
-    return 1;
-}
-'''
-        if sys.platform == 'darwin':
-            body = '''#include <stdio.h>
-#include <stdint.h>
-static int fail_renamex(const char *src, const char *dst, unsigned int flags) {
-    if (should_fail(dst)) return -1;
-    return renamex_np(src, dst, flags);
-}
-__attribute__((used)) static struct { const void *replacement; const void *replacee; }
-    interpose __attribute__((section("__DATA,__interpose"))) =
-    { (const void *)(uintptr_t)&fail_renamex, (const void *)(uintptr_t)&renamex_np };
-'''
-            command = ['cc', '-dynamiclib', '-o', str(library), str(source)]
-            preload = 'DYLD_INSERT_LIBRARIES'
-        else:
-            body = '''#define _GNU_SOURCE
-#include <dlfcn.h>
-int renameat2(int olddirfd, const char *src, int newdirfd,
-              const char *dst, unsigned int flags) {
-    if (should_fail(dst)) return -1;
-    int (*next)(int, const char *, int, const char *, unsigned int) =
-        dlsym(RTLD_NEXT, "renameat2");
-    return next(olddirfd, src, newdirfd, dst, flags);
-}
-'''
-            command = ['cc', '-shared', '-fPIC', '-o', str(library),
-                       str(source), '-ldl']
-            preload = 'LD_PRELOAD'
-        source.write_text(header + body)
-        subprocess.run(command, check=True, capture_output=True, timeout=30)
 
-        result = self.run_dot(env={preload: str(library),
-                                   'DOTS_TEST_RENAME_MARKER': str(marker)})
-        self.assertEqual(marker.read_text(), 'moved', result.stderr)
+        result, state = self.run_failing_rename('case-target-12345678.md',
+                                                '.dots/old-12345678.md')
+        self.assertEqual(state, 'moved', result.stderr)
         self.assertEqual((result.returncode, result.stdout, result.stderr),
                          (1, b'', b'Permission denied\n'))
         self.assertEqual(self.tree(), before)
@@ -309,6 +329,94 @@ int renameat2(int olddirfd, const char *src, int newdirfd,
         self.assertEqual(set(blocks), {active, archived})
         self.assertEqual(len(blocks), 2)
         self.assertEqual(self.run_dot().stdout, b'Slugified 0 issue(s)\n')
+
+    def test_child_folder_follows_renamed_parent(self):
+        # add -P files children in the active .dots/<id>/ wherever the parent
+        # lives: archived with its own children, a plain file, or nested.
+        old, new = 'parent-bbbbcccc', 'case-parent-task-bbbbcccc'
+        child = f'{new}/case-extra-task-ddddeeee.md'
+        layouts = {
+            'archived': ({
+                f'archive/{old}/{old}.md':
+                    issue('Parent task', 'marker-parent', status='closed'),
+                f'archive/{old}/child-ccccdddd.md':
+                    issue('Archived child', 'marker-child', status='closed'),
+            }, {f'archive/{new}/{new}.md',
+                f'archive/{new}/case-archived-child-ccccdddd.md'}),
+            'plain': ({f'{old}.md': issue('Parent task', 'marker-parent')},
+                      {f'{new}.md'}),
+            'nested': ({
+                'group-aaaabbbb/group-aaaabbbb.md': issue('Group task', 'marker-group'),
+                f'group-aaaabbbb/{old}.md': issue('Parent task', 'marker-parent'),
+            }, {'case-group-task-aaaabbbb/case-group-task-aaaabbbb.md',
+                f'case-group-task-aaaabbbb/{new}.md'}),
+        }
+        for name, (seed, parent_paths) in layouts.items():
+            with self.subTest(layout=name):
+                self.new_store()
+                for path, content in seed.items():
+                    self.put(path, content)
+                self.put(f'{old}/extra-ddddeeee.md',
+                         issue('Extra task', 'marker-extra', blocks=(old,)))
+
+                result = self.run_dot()
+                self.assertEqual((result.returncode, result.stderr), (0, b''),
+                                 result.stdout)
+                after = self.tree()
+                self.assertEqual(set(after), parent_paths | {child})
+                self.assertFalse((self.dots / old).exists())
+                self.assertIn(b'marker-extra', after[child])
+                self.assertEqual(re.findall(r'^  - (.+)$', after[child].decode(), re.M),
+                                 [new])
+                if name != 'archived':  # tree <id> resolves only active tasks
+                    self.assertIn('└─ [case-extra-task-ddddeeee]'.encode(),
+                                  self.run_dot('tree', new).stdout)
+                closing = self.run_dot('close', new)
+                self.assertEqual((closing.returncode, closing.stderr),
+                                 (1, b'Cannot close: children are not all closed\n'))
+
+    def test_occupied_child_folder_refused(self):
+        old = 'parent-bbbbcccc'
+        self.put(f'archive/{old}/{old}.md',
+                 issue('Parent task', 'marker-parent', status='closed'))
+        self.put(f'{old}/case-extra-task-ddddeeee.md',
+                 issue('Extra task', 'marker-extra', blocks=(old,)))
+        self.put('case-parent-task-bbbbcccc/sentinel', 'occupied-dir')
+        before = self.snapshot()
+
+        result = self.run_dot()
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (0, b'Slugified 0 issue(s)\n',
+                          b'Skipping parent-bbbbcccc: new ID case-parent-task-bbbbcccc'
+                          b' already exists\n'))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_failed_rename_restores_child_folder(self):
+        old = 'parent-bbbbcccc'
+        self.put(f'archive/{old}/{old}.md',
+                 issue('Parent task', 'marker-parent', status='closed'))
+        self.put(f'archive/{old}/case-archived-child-ccccdddd.md',
+                 issue('Archived child', 'marker-child', status='closed'))
+        self.put(f'{old}/case-extra-task-ddddeeee.md',
+                 issue('Extra task', 'marker-extra', blocks=(old,)))
+        before = self.snapshot()
+
+        # Both folders move before the parent's own file is renamed.
+        result, state = self.run_failing_rename('case-parent-task-bbbbcccc.md',
+                                                f'.dots/{old}')
+        self.assertEqual(state, 'moved', result.stderr)
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (1, b'', b'Permission denied\n'))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_task_named_archive_keeps_the_archive(self):
+        # .dots/archive is the archive, never the child folder of a task.
+        self.put('archive.md', issue('Archive', 'marker-task'))
+        self.put('archive/case-kept-task-11112222.md',
+                 issue('Kept task', 'marker-kept', status='closed'))
+        result = self.run_dot()
+        self.assertEqual((result.returncode, result.stderr), (0, b''), result.stdout)
+        self.assertIn('archive/case-kept-task-11112222.md', self.tree())
 
 
 if __name__ == '__main__':

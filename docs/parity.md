@@ -32,8 +32,9 @@ The repairs cover these reproduced failures:
 
 The repaired commands serialize cooperating writers before reading state.
 Archive transitions preserve the original bytes on the tested move/write
-failures. Slugify stages each rename and its dependent rewrites, rolls back
-ordinary failures, and preserves all matching targets of duplicated old IDs.
+failures. Slugify stages each rename and its dependent rewrites, moves the
+children a task keeps in `.dots/<id>/` with it, rolls back ordinary failures,
+and preserves all matching targets of duplicated old IDs.
 Closing a task requires every descendant affected by the operation, including
 the children a nested or archived task keeps in `.dots/<id>/`, to be valid and
 closed; the Zig reference skips a malformed child there, and Habu refuses.

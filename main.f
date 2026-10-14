@@ -1948,6 +1948,12 @@ variable SLUG-LAST-SLASH
 variable SLUG-PARENT-SLASH
 variable SLUG-FOLDER
 variable SLUG-FOLDER-MOVED
+variable SLUG-CHILD-FOLDER
+variable SLUG-CHILD-MOVED
+create SLUG-CHILD-FROM 512 allot
+variable SLUG-CHILD-FROM-U
+create SLUG-CHILD-TO 512 allot
+variable SLUG-CHILD-TO-U
 variable SLUG-IDX
 variable SLUG-KEEP-OLD
 8 constant SLUG-TXN-CELLS
@@ -1972,7 +1978,7 @@ variable SLUG-PATH-U
 : SLUG-INIT ( -- )
    ISSUE-N @ SLUG-TXN-CELLS * SLUG-TXN-RESERVE
    ISSUE-N @ SLUG-TXN-CELLS * 0 ?do 0 i SLUG-TXN ! loop
-   0 SLUG-PATH-U ! 0 SLUG-FOLDER-MOVED !
+   0 SLUG-PATH-U ! 0 SLUG-FOLDER-MOVED ! 0 SLUG-CHILD-MOVED !
    ISSUE-N @ 0 ?do i F-PATH FIELD$ i 0 SLUG-STORE loop ;
 : SLUG-REBASE-RECORDS ( ptr u8 n ptr u8 n -- )
    {: old-dir:ptr old-u:n new-dir:ptr new-u:n :}
@@ -2016,8 +2022,40 @@ variable SLUG-PATH-U
    then
    SB-RESET PATH-ONE SLUG-LAST-SLASH @ 1+ SB-APPEND
    RENAMED-ID$ SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO! ;
+: SLUG-CHILD-FROM$ ( -- ptr u8 n ) SLUG-CHILD-FROM SLUG-CHILD-FROM-U @ ;
+: SLUG-CHILD-TO$ ( -- ptr u8 n ) SLUG-CHILD-TO SLUG-CHILD-TO-U @ ;
+: SLUG-CHILD-PATH ( ptr u8 n ptr u8 -- n )
+   {: id:ptr iu:n row:ptr :}
+   SB-RESET s" .dots/" SB-APPEND id iu SB-APPEND SB$ {: path:ptr pu:n :}
+   pu 512 >= s" I/O error" ?FAIL
+   path row pu BYTE-COPY pu ;
+\ A task with the old ID inside the folder owns it: SLUG-PLAN-PATH moves a
+\ task's own folder, and a duplicate ID keeps its folder.
+: SLUG-CHILD-OWNED? ( -- bool )
+   ISSUE-N @ 0 ?do
+      i F-ID FIELD$ OLD-ID$ STR= if
+         i F-PATH FIELD$ SLUG-CHILD-FROM$ STATUS-UNDER? if true unloop exit then
+      then
+   loop false ;
+\ add -P puts a task's children in the active .dots/<id>/ wherever its own
+\ file lives, and that folder takes the new ID with the task. The archive
+\ directory is never a child folder.
+: SLUG-CHILD-MOVES? ( -- bool )
+   SLUG-CHILD-FROM$ s" .dots/archive" STR= if false exit then
+   SLUG-CHILD-FROM$ SYMLINK? if false exit then
+   SLUG-CHILD-FROM$ DIR? 0= if false exit then
+   SLUG-CHILD-OWNED? 0= ;
+: SLUG-PLAN-CHILD ( -- )
+   OLD-ID$ SLUG-CHILD-FROM SLUG-CHILD-PATH SLUG-CHILD-FROM-U !
+   RENAMED-ID$ SLUG-CHILD-TO SLUG-CHILD-PATH SLUG-CHILD-TO-U !
+   SLUG-CHILD-MOVES? if 1 else 0 then SLUG-CHILD-FOLDER ! ;
+: SLUG-OCCUPIED? ( ptr u8 n -- bool )
+   {: path:ptr pu:n :}
+   path pu EXISTS? path pu SYMLINK? or ;
 : SLUG-DEST-OCCUPIED? ( -- bool )
-   PATH-TWO$ EXISTS? PATH-TWO$ SYMLINK? or ;
+   PATH-TWO$ SLUG-OCCUPIED? if true exit then
+   SLUG-CHILD-FOLDER @ 0<> if SLUG-CHILD-TO$ SLUG-OCCUPIED? exit then
+   false ;
 : SLUG-OLD-REMAINS? ( -- bool )
    ISSUE-N @ 0 ?do
       i F-ID FIELD$ OLD-ID$ STR= if true unloop exit then
@@ -2042,6 +2080,9 @@ variable SLUG-PATH-U
    then ;
 : SLUG-PREPARE ( -- )
    RENAMED-ID$ SLUG-IDX @ F-ID FIELD!
+   SLUG-CHILD-FOLDER @ 0<> if
+      SLUG-CHILD-FROM$ SLUG-CHILD-TO$ SLUG-REBASE-RECORDS
+   then
    SLUG-FOLDER @ 0<> if
       PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$ SLUG-REBASE-RECORDS
       SB-RESET PATH-TWO$ SB-APPEND 47 SB-APPEND-C
@@ -2082,30 +2123,41 @@ variable SLUG-PATH-U
    dup 2 = if drop exit then
    dup FS-ACCESS-DENIED = if drop E-ISSUE-PERMISSION throw then
    dup 0<> if drop E-FS-IO throw else drop then ;
-: SLUG-REBASE-STORED ( n n -- )
-   {: idx:n field:n :}
+: SLUG-REBASE-STORED ( n n ptr u8 n ptr u8 n -- )
+   {: idx:n field:n old:ptr ou:n new:ptr nu:n :}
    idx field SLUG-STORED$ {: path:ptr pu:n :}
-   pu 0= if exit then
-   path pu PATH-ONE SLUG-LAST-SLASH @ STARTS-WITH?
-   pu SLUG-LAST-SLASH @ > and if
-      path SLUG-LAST-SLASH @ + c@ 47 = if
-         SB-RESET PATH-TWO$ SB-APPEND
-         path SLUG-LAST-SLASH @ + pu SLUG-LAST-SLASH @ - SB-APPEND SB$
-         idx field SLUG-STORE
-      then
+   path pu old ou STATUS-UNDER? if
+      SB-RESET new nu SB-APPEND path ou + pu ou - SB-APPEND SB$
+      idx field SLUG-STORE
    then ;
-: SLUG-REBASE-STAGED ( -- )
+\ Staged and backup files sit beside the originals and move with a folder.
+: SLUG-REBASE-STAGED ( ptr u8 n ptr u8 n -- )
+   {: old:ptr ou:n new:ptr nu:n :}
    ISSUE-N @ 0 ?do
-      i 0 SLUG-REBASE-STORED
-      i 2 SLUG-REBASE-STORED
-      i 4 SLUG-REBASE-STORED
+      i 0 old ou new nu SLUG-REBASE-STORED
+      i 2 old ou new nu SLUG-REBASE-STORED
+      i 4 old ou new nu SLUG-REBASE-STORED
    loop ;
-: SLUG-COMMIT ( -- )
+: SLUG-MOVE-FOLDERS ( -- )
    SLUG-FOLDER @ 0<> if
       PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$ SLUG-RENAME-NOREPLACE-THROW
       1 SLUG-FOLDER-MOVED !
-      SLUG-REBASE-STAGED
+      PATH-ONE SLUG-LAST-SLASH @ PATH-TWO$ SLUG-REBASE-STAGED
    then
+   SLUG-CHILD-FOLDER @ 0<> if
+      SLUG-CHILD-FROM$ SLUG-CHILD-TO$ SLUG-RENAME-NOREPLACE-THROW
+      1 SLUG-CHILD-MOVED !
+      SLUG-CHILD-FROM$ SLUG-CHILD-TO$ SLUG-REBASE-STAGED
+   then ;
+: SLUG-RESTORE-FOLDERS ( -- )
+   SLUG-CHILD-MOVED @ 0<> if
+      SLUG-CHILD-TO$ SLUG-CHILD-FROM$ SLUG-RENAME-NOREPLACE-THROW
+   then
+   SLUG-FOLDER-MOVED @ 0<> if
+      PATH-TWO$ PATH-ONE SLUG-LAST-SLASH @ SLUG-RENAME-NOREPLACE-THROW
+   then ;
+: SLUG-COMMIT ( -- )
+   SLUG-MOVE-FOLDERS
    ISSUE-N @ 0 ?do
       i 7 SLUG-CELL @ 0<> if
          i 0 SLUG-STORED$ i 4 SLUG-STORED$ SLUG-RENAME-BACKUP
@@ -2125,9 +2177,7 @@ variable SLUG-PATH-U
          i 4 SLUG-STORED$ nip 0<> if i 4 SLUG-STORED$ SLUG-UNLINK then
       then
    loop
-   SLUG-FOLDER-MOVED @ 0<> if
-      PATH-TWO$ PATH-ONE SLUG-LAST-SLASH @ SLUG-RENAME-NOREPLACE-THROW
-   then ;
+   SLUG-RESTORE-FOLDERS ;
 : SLUG-CLEANUP ( -- )
    ISSUE-N @ 0 ?do
       i 7 SLUG-CELL @ 0<> if
@@ -2149,7 +2199,7 @@ variable SLUG-PATH-U
    RENAMED-ID$ VALID-ID? 0= s" Invalid issue id" ?FAIL
    RENAMED-ID$ FIND-EXACT -1 <> if SLUG-SKIP exit then
    idx F-PATH FIELD$ FILE? 0= s" Issue not found" ?FAIL
-   idx SLUG-PLAN-PATH
+   idx SLUG-PLAN-PATH SLUG-PLAN-CHILD
    SLUG-DEST-OCCUPIED? if SLUG-SKIP exit then
    idx SLUG-IDX !
    SLUG-INIT
