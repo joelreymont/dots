@@ -2114,12 +2114,6 @@ variable DEP-ID-U
 create DEP-TYPE-ROW 1048576 allot
 variable DEP-TYPE-U
 variable JSONL-SEEN
-variable JSONL-NUM-AT
-variable JSONL-NUM-DIGITS
-variable JSONL-NUM-FRAC
-variable JSONL-NUM-EXP
-variable JSONL-NUM-EXP-NEG
-variable JSONL-HAS-FRAC
 variable JSONL-DEP-SEEN
 
 : JSONL-KEY-BIT ( JR:reader -- JR:reader n )
@@ -2137,116 +2131,83 @@ variable JSONL-DEP-SEEN
    s" dependencies" JR:STR-EQ? if 2048 exit then
    0 ;
 
+: JSONL-MALFORMED ( JR:reader -- ) JR:CLOSE E-JR-MALFORMED throw ;
 : JSONL-START ( -- JR:reader )
    JSONL-STATE JR:STORAGE-BYTES JSONL-LINE-A @ JSONL-LINE-U @ JR:INIT
-   JR:NEXT JR:T-OBJ <> if JR:CLOSE E-JR-MALFORMED throw then ;
+   JR:NEXT JR:T-OBJ <> if JSONL-MALFORMED then ;
 : JSONL-VALIDATE ( -- )
    0 JSONL-SEEN !
    JSONL-START
    begin JR:NEXT dup JR:T-OBJ-END <> while
-      JR:T-KEY <> if JR:CLOSE E-JR-MALFORMED throw then
+      JR:T-KEY <> if JSONL-MALFORMED then
       JSONL-KEY-BIT {: bit:n :}
-      JSONL-SEEN @ bit and 0<> if JR:CLOSE E-JR-MALFORMED throw then
+      JSONL-SEEN @ bit and 0<> if JSONL-MALFORMED then
       JSONL-SEEN @ bit or JSONL-SEEN !
       JR:NEXT drop JR:SKIP-VALUE
    repeat drop
-   JR:NEXT JR:T-END <> if JR:CLOSE E-JR-MALFORMED throw then
+   JR:NEXT JR:T-END <> if JSONL-MALFORMED then
    JR:CLOSE ;
 : JSONL-FIND ( ptr u8 n -- JR:reader bool )
    {: key:ptr ku:n :}
    JSONL-START key ku JR:FIND-KEY ;
-: JSONL-DECIMAL-DIGIT? ( ptr u8 n n -- bool )
+\ The byte at at, or 0 past the end; the decimal grammar names no 0 byte.
+: JSONL-PEEK ( ptr u8 n n -- n )
    {: a:ptr u:n at:n :}
-   a at + c@ DIGIT? if true exit then
-   a at + c@ 95 <> at 0= or at 1+ u >= or if false exit then
-   a at 1- + c@ DIGIT? a at 1+ + c@ DIGIT? and ;
+   at u < if a at + c@ else 0 then ;
+\ Scan digits joined by single underscores from start. Answer the end, the
+\ digit count and the value saturated at 1048576.
+: JSONL-DIGITS ( ptr u8 n n -- n n n )
+   {: a:ptr u:n start:n :}
+   start 0 0 begin
+      {: at:n count:n value:n :}
+      at u < if a at + c@ else 0 then 95 = count 0 > and if at 1+ else at then {: pos:n :}
+      pos u < if a pos + c@ else 0 then 48 - {: d:n :}
+      d 0 < d 9 > or if at count value exit then
+      pos 1+ count 1+ value 10 * d + dup 1048576 > if drop 1048576 then
+   again ;
+\ An optional exponent at at: its end and signed value. A marker without
+\ digits answers at, which leaves the marker unconsumed.
+: JSONL-EXPONENT ( ptr u8 n n -- n n )
+   {: a:ptr u:n at:n :}
+   a u at JSONL-PEEK 32 or 101 <> if at 0 exit then
+   a u at 1+ JSONL-PEEK {: sign:n :}
+   a u at 1+ sign 45 = sign 43 = or if 1+ then JSONL-DIGITS {: end:n count:n value:n :}
+   end count 0= if drop at then value sign 45 = if 0 swap - then ;
+\ The integer formed by the first whole digits before end, padded with zeros
+\ past end; every later digit must be 0. The value accumulates negated so the
+\ i64 minimum fits: after -922337203685477580 the next digit may be at most
+\ lim, 8 for a negative value and 7 otherwise.
+: JSONL-INTEGRAL ( ptr u8 n n -- option<n> )
+   {: a:ptr end:n whole:n :}
+   a c@ 45 = if 8 else 7 then {: lim:n :}
+   0 whole 0 begin
+      {: at:n rem:n acc:n :}
+      at end < if a at + c@ else
+         rem 0 <= acc 0= or if acc lim 7 = if 0 swap - then OPTION:SOME exit then
+         48
+      then 48 - {: d:n :}
+      rem 0 > d 0 >= and d 9 <= and if
+         acc -922337203685477580 d lim > if 1+ then < if OPTION:NONE exit then
+         at 1+ rem 1- acc 10 * d -
+      else
+         d 0 > d 9 <= and if OPTION:NONE exit then
+         at 1+ rem acc
+      then
+   again ;
+\ Accept an exactly integral decimal or exponent form that PARSE-PRIORITY
+\ declines; docs/parity.md bounds the scope.
 : JSONL-DECIMAL ( ptr u8 n -- option<n> )
    {: a:ptr u:n :}
    a u PARSE-PRIORITY MATCH option
       none OF ENDOF
       some OF OPTION:SOME exit ENDOF
    ;MATCH
-   0 JSONL-NUM-AT ! 0 JSONL-NUM-DIGITS ! 0 JSONL-NUM-FRAC !
-   0 JSONL-NUM-EXP ! 0 JSONL-NUM-EXP-NEG !
-   0 NUM-U ! 0 NUM-SIG !
    u 0= if OPTION:NONE exit then
-   a c@ dup 45 = swap 43 = or if
-      a c@ 45 = if 45 NUM-APPEND drop then
-      1 JSONL-NUM-AT !
-   then
-   JSONL-NUM-AT @ {: start:n :}
-   begin JSONL-NUM-AT @ u < if a u JSONL-NUM-AT @ JSONL-DECIMAL-DIGIT? else false then while
-      a JSONL-NUM-AT @ + c@ 95 <> if 1 JSONL-NUM-DIGITS +! then
-      1 JSONL-NUM-AT +!
-   repeat
-   JSONL-NUM-AT @ u < if
-      a JSONL-NUM-AT @ + c@ 46 = if
-         1 JSONL-NUM-AT +!
-         begin JSONL-NUM-AT @ u < if a u JSONL-NUM-AT @ JSONL-DECIMAL-DIGIT? else false then while
-            a JSONL-NUM-AT @ + c@ 95 <> if
-               1 JSONL-NUM-DIGITS +! 1 JSONL-NUM-FRAC +!
-            then
-            1 JSONL-NUM-AT +!
-         repeat
-      then
-   then
-   JSONL-NUM-DIGITS @ 0= if OPTION:NONE exit then
-   JSONL-NUM-AT @ {: mantissa-end:n :}
-   JSONL-NUM-AT @ u < if
-      a JSONL-NUM-AT @ + c@ dup 101 = swap 69 = or if
-         1 JSONL-NUM-AT +!
-         JSONL-NUM-AT @ u < if
-            a JSONL-NUM-AT @ + c@ dup 45 = swap 43 = or if
-               a JSONL-NUM-AT @ + c@ 45 = if 1 JSONL-NUM-EXP-NEG ! then
-               1 JSONL-NUM-AT +!
-            then
-         then
-         JSONL-NUM-AT @ u >= if OPTION:NONE exit then
-         a JSONL-NUM-AT @ + c@ DIGIT? 0= if OPTION:NONE exit then
-         begin JSONL-NUM-AT @ u < if a u JSONL-NUM-AT @ JSONL-DECIMAL-DIGIT? else false then while
-            JSONL-NUM-EXP @ 1048576 < a JSONL-NUM-AT @ + c@ 95 <> and if
-               JSONL-NUM-EXP @ 10 * a JSONL-NUM-AT @ + c@ 48 - +
-               1048576 min JSONL-NUM-EXP !
-            then
-            1 JSONL-NUM-AT +!
-         repeat
-      then
-   then
-   JSONL-NUM-AT @ u <> if OPTION:NONE exit then
-   JSONL-NUM-EXP-NEG @ 0<> if JSONL-NUM-EXP @ negate JSONL-NUM-EXP ! then
-   JSONL-NUM-DIGITS @ JSONL-NUM-FRAC @ - JSONL-NUM-EXP @ +
-   {: whole:n :}
-   0 JSONL-NUM-DIGITS ! 0 JSONL-HAS-FRAC !
-   start begin dup mantissa-end < while
-      {: at:n :}
-      a at + c@ {: ch:n :}
-      ch 46 <> ch 95 <> and if
-         JSONL-NUM-DIGITS @ whole < if
-            NUM-SIG @ 0<> ch 48 <> or if
-               ch NUM-APPEND 0= if OPTION:NONE exit then
-               1 NUM-SIG !
-            then
-         else
-            ch 48 <> if 1 JSONL-HAS-FRAC ! then
-         then
-         1 JSONL-NUM-DIGITS +!
-      then
-      at 1+
-   repeat drop
-   NUM-SIG @ 0<> if
-      whole JSONL-NUM-DIGITS @ - dup 0 > if
-         NUM-U @ over + 32 > if drop OPTION:NONE exit then
-         0 ?do 48 NUM-APPEND drop loop
-      else drop then
-   else
-      48 NUM-APPEND drop
-   then
-   NUM-BUF NUM-U @ STR>NUMBER? MATCH option
-      none OF OPTION:NONE exit ENDOF
-      some OF ENDOF
-   ;MATCH {: integer:n :}
-   JSONL-HAS-FRAC @ 0<> if OPTION:NONE exit then
-   integer OPTION:SOME ;
+   a u 0 a c@ dup 45 = swap 43 = or if 1+ then JSONL-DIGITS drop {: int-end:n int-n:n :}
+   a u int-end a u int-end JSONL-PEEK 46 = if 1+ then JSONL-DIGITS drop {: mant-end:n frac-n:n :}
+   a u mant-end JSONL-EXPONENT {: end:n exp:n :}
+   int-n frac-n + 0= end u <> or if OPTION:NONE exit then
+   a mant-end int-n exp + JSONL-INTEGRAL ;
 variable JSONL-BYTE-U
 : JSONL-BYTE-VALUE ( ptr u8 n -- n )
    JSONL-DECIMAL MATCH option
@@ -2290,7 +2251,7 @@ variable JSONL-BYTE-U
 : JSONL-REQUIRED-STRING ( ptr u8 n n -- )
    JSONL-STRING-FIELD 0= if E-JR-MALFORMED throw then ;
 : JSONL-PRIORITY ( -- )
-   s" priority" JSONL-FIND 0= if JR:CLOSE E-JR-MALFORMED throw then
+   s" priority" JSONL-FIND 0= if JSONL-MALFORMED then
    JR:TOKEN {: kind:n :}
    kind JR:T-INT = if
       JR:INT IMPORT-IDX @ F-PRIORITY REC-CELL ! JR:CLOSE exit
@@ -2298,7 +2259,7 @@ variable JSONL-BYTE-U
    kind JR:T-STR = if
       JSONL-DECODE-BUF 1048576 JR:STR {: size:n :}
       JSONL-DECODE-BUF size JSONL-DECIMAL MATCH option
-         none OF JR:CLOSE E-JR-MALFORMED throw ENDOF
+         none OF JSONL-MALFORMED ENDOF
          some OF IMPORT-IDX @ F-PRIORITY REC-CELL ! ENDOF
       ;MATCH
       JR:CLOSE exit
@@ -2306,12 +2267,12 @@ variable JSONL-BYTE-U
    kind JR:T-FLOAT = if
       JR:SPAN$ {: a:ptr u:n :}
       a u JSONL-DECIMAL MATCH option
-         none OF JR:CLOSE E-JR-MALFORMED throw ENDOF
+         none OF JSONL-MALFORMED ENDOF
          some OF IMPORT-IDX @ F-PRIORITY REC-CELL ! ENDOF
       ;MATCH
       JR:CLOSE exit
    then
-   JR:CLOSE E-JR-MALFORMED throw ;
+   JSONL-MALFORMED ;
 : JSONL-STATUS ( -- )
    s" status" F-REASON JSONL-REQUIRED-STRING
    IMPORT-IDX @ F-REASON FIELD$ 2dup s" in_progress" STR= if 2drop 1 else
@@ -2378,7 +2339,7 @@ variable JSONL-BYTE-U
 : JSONL-DEPENDENCIES ( -- )
    s" dependencies" JSONL-FIND if
       JR:TOKEN dup JR:T-NULL = if drop JR:CLOSE exit then
-      JR:T-ARR <> if JR:CLOSE E-JR-MALFORMED throw then
+      JR:T-ARR <> if JSONL-MALFORMED then
       begin JR:NEXT dup JR:T-ARR-END <> while
          JR:T-OBJ <> if E-JR-MALFORMED throw then
          JSONL-DEP-OBJECT
