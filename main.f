@@ -569,8 +569,13 @@ DYNAMIC-BUFFER SORT-BUF n
 : CONTAINS-CI? ( ptr u8 n ptr u8 n -- bool )
    {: a:ptr au:n q:ptr qu:n :}
    qu au > if false exit then
+   qu 0= if true exit then
+   \ Fold the first query byte once; compare the rest only where it matches.
+   q c@ ASCII-LOWER {: first:n :}
    au qu - 1+ 0 ?do
-      a i + qu q qu STR=CI if true unloop exit then
+      a i + c@ ASCII-LOWER first = if
+         a i + 1+ qu 1- q 1+ qu 1- STR=CI if true unloop exit then
+      then
    loop false ;
 : MATCHES? ( n -- bool )
    {: idx:n :}
