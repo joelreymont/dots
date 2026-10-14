@@ -2583,62 +2583,91 @@ variable CYCLE-TAIL
       1 ARG-I +!
    repeat
    GIT-ADD-DOTS ;
+\ Dispatch codes: a command's group position in COMMAND-TABLE. The read-only
+\ commands, which run without the writer lock, come first.
+0 constant CMD-TREE
+1 constant CMD-LS
+2 constant CMD-READY
+3 constant CMD-SHOW
+4 constant CMD-FIND
+5 constant CMD-HELP
+6 constant CMD-VERSION
+7 constant CMD-HOOK
+8 constant CMD-ADD
+9 constant CMD-ON
+10 constant CMD-OFF
+11 constant CMD-UPDATE
+12 constant CMD-CLOSE
+13 constant CMD-INIT
+14 constant CMD-PURGE
+15 constant CMD-RM
+16 constant CMD-FIX
+17 constant CMD-SLUGIFY
+32 constant GROUP-SEP
+124 constant ALIAS-SEP
+\ Command names grouped by dispatch code: GROUP-SEP ends a group and
+\ ALIAS-SEP separates the aliases within one.
+: COMMAND-TABLE ( -- ptr u8 n )
+   s" tree ls|list ready show find help|-h|--help --version|-v hook add|create on|it off|done update close init purge rm|delete fix slugify" ;
+\ Whether arg is one of the aliases in group.
+: ALIAS? ( ptr u8 n ptr u8 n -- bool )
+   {: arg:ptr au:n grp:ptr gu:n :}
+   grp gu ALIAS-SEP 0 begin SPLIT-NEXT while {: name:ptr nu:n next:n :}
+      arg au name nu ARG= if true exit then
+      grp gu ALIAS-SEP next
+   repeat drop 2drop false ;
+\ Dispatch code of the command arg names; an unknown name gets the group
+\ count, which no dispatch arm matches.
+: COMMAND-CODE ( ptr u8 n -- n )
+   {: arg:ptr au:n :}
+   0 COMMAND-TABLE GROUP-SEP 0 begin SPLIT-NEXT while {: grp:ptr gu:n next:n :}
+      arg au grp gu ALIAS? if exit then
+      1+ COMMAND-TABLE GROUP-SEP next
+   repeat drop 2drop ;
+\ Run a command once MAIN holds any lock it needs; an unknown name quick-adds.
+: RUN-COMMAND ( n -- )
+   case
+      CMD-TREE of TREE-COMMAND endof
+      CMD-LS of 1 PARSE-LIST-ARGS false LOAD-ISSUES PRINT-LIST endof
+      CMD-READY of PARSE-READY-ARGS false LOAD-ISSUES PRINT-LIST endof
+      CMD-SHOW of
+         script-argc 2 < if s" Usage: dot show <id>" FAIL then
+         1 SCAN-NAME-ONLY !
+         true LOAD-ISSUES 1 script-argv$ RESOLVE LOAD-TARGET SHOW
+      endof
+      CMD-FIND of
+         script-argc 2 < if FIND-USAGE exit then
+         FIND-HELP? if FIND-USAGE exit then
+         1 script-argv$ QUERY-U ! QUERY-A !
+         true LOAD-ISSUES PRINT-FIND
+      endof
+      CMD-ADD of 1 ADD-COMMAND endof
+      CMD-ON of 1 STATUS-MULTI endof
+      CMD-OFF of 1 CLOSED-STYLE ! 2 STATUS-MULTI endof
+      CMD-UPDATE of 0 CLOSED-STYLE ! -1 STATUS-SINGLE endof
+      CMD-CLOSE of 0 CLOSED-STYLE ! 2 STATUS-SINGLE endof
+      CMD-INIT of INIT-FULL-COMMAND endof
+      CMD-PURGE of PURGE-COMMAND endof
+      CMD-RM of RM-COMMAND endof
+      CMD-FIX of FIX-COMMAND endof
+      CMD-SLUGIFY of SLUGIFY-COMMAND endof
+      0 ADD-COMMAND
+   endcase ;
 public
-: READ-ONLY-COMMAND? ( ptr u8 n -- bool )
-   2dup s" ls" ARG= if 2drop true exit then
-   2dup s" list" ARG= if 2drop true exit then
-   2dup s" ready" ARG= if 2drop true exit then
-   2dup s" show" ARG= if 2drop true exit then
-   2dup s" find" ARG= if 2drop true exit then
-   2dup s" tree" ARG= if 2drop true exit then
-   2drop false ;
+\ Whether the command with this dispatch code runs without the writer lock.
+: READ-ONLY-COMMAND? ( n -- bool ) CMD-HELP < ;
 : MAIN ( -- )
    script-argc 0= if
       1 USE-JSON ! -1 FILTER ! 1 WANT-READY ! false LOAD-ISSUES PRINT-LIST exit
    then
-   0 script-argv$ 2dup s" help" ARG= if 2drop USAGE exit then
-   2dup s" -h" ARG= if 2drop USAGE exit then
-   2dup s" --help" ARG= if 2drop USAGE exit then
-   2dup s" --version" ARG= if 2drop VERSION exit then
-   2dup s" -v" ARG= if 2drop VERSION exit then
-   2dup s" hook" ARG= if 2drop s" Unknown command: hook" FAIL then
-   2dup READ-ONLY-COMMAND? 0= if DOT-LOCK:ACQUIRE then
-   2dup s" add" ARG= if 2drop 1 ADD-COMMAND exit then
-   2dup s" create" ARG= if 2drop 1 ADD-COMMAND exit then
-   2dup s" on" ARG= if 2drop 1 STATUS-MULTI exit then
-   2dup s" it" ARG= if 2drop 1 STATUS-MULTI exit then
-   2dup s" off" ARG= if 2drop 1 CLOSED-STYLE ! 2 STATUS-MULTI exit then
-   2dup s" done" ARG= if 2drop 1 CLOSED-STYLE ! 2 STATUS-MULTI exit then
-   2dup s" update" ARG= if 2drop 0 CLOSED-STYLE ! -1 STATUS-SINGLE exit then
-   2dup s" close" ARG= if 2drop 0 CLOSED-STYLE ! 2 STATUS-SINGLE exit then
-   2dup s" init" ARG= if 2drop INIT-FULL-COMMAND exit then
-   2dup s" purge" ARG= if 2drop PURGE-COMMAND exit then
-   2dup s" rm" ARG= if 2drop RM-COMMAND exit then
-   2dup s" delete" ARG= if 2drop RM-COMMAND exit then
-   2dup s" tree" ARG= if 2drop TREE-COMMAND exit then
-   2dup s" fix" ARG= if 2drop FIX-COMMAND exit then
-   2dup s" slugify" ARG= if 2drop SLUGIFY-COMMAND exit then
-   2dup s" ls" ARG= if
-      2drop 1 PARSE-LIST-ARGS false LOAD-ISSUES PRINT-LIST exit
-   then
-   2dup s" list" ARG= if
-      2drop 1 PARSE-LIST-ARGS false LOAD-ISSUES PRINT-LIST exit
-   then
-   2dup s" ready" ARG= if
-      2drop PARSE-READY-ARGS false LOAD-ISSUES PRINT-LIST exit
-   then
-   2dup s" show" ARG= if
-      2drop script-argc 2 < if s" Usage: dot show <id>" FAIL then
-      1 SCAN-NAME-ONLY !
-      true LOAD-ISSUES 1 script-argv$ RESOLVE LOAD-TARGET SHOW exit
-   then
-   2dup s" find" ARG= if
-      2drop script-argc 2 < if FIND-USAGE exit then
-      FIND-HELP? if FIND-USAGE exit then
-      1 script-argv$ QUERY-U ! QUERY-A !
-      true LOAD-ISSUES PRINT-FIND exit
-   then
-   2drop 0 ADD-COMMAND ;
+   0 script-argv$ COMMAND-CODE
+   case
+      CMD-HELP of USAGE endof
+      CMD-VERSION of VERSION endof
+      CMD-HOOK of s" Unknown command: hook" FAIL endof
+      dup READ-ONLY-COMMAND? 0= if DOT-LOCK:ACQUIRE then
+      dup RUN-COMMAND
+   endcase ;
 
 ;package
 
