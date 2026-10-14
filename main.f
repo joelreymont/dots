@@ -1709,44 +1709,102 @@ variable STATUS-SAVE-IDX
    dup 0 = if drop s" ○" exit then
    dup 1 = if drop s" >" exit then
    drop s" ✓" ;
+\ The tree index, built once after SORT-ISSUES. Per record: its path's slash
+\ count, the first of its children and its next sibling, -1 ending a list.
+\ TREE-SLOT interleaves two open-addressed tables of TREE-CAP slots, each
+\ holding a record index + 1 (0 empty): PATH-KEYS by F-PATH among non-error
+\ records and ID-KEYS by F-ID among all records. The first record per key
+\ owns the slot, so records sharing an ID share one child list.
+DYNAMIC-BUFFER TREE-SLASH n
+DYNAMIC-BUFFER TREE-HEAD n
+DYNAMIC-BUFFER TREE-NEXT n
+DYNAMIC-BUFFER TREE-SLOT n
+variable TREE-CAP
+0 constant PATH-KEYS
+1 constant ID-KEYS
+\ FNV-1a, its high half folded onto the low bits TREE-FIND masks.
+: TREE-HASH ( ptr u8 n -- n )
+   {: a:ptr u:n :}
+   $CBF29CE484222325 u 0 ?do a i + c@ xor $100000001B3 * loop
+   dup 32 rshift xor ;
+: TREE-FIELD ( n -- n ) PATH-KEYS = if F-PATH else F-ID then ;
+\ The slot of table holding key, or the empty slot where key belongs. The
+\ capacity exceeds the record count, so an empty slot ends every probe.
+: TREE-FIND ( ptr u8 n n -- n )
+   {: key:ptr ku:n table:n :}
+   table TREE-FIELD {: field:n :}
+   TREE-CAP @ 1- {: mask:n :}
+   key ku TREE-HASH mask and begin
+      {: at:n :}
+      at 2 * table + {: slot:n :}
+      slot TREE-SLOT @ {: rec:n :}
+      rec 0= if slot exit then
+      rec 1- field FIELD$ key ku STR= if slot exit then
+      at 1+ mask and
+   again ;
+: TREE-ADD ( n n -- )
+   {: idx:n table:n :}
+   idx table TREE-FIELD FIELD$ table TREE-FIND {: slot:n :}
+   slot TREE-SLOT @ 0= if idx 1+ slot TREE-SLOT ! then ;
+\ The first record with key in table, or -1.
+: TREE-GET ( ptr u8 n n -- n ) TREE-FIND TREE-SLOT @ 1- ;
+: TREE-CHILD? ( n -- bool )
+   {: idx:n :}
+   idx F-ERROR REC-CELL @ 0= idx F-ARCHIVED REC-CELL @ 0= and
+   idx TREE-SLASH @ 2 = and ;
+: TREE-INDEX ( -- )
+   ISSUE-N @ {: count:n :}
+   2 begin dup count 2 * < while 2 * repeat {: cap:n :}
+   cap TREE-CAP !
+   count TREE-SLASH-RESERVE count TREE-HEAD-RESERVE count TREE-NEXT-RESERVE
+   cap 2 * TREE-SLOT-RESERVE
+   cap 2 * 0 ?do 0 i TREE-SLOT ! loop
+   count 0 ?do
+      i PATH-SLASHES i TREE-SLASH !
+      -1 i TREE-HEAD !
+      i ID-KEYS TREE-ADD
+      i F-ERROR REC-CELL @ 0= if i PATH-KEYS TREE-ADD then
+   loop
+   \ Prepend in reverse ORDER so every child list runs in ORDER.
+   count 0 ?do
+      count i - 1- ORDER @ {: child:n :}
+      child TREE-CHILD? if
+         child F-PARENT FIELD$ ID-KEYS TREE-GET {: parent:n :}
+         parent 0 >= if
+            parent TREE-HEAD @ child TREE-NEXT !
+            child parent TREE-HEAD !
+         then
+      then
+   loop ;
 : TREE-ROOT? ( n -- bool )
    {: idx:n :}
    idx F-ARCHIVED REC-CELL @ 0<> idx F-ERROR REC-CELL @ 0<> or if false exit then
    idx F-STATUS REC-CELL @ 2 = if false exit then
-   idx PATH-SLASHES 2 > if false exit then
+   idx TREE-SLASH @ 2 > if false exit then
    idx F-PARENT FIELD$ dup 0= if 2drop true exit then
    {: parent:ptr pu:n :}
    SB-RESET s" .dots/" SB-APPEND parent pu SB-APPEND
    47 SB-APPEND-C parent pu SB-APPEND s" .md" SB-APPEND SB$
-   {: path:ptr plen:n :}
-   ISSUE-N @ 0 ?do
-      i F-PATH FIELD$ path plen STR= i F-ERROR REC-CELL @ 0= and if
-         false unloop exit
-      then
-   loop true ;
+   PATH-KEYS TREE-GET 0< ;
 : PRINT-TREE-ROOT ( n -- )
    {: idx:n :}
    91 DOT-IO:PRINT-BYTE idx F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
    idx F-STATUS REC-CELL @ STATUS-SYMBOL DOT-IO:PRINT 32 DOT-IO:PRINT-BYTE
    idx F-TITLE FIELD$ DOT-IO:PRINTLN
-   ISSUE-N @ 0 ?do
-      i ORDER @ {: child:n :}
-      child F-ERROR REC-CELL @ 0= child F-ARCHIVED REC-CELL @ 0= and if
-         child PATH-SLASHES 2 = if
-            child F-PARENT FIELD$ idx F-ID FIELD$ STR= if
-               s"   └─ [" DOT-IO:PRINT child F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
-               child F-STATUS REC-CELL @ STATUS-SYMBOL DOT-IO:PRINT 32 DOT-IO:PRINT-BYTE
-               child F-TITLE FIELD$ DOT-IO:PRINT
-               child BLOCKED? if s"  (blocked)" DOT-IO:PRINT then DOT-IO:NL
-            then
-         then
-      then
-   loop ;
+   idx F-ID FIELD$ ID-KEYS TREE-GET TREE-HEAD @ begin dup 0 >= while
+      {: child:n :}
+      s"   └─ [" DOT-IO:PRINT child F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
+      child F-STATUS REC-CELL @ STATUS-SYMBOL DOT-IO:PRINT 32 DOT-IO:PRINT-BYTE
+      child F-TITLE FIELD$ DOT-IO:PRINT
+      child BLOCKED? if s"  (blocked)" DOT-IO:PRINT then DOT-IO:NL
+      child TREE-NEXT @
+   repeat drop ;
 : TREE-COMMAND ( -- )
    FIND-HELP? if TREE-HELP exit then
    script-argc 2 > s" Usage: dot tree [id]" ?FAIL
    false LOAD-ISSUES
    SORT-ISSUES
+   TREE-INDEX
    script-argc 2 = if
       1 RESOLVE-ARG dup RECORD-PATH? 0= ?ARG-NOT-FOUND
       dup CHECK-ERROR

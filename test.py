@@ -350,6 +350,11 @@ FULL_SEQUENCES = [
         (['ready', '--json'], None),
     ]),
     ('ties', 'ties', [(['ls', '--json'], None)]),
+    ('tree-shapes', 'tree-shapes', [
+        (['tree'], None), (['tree', 'lead'], None), (['tree', 'kid'], None),
+        (['tree', 'shut'], None), (['tree', 'broken'], None),
+        (['tree', 'twin'], None), (['tree', 'waif'], None),
+    ]),
 ]
 
 
@@ -387,6 +392,21 @@ def seed_full(root, kind):
         for name in 'bdac':
             put(root, f'tie-{name}.md', issue('Tie ' + name))
         put(root, 'first.md', issue('First', priority=1))
+    elif kind == 'tree-shapes':
+        # Children in ORDER, closed and malformed children, a too-deep leaf,
+        # two roots sharing ID twin and so one child list, and roots whose
+        # parent file is missing or malformed.
+        put(root, 'lead/lead.md', issue('Lead parent', priority=1))
+        put(root, 'lead/kid.md', issue('Open kid', priority=3))
+        put(root, 'lead/shut.md', issue('Closed kid', 'done', 0))
+        put(root, 'lead/broken.md', 'not frontmatter\n')
+        put(root, 'lead/deeper/leaf.md', issue('Deep leaf'))
+        put(root, 'twin.md', issue('Twin file'))
+        put(root, 'twin/twin.md', issue('Twin folder'))
+        put(root, 'twin/pair.md', issue('Pair under twin'))
+        put(root, 'stray/waif.md', issue('Waif without parent file'))
+        put(root, 'bent/bent.md', 'not frontmatter\n')
+        put(root, 'bent/sprout.md', issue('Sprout under malformed parent'))
 
 
 GENERATED_TIME = re.compile(r'\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}(?P<offset>[+-]\d{2}:\d{2})\b')
