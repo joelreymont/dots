@@ -1178,22 +1178,27 @@ variable CLOSED-TIME-U
       dup 1- path + c@ 47 = if 1- exit then
       1-
    repeat drop 0 ;
+: STATUS-UNDER? ( ptr u8 n ptr u8 n -- bool )
+   {: path:ptr pu:n dir:ptr du:n :}
+   pu du <= if false exit then
+   path du dir du STR= 0= if false exit then
+   path du + c@ 47 = ;
+\ A task's descendants are the records of its partition under a folder named
+\ after it: the top-level one add -P creates, or the one holding its own file,
+\ which moves with it into the archive.
 : STATUS-DESCENDANT? ( n n -- bool )
    {: child:n parent:n :}
-   parent F-CHILD REC-CELL @ 0<> if false exit then
    child F-ARCHIVED REC-CELL @ parent F-ARCHIVED REC-CELL @ <> if false exit then
    child parent = if false exit then
+   parent F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" else s" .dots/" then
+   nip {: base-u:n :}
+   child F-PATH FIELD$ {: cp:ptr cpu:n :}
+   cp base-u + cpu base-u - parent F-ID FIELD$ STATUS-UNDER? if true exit then
+   parent F-CHILD REC-CELL @ 0<> if false exit then
    parent F-PATH FIELD$ {: pp:ptr ppu:n :}
    pp ppu STATUS-DIR-U {: pdir:n :}
-   parent F-ARCHIVED REC-CELL @ 0<> if
-      pdir s" .dots/archive" nip <= if false exit then
-   else
-      pdir s" .dots" nip <= if false exit then
-   then
-   child F-PATH FIELD$ {: cp:ptr cpu:n :}
-   cpu pdir <= if false exit then
-   cp pdir pp pdir STR= 0= if false exit then
-   cp pdir + c@ 47 = ;
+   pdir base-u < if false exit then
+   cp cpu pp pdir STATUS-UNDER? ;
 : STATUS-CHILDREN-OPEN? ( n -- bool )
    {: idx:n :}
    ISSUE-N @ 0 ?do
@@ -1226,10 +1231,8 @@ variable CLOSED-TIME-U
    loop ;
 : STATUS-IN-SUBTREE? ( ptr u8 n ptr u8 n -- bool )
    {: path:ptr pu:n root:ptr ru:n :}
-   pu ru < if false exit then
-   path ru root ru STR= 0= if false exit then
-   pu ru = if true exit then
-   path ru + c@ 47 = ;
+   path pu root ru STR= if true exit then
+   path pu root ru STATUS-UNDER? ;
 : REBASE-STATUS-SUBTREE ( ptr u8 n ptr u8 n -- )
    {: old:ptr ou:n new:ptr nu:n :}
    nu 14 >= if new 14 s" .dots/archive/" STR= else false then

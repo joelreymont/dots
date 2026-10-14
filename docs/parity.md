@@ -20,8 +20,9 @@ The repairs cover these reproduced failures:
 
 - Destructive maintenance following symlinks; invisible orphan tree rows;
   lost imported dependency bytes and incorrect archived or nested parent paths.
-- Mutations parsing unrelated oversized files or selecting another parent's
-  children; JSON byte arrays and invalid UTF-8 handling.
+- Mutations parsing unrelated oversized files, selecting another parent's
+  children, or closing a nested task over open children in `.dots/<id>/`;
+  JSON byte arrays and invalid UTF-8 handling.
 - Reopening leaving tasks hidden in the archive; failed moves changing task
   status; archive symlink writes; nested subtree and ancestor transitions.
 - Slugify losing archived/nested paths or dependency targets, overwriting
@@ -33,8 +34,9 @@ The repaired commands serialize cooperating writers before reading state.
 Archive transitions preserve the original bytes on the tested move/write
 failures. Slugify stages each rename and its dependent rewrites, rolls back
 ordinary failures, and preserves all matching targets of duplicated old IDs.
-Closing a parent requires every descendant affected by the operation to be
-valid and closed.
+Closing a task requires every descendant affected by the operation, including
+the children a nested task keeps in `.dots/<id>/`, to be valid and closed;
+the Zig reference skips a malformed child there, and Habu refuses.
 
 ## Permanent suites and review
 
