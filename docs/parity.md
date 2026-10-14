@@ -83,18 +83,18 @@ and safe closing of standalone archived tasks beside unrelated records.
 ## Size
 
 Build with `sh build.sh`, which uses the installed `hb` on `PATH`. A build
-with Habu `bdd9a8ad` measured 181,884 bytes and passed all ten permanent
+with Habu `3164d371` measured 198,396 bytes and passed all ten permanent
 suites.
 
 | Executable, macOS arm64 | Bytes |
 | --- | ---: |
-| Habu, current build | 181,884 |
+| Habu, current build | 198,396 |
 | Zig 0.15.2 ReleaseSmall, stripped, as shipped | 205,104 |
 | Zig 0.15.2, same source, smallest flags | 188,320 |
 | Habu, initial port | 165,372 |
 
-The Habu binary is **11.3% smaller than the shipped Zig build** and 3.4%
-smaller than the smallest Zig build of the same source. The shipped release
+The Habu binary is **3.3% smaller than the shipped Zig build** and 5.4%
+larger than the smallest Zig build of the same source. The shipped release
 used Zig 0.15.2 (`release.yml` at `3855fcf`): `zig build -Doptimize=ReleaseSmall`,
 then `strip`. The smallest build adds `-fsingle-threaded -fno-unwind-tables`
 and strips with `strip -u -r`. Zig 0.15.2 links against the macOS 27 SDK
@@ -102,9 +102,11 @@ only with `-target aarch64-macos.14.0`, the shipped runner's target. The later
 Zig 0.16 and 0.17 ports add about 55 KB of `std.Io` code, so the 0.17
 differential reference under `benchmark/` is not a size baseline.
 
-The file contains 140,600 bytes of code, 9,918 bytes of embedded data, 28,205
-bytes of alignment padding, and 3,161 other bytes. Mach-O segments grow in
+The file contains 151,408 bytes of code, 9,918 bytes of embedded data, 33,717
+bytes of alignment padding, and 3,353 other bytes. Mach-O segments grow in
 16 KiB pages, so the file shrinks only when code and data leave a page empty.
+Importing JSONL through Habu's shared `jsonl.f` and `decimal.f` added about
+5.7 KB of code, which crossed one page boundary (previously 181,884 bytes).
 No arbitrary precision, binary128, or hexadecimal numeric parser was added.
 The loader restores a 5,926,872-byte data window; 5,916,954 of those bytes do
 not travel in the file. These are size measurements, not speed or memory

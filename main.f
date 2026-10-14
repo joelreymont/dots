@@ -7,6 +7,8 @@ require src/lib/fs-list.f
 require src/lib/process-env.f
 require src/lib/json-write.f
 require src/lib/json-read.f
+require src/lib/decimal.f
+require src/lib/jsonl.f
 require src/lib/utf8-scalar.f
 require src/lib/fmt.f
 require abbrev.f
@@ -50,11 +52,6 @@ variable ISSUE-N
 create FILE-BUF FILE-CAP allot
 variable FILE-U
 DYNAMIC-BUFFER BLOCK-BUF u8
-create NUM-BUF 32 allot
-variable NUM-U
-variable NUM-DIGIT
-variable NUM-SIG
-variable NUM-START
 create PATHS MAX-DEPTH FS-PATH-CAP * allot
 DYNAMIC-BUFFER SCAN-NAMES u8
 variable SCAN-NAMES-U
@@ -188,37 +185,6 @@ DYNAMIC-BUFFER SORT-BUF n
    a BLOCK-U @ BLOCK-BUF u BYTE-COPY
    10 BLOCK-U @ u + BLOCK-BUF c!
    BLOCK-U @ u 1+ + BLOCK-U ! ;
-: DIGIT? ( n -- bool ) dup 48 >= swap 57 <= and ;
-: NUM-APPEND ( n -- bool )
-   NUM-U @ 32 >= if drop false exit then
-   NUM-BUF NUM-U @ + c! 1 NUM-U +! true ;
-: NORMALIZE-PRIORITY ( ptr u8 n -- bool )
-   {: a:ptr u:n :}
-   0 NUM-U ! 0 NUM-DIGIT ! 0 NUM-SIG !
-   u 0= if false exit then
-   0 NUM-START !
-   a c@ 45 = if 45 NUM-APPEND drop 1 NUM-START ! then
-   a c@ 43 = if 1 NUM-START ! then
-   NUM-START @ u >= if false exit then
-   NUM-START @ begin dup u < while
-      {: at:n :}
-      a at + c@ {: ch:n :}
-      ch 95 = if
-         at NUM-START @ = at 1+ u >= or if false exit then
-      else
-         ch DIGIT? 0= if false exit then
-         1 NUM-DIGIT !
-         ch 48 <> NUM-SIG @ 0<> or if
-            1 NUM-SIG ! ch NUM-APPEND 0= if false exit then
-         then
-      then
-      at 1+
-   repeat drop
-   NUM-DIGIT @ 0= if false exit then
-   NUM-SIG @ 0= if 48 NUM-APPEND 0= if false exit then then
-   true ;
-: PARSE-PRIORITY ( ptr u8 n -- option<n> )
-   NORMALIZE-PRIORITY if NUM-BUF NUM-U @ STR>NUMBER? else OPTION:NONE then ;
 : VALID-ID? ( ptr u8 n -- bool )
    {: a:ptr u:n :}
    u 0= u 128 > or if false exit then
@@ -245,7 +211,7 @@ DYNAMIC-BUFFER SORT-BUF n
       val vu PARSE-STATUS dup -1 = if drop 2 VALID ! else CURRENT @ F-STATUS REC-CELL ! then exit
    then
    key ku s" priority" STR= if
-      val vu PARSE-PRIORITY MATCH option
+      val vu DECIMAL:INTEGER MATCH option
          none OF 1 VALID ! ENDOF
          some OF CURRENT @ F-PRIORITY REC-CELL ! ENDOF
       ;MATCH exit
@@ -1139,7 +1105,7 @@ variable PARENT-IDX
    begin ARG-I @ script-argc < while
       ARG-I @ script-argv$ {: a:ptr u:n :}
       a u s" -p" STR= NEXT-ARG? and if
-         TAKE-ARG 2dup PARSE-PRIORITY MATCH option
+         TAKE-ARG 2dup DECIMAL:INTEGER MATCH option
             none OF s" Invalid priority: " 2swap ISSUE-ERROR ENDOF
             some OF {: value:n :} 2drop value 0 max 9 min ADD-PRIORITY ! ENDOF
          ;MATCH
@@ -2247,17 +2213,11 @@ create GIT-EXEC-ROW PATH-CAP allot
    s" Slugified " DOT-IO:PRINT SLUG-RENAMED @ DOT-IO:INT s"  issue(s)" DOT-IO:PRINTLN
    GIT-ADD-DOTS ;
 
-\ JSONL migration uses the checked JSON cursor and keeps each source line live
-\ until every typed field and dependency has been decoded.
-create JSONL-STATE JR:STORAGE-BYTES allot
+\ JSONL migration reads each line through a JSONL cursor, which keeps the line
+\ live until every typed field and dependency has been decoded.
+TYPED-VARIABLE JSONL-CURSOR JSONL:cursor
 create JSONL-DECODE-BUF 1048576 allot
-DYNAMIC-BUFFER JSONL-FILE-BUF u8
-create JSONL-CHUNK 8192 allot
-variable JSONL-CHUNK-U
-variable JSONL-FILE-U
 DYNAMIC-BUFFER IMPORT-DEP-BUF u8
-PTR-VARIABLE JSONL-LINE-A
-variable JSONL-LINE-U
 variable IMPORT-IDX
 variable IMPORT-DEP-U
 variable IMPORTED-N
@@ -2287,7 +2247,7 @@ variable JSONL-DEP-SEEN
 
 : JSONL-MALFORMED ( JR:reader -- ) JR:CLOSE E-JR-MALFORMED throw ;
 : JSONL-START ( -- JR:reader )
-   JSONL-STATE JR:STORAGE-BYTES JSONL-LINE-A @ JSONL-LINE-U @ JR:INIT
+   JSONL-CURSOR JSONL:READER
    JR:NEXT JR:T-OBJ <> if JSONL-MALFORMED then ;
 : JSONL-VALIDATE ( -- )
    0 JSONL-SEEN !
@@ -2304,64 +2264,14 @@ variable JSONL-DEP-SEEN
 : JSONL-FIND ( ptr u8 n -- JR:reader bool )
    {: key:ptr ku:n :}
    JSONL-START key ku JR:FIND-KEY ;
-\ The byte at at, or 0 past the end; the decimal grammar names no 0 byte.
-: JSONL-PEEK ( ptr u8 n n -- n )
-   {: a:ptr u:n at:n :}
-   at u < if a at + c@ else 0 then ;
-\ Scan digits joined by single underscores from start. Answer the end, the
-\ digit count and the value saturated at 1048576.
-: JSONL-DIGITS ( ptr u8 n n -- n n n )
-   {: a:ptr u:n start:n :}
-   start 0 0 begin
-      {: at:n count:n value:n :}
-      a u at JSONL-PEEK 95 = count 0 > and if at 1+ else at then {: pos:n :}
-      a u pos JSONL-PEEK 48 - {: d:n :}
-      d 0 < d 9 > or if at count value exit then
-      pos 1+ count 1+ value 10 * d + dup 1048576 > if drop 1048576 then
-   again ;
-\ An optional exponent at at: its end and signed value. A marker without
-\ digits answers at, which leaves the marker unconsumed.
-: JSONL-EXPONENT ( ptr u8 n n -- n n )
-   {: a:ptr u:n at:n :}
-   a u at JSONL-PEEK 32 or 101 <> if at 0 exit then
-   a u at 1+ JSONL-PEEK {: sign:n :}
-   a u at 1+ sign 45 = sign 43 = or if 1+ then JSONL-DIGITS {: end:n count:n value:n :}
-   end count 0= if drop at then value sign 45 = if 0 swap - then ;
-\ The integer formed by the first whole digits before end, padded with zeros
-\ past end; every later digit must be 0. The value accumulates negated so the
-\ i64 minimum fits: after -922337203685477580 the next digit may be at most
-\ lim, 8 for a negative value and 7 otherwise.
-: JSONL-INTEGRAL ( ptr u8 n n -- option<n> )
-   {: a:ptr end:n whole:n :}
-   a c@ 45 = if 8 else 7 then {: lim:n :}
-   0 whole 0 begin
-      {: at:n rem:n acc:n :}
-      at end < if a at + c@ else
-         rem 0 <= acc 0= or if acc lim 7 = if 0 swap - then OPTION:SOME exit then
-         48
-      then 48 - {: d:n :}
-      rem 0 > d 0 >= and d 9 <= and if
-         acc -922337203685477580 d lim > if 1+ then < if OPTION:NONE exit then
-         at 1+ rem 1- acc 10 * d -
-      else
-         d 0 > d 9 <= and if OPTION:NONE exit then
-         at 1+ rem acc
-      then
-   again ;
-\ Accept an exactly integral decimal or exponent form that PARSE-PRIORITY
-\ declines; docs/parity.md bounds the scope.
-: JSONL-DECIMAL ( ptr u8 n -- option<n> )
+\ The integer form, which alone accepts "1__2", then an exactly integral
+\ decimal or exponent form; docs/parity.md bounds the scope.
+: JSONL-DECIMAL ( ptr u8 n -- option<i64> )
    {: a:ptr u:n :}
-   a u PARSE-PRIORITY MATCH option
-      none OF ENDOF
-      some OF OPTION:SOME exit ENDOF
-   ;MATCH
-   u 0= if OPTION:NONE exit then
-   a u 0 a c@ dup 45 = swap 43 = or if 1+ then JSONL-DIGITS drop {: int-end:n int-n:n :}
-   a u int-end a u int-end JSONL-PEEK 46 = if 1+ then JSONL-DIGITS drop {: mant-end:n frac-n:n :}
-   a u mant-end JSONL-EXPONENT {: end:n exp:n :}
-   int-n frac-n + 0= end u <> or if OPTION:NONE exit then
-   a mant-end int-n exp + JSONL-INTEGRAL ;
+   a u DECIMAL:INTEGER MATCH option
+      none OF a u DECIMAL:EXACT ENDOF
+      some OF OPTION:SOME ENDOF
+   ;MATCH ;
 variable JSONL-BYTE-U
 : JSONL-BYTE-VALUE ( ptr u8 n -- n )
    JSONL-DECIMAL MATCH option
@@ -2638,41 +2548,32 @@ variable CYCLE-TAIL
    suffix su SB-APPEND 10 SB-APPEND-C
    SB$ 2 -rot STDERR-WRITE drop ;
 : IMPORT-PROCESS-LINE ( -- )
-   JSONL-FILE-U @ 0= if exit then
    ARENA-U @ {: arena-before:n :}
-   0 JSONL-FILE-BUF JSONL-LINE-A !
-   JSONL-FILE-U @ JSONL-LINE-U !
    [: JSONL-PARSE-LINE ;] catch 0<> s" Invalid JSONL file" ?FAIL
    [: IMPORT-CREATE ;] catch 0<> if
       1 IMPORT-SKIPPED-N +!
       ISSUE-N @ 1- ISSUE-N !
    then
    IMPORT-IDX @ ISSUE-N @ >= if arena-before ARENA-U ! then ;
-: IMPORT-JSONL-FILE ( ptr u8 n -- )
+\ A line holds at most 1048575 bytes before its LF: the reference's 1 MiB line
+\ limit is exclusive.
+: IMPORT-LINES ( ptr u8 n -- )
    {: path:ptr pu:n :}
-   path pu FILE? 0= if exit then
+   JSONL-CURSOR path pu 1048575 BUF:N>BLEN JSONL:OPEN
+   begin JSONL-CURSOR JSONL:NEXT MATCH option
+      none OF true ENDOF
+      some OF JSONL-LINE:UNMAKE 2drop drop IMPORT-PROCESS-LINE false ENDOF
+   ;MATCH until
+   JSONL-CURSOR JSONL:CLOSE ;
+\ Imports the JSONL at a path: a failed open or read is an I/O error, not EOF.
+: IMPORT-JSONL ( ptr u8 n -- )
+   {: path:ptr pu:n :}
    true LOAD-ISSUES
    0 IMPORTED-N ! 0 IMPORT-SKIPPED-N ! 0 DEP-SKIPPED-N !
-   0 JSONL-FILE-U !
-   path pu FS-PATHZ open-rd {: fd:n :}
-   fd 0 < s" I/O error" ?FAIL
-   begin
-      fd JSONL-CHUNK 8192 DOT-IO:READ-CHUNK JSONL-CHUNK-U !
-      JSONL-CHUNK-U @ 0 >
-   while
-      JSONL-CHUNK-U @ 0 ?do
-         JSONL-CHUNK i + c@ 10 = if
-            IMPORT-PROCESS-LINE 0 JSONL-FILE-U !
-         else
-            JSONL-FILE-U @ 1+ 1048576 >= s" JSONL line too long" ?FAIL
-            JSONL-FILE-U @ 1+ JSONL-FILE-BUF-RESERVE
-            JSONL-CHUNK i + c@ JSONL-FILE-U @ JSONL-FILE-BUF c!
-            1 JSONL-FILE-U +!
-         then
-      loop
-   repeat
-   IMPORT-PROCESS-LINE
-   fd close
+   path pu [: 2dup IMPORT-LINES ;] catch
+   dup JSONL:E-LIMIT = s" JSONL line too long" ?FAIL
+   dup E-FS-OPEN = over E-FS-IO = or s" I/O error" ?FAIL
+   dup 0<> if throw then drop 2drop
    IMPORT-ARCHIVE-CLOSED
    IMPORTED-N @ 0 > if
       s" Imported " DOT-IO:PRINT IMPORTED-N @ DOT-IO:INT
@@ -2680,6 +2581,10 @@ variable CYCLE-TAIL
    then
    IMPORT-SKIPPED-N @ s"  issues due to errors" WARN-IMPORT-NUM
    DEP-SKIPPED-N @ s"  dependencies due to errors" WARN-IMPORT-NUM ;
+\ Like the reference, import skips a path that is not a regular file.
+: IMPORT-JSONL-FILE ( ptr u8 n -- )
+   {: path:ptr pu:n :}
+   path pu FILE? if path pu IMPORT-JSONL then ;
 : INIT-FULL-COMMAND ( -- )
    INIT-EMPTY
    1 ARG-I !

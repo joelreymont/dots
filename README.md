@@ -9,9 +9,9 @@ Fast task tracking in plain Markdown files. Dots is a single native Habu CLI;
 tasks live in `.dots/` and can be read, edited, and versioned with ordinary
 file tools. It needs no database or server at runtime.
 
-The current stripped macOS arm64 binary is **181,884 bytes** (about 178 KiB),
-**11.3% smaller** than the shipped Zig build (205,104 bytes, Zig 0.15.2
-ReleaseSmall) and 3.4% smaller than the same source built with the smallest
+The current stripped macOS arm64 binary is **198,396 bytes** (about 194 KiB),
+**3.3% smaller** than the shipped Zig build (205,104 bytes, Zig 0.15.2
+ReleaseSmall) and 5.4% larger than the same source built with the smallest
 Zig flags (188,320 bytes). See [validation and scope](docs/parity.md) for
 measurements and adversarial tests. The previous Zig source,
 build, CI, and release setup remain on the [`zig` branch](https://github.com/joelreymont/dots/tree/zig).

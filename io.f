@@ -1,4 +1,4 @@
-\ Checked CLI I/O: partial writes continue; failed reads are not EOF.
+\ Checked CLI output: partial writes continue; failed writes are fatal.
 require src/lib/process.f
 require src/lib/fmt.f
 
@@ -26,6 +26,4 @@ public
 : NL ( -- ) 10 PRINT-BYTE ;
 : PRINTLN ( ptr u8 n -- ) PRINT NL ;
 : INT ( n -- ) SB-RESET FMT:SB-INT SB$ PRINT ;
-: READ-CHUNK ( n ptr u8 n -- n )
-   read dup 0 < if drop s" I/O error" 1 die then ;
 ;package

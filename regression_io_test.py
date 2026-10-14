@@ -87,27 +87,19 @@ class IORegression(unittest.TestCase):
             stderr = child.stderr.read()
             self.assertEqual((child.wait(timeout=10), stderr), (1, WRITE_ERROR))
 
-    def read_probe(self, fd, data=b''):
-        # Load the same checked read boundary used by IMPORT-JSONL-FILE.
-        # An invalid real descriptor deterministically produces a kernel error.
-        script = self.root / 'read-probe.f'
-        script.write_text(f'require {ROOT / "io.f"}\ncreate BUF 32 allot\n'
-                          f': PROBE ( -- ) {fd} BUF 32 DOT-IO:READ-CHUNK '
-                          'BUF swap DOT-IO:PRINT ;\nPROBE\n')
-        return subprocess.run(['hb', '--load', str(script)],
-                              cwd=self.root, input=data, capture_output=True, timeout=10)
-
     def test_failed_read_is_not_eof(self):
-        result = self.read_probe(-1)
+        # The CLI imports only regular files, which offer no deterministic read
+        # failure, so the probe loads main.f and runs IMPORT-JSONL, the import
+        # path after that check, on a directory: its open succeeds, its read fails.
+        (self.root / 'import.jsonl').mkdir()
+        script = self.root / 'read-probe.f'
+        script.write_text(f'require {ROOT / "main.f"}\npackage DOT-READ\n'
+                          ': PROBE ( -- ) s" import.jsonl" IMPORT-JSONL ;\n'
+                          'PROBE\n;package\n')
+        result = subprocess.run(['hb', '--load', str(script)],
+                                cwd=self.root, capture_output=True, timeout=10)
         self.assertEqual((result.returncode, result.stdout, result.stderr),
                          (1, b'', b'I/O error\n'))
-
-    def test_checked_read_preserves_bytes_and_eof(self):
-        for data in (b'', b'abc\x00\xff\n'):
-            with self.subTest(data=data):
-                result = self.read_probe(0, data)
-                self.assertEqual((result.returncode, result.stdout, result.stderr),
-                                 (0, data, b''))
 
 
 if __name__ == '__main__':

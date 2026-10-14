@@ -14,7 +14,7 @@ Always use the current Habu; never pin a Habu revision in scripts, tests or
 docs.
 The compiler cache, temporary files, and binary are ignored by version control.
 Do not commit them. Measure a release binary with `wc -c < bin/dot`; the
-validated macOS arm64 build is 181,884 bytes.
+validated macOS arm64 build is 198,396 bytes.
 
 ## Test
 
@@ -43,7 +43,8 @@ tree across command sequences. The edge harness checks large stores, unusual
 paths, JSONL import, configuration, and git index effects. The regression suites
 cover filesystem, graph/import, selective-loading, JSON, archive transitions,
 slugify failure recovery, I/O failures, and concurrent writers. The I/O suite
-uses the installed `hb` to exercise the actual checked-read boundary.
+uses the installed `hb` to load `main.f` and run JSONL import's read path,
+`IMPORT-JSONL`, on a directory whose read fails.
 The slugify suite uses `cc` for a deterministic rename-failure probe.
 Run all ten suites. Preserve exact differential checks except the explicitly
 asserted bug fixes documented in `docs/parity.md`. The accepted scope for JSONL
