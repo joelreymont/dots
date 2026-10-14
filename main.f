@@ -390,18 +390,22 @@ DYNAMIC-BUFFER SORT-BUF n
          \ and is formatted into a 512-byte array.
          child-u archived if 14 else 6 then - 512 >= s" I/O error" ?FAIL
          depth 1+ PATH-AT {: child:ptr :}
-         child child-u SYMLINK? if next else
-            child child-u FILE? name nu FILE-ENTRY? and if
-               depth 0 > if
-                  path plen BASENAME name nu 3 - STR= 0=
-               else false then {: is-child:bool :}
-               child child-u name nu 3 - archived is-child PARSE-FILE
-               is-child if path plen BASENAME CURRENT @ F-PARENT FIELD! then
-            else
-               child child-u DIR? if depth 1+ child-u archived RECURSE then
-            then
-            next
+         \ One lstat types the entry: symlinks, other types and unstatable
+         \ entries match neither branch and are skipped.
+         child child-u FS-TRY-LSTAT-MODE MATCH option
+            none OF 0 ENDOF
+            some OF S-IFMT and ENDOF
+         ;MATCH {: kind:n :}
+         kind S-IFREG = name nu FILE-ENTRY? and if
+            depth 0 > if
+               path plen BASENAME name nu 3 - STR= 0=
+            else false then {: is-child:bool :}
+            child child-u name nu 3 - archived is-child PARSE-FILE
+            is-child if path plen BASENAME CURRENT @ F-PARENT FIELD! then
+         else
+            kind S-IFDIR = if depth 1+ child-u archived RECURSE then
          then
+         next
       then
    repeat drop ;
 

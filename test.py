@@ -380,6 +380,8 @@ def tree_snapshot(root, ids):
             result[rel] = ['symlink', normalize_full(os.readlink(path), ids)]
         elif path.is_dir():
             result[rel] = ['directory']
+        elif path.is_fifo():
+            result[rel] = ['fifo']
         else:
             result[rel] = ['file', normalize_full(path.read_bytes().decode('utf-8', errors='replace'), ids)]
     return result

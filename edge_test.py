@@ -177,6 +177,14 @@ def seed(root, case):
     elif case in ('issue-at-limit', 'issue-below-limit'):
         size = 1048576 if case == 'issue-at-limit' else 1048575
         put(root, 'a.md', issue('A', description='x' * (size - len(issue('A')))))
+    elif case == 'special-entries':
+        # The scan skips symlinks and non-regular .md entries without opening
+        # or following them.
+        put(root, 'a.md', issue('A'))
+        put(root, 'p/p.md', issue('P'))
+        os.mkfifo(root / '.dots' / 'pipe.md')
+        os.mkfifo(root / '.dots' / 'p' / 'pipe.md')
+        (root / '.dots' / 'link').symlink_to('p', target_is_directory=True)
 
 
 def digest(value):
@@ -365,6 +373,7 @@ def main():
         ('oversized-issue', ['ls']),
         ('issue-at-limit', ['ls']),
         ('issue-below-limit', ['ls']),
+        ('special-entries', ['ls', '--json']),
     ]
     results = []
     for case, command in cases:
