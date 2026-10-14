@@ -1,130 +1,147 @@
-\ Upstream abbreviation map used by slugify.
+\ Upstream abbreviation map used by slugify. ABBREV-ROWS compiles each
+\ word and its abbreviation into ABBREV-TAB as two counted strings; the table
+\ ends with a zero length byte.
+require src/lib/errors.f
+require src/lib/string.f
 package DOT-READ
-: ABBREV-1 ( ptr u8 n -- ptr u8 n )
-   2dup s" authentication" STR= if 2drop s" auth" exit then
-   2dup s" authorization" STR= if 2drop s" authz" exit then
-   2dup s" configuration" STR= if 2drop s" config" exit then
-   2dup s" application" STR= if 2drop s" app" exit then
-   2dup s" database" STR= if 2drop s" db" exit then
-   2dup s" implementation" STR= if 2drop s" impl" exit then
-   2dup s" environment" STR= if 2drop s" env" exit then
-   2dup s" development" STR= if 2drop s" dev" exit then
-   2dup s" production" STR= if 2drop s" prod" exit then
-   2dup s" repository" STR= if 2drop s" repo" exit then
-   2dup s" function" STR= if 2drop s" fn" exit then
-   2dup s" parameter" STR= if 2drop s" param" exit then
-   2dup s" parameters" STR= if 2drop s" params" exit then
-   2dup s" initialize" STR= if 2drop s" init" exit then
-   2dup s" initialization" STR= if 2drop s" init" exit then
-   2dup s" message" STR= if 2drop s" msg" exit then
-   2dup s" messages" STR= if 2drop s" msgs" exit then
-   2dup s" request" STR= if 2drop s" req" exit then
-   2dup s" response" STR= if 2drop s" resp" exit then
-   2dup s" temporary" STR= if 2drop s" tmp" exit then
-   2dup s" directory" STR= if 2drop s" dir" exit then
-   2dup s" document" STR= if 2drop s" doc" exit then
-   2dup s" documents" STR= if 2drop s" docs" exit then
-   2dup s" documentation" STR= if 2drop s" docs" exit then
-   2dup s" management" STR= if 2drop s" mgmt" exit then
-   2dup s" information" STR= if 2drop s" info" exit then
-   2dup s" notification" STR= if 2drop s" notif" exit then
-   2dup s" notifications" STR= if 2drop s" notifs" exit then
-   2dup s" connection" STR= if 2drop s" conn" exit then
-   2dup s" transaction" STR= if 2drop s" txn" exit then
-   2dup s" transactions" STR= if 2drop s" txns" exit then
-   2dup s" synchronization" STR= if 2drop s" sync" exit then
-   2dup s" asynchronous" STR= if 2drop s" async" exit then
-   2dup s" specification" STR= if 2drop s" spec" exit then
-   2dup s" specifications" STR= if 2drop s" specs" exit then
-   2dup s" validation" STR= if 2drop s" valid" exit then
-   2dup s" generation" STR= if 2drop s" gen" exit then
-   2dup s" interface" STR= if 2drop s" iface" exit then
-   2dup s" property" STR= if 2drop s" prop" exit then
-   2dup s" properties" STR= if 2drop s" props" exit then
-   ;
-: ABBREV-2 ( ptr u8 n -- ptr u8 n )
-   2dup s" attribute" STR= if 2drop s" attr" exit then
-   2dup s" attributes" STR= if 2drop s" attrs" exit then
-   2dup s" administrator" STR= if 2drop s" admin" exit then
-   2dup s" administration" STR= if 2drop s" admin" exit then
-   2dup s" communication" STR= if 2drop s" comm" exit then
-   2dup s" utility" STR= if 2drop s" util" exit then
-   2dup s" utilities" STR= if 2drop s" utils" exit then
-   2dup s" dependency" STR= if 2drop s" dep" exit then
-   2dup s" dependencies" STR= if 2drop s" deps" exit then
-   2dup s" operation" STR= if 2drop s" op" exit then
-   2dup s" operations" STR= if 2drop s" ops" exit then
-   2dup s" expression" STR= if 2drop s" expr" exit then
-   2dup s" reference" STR= if 2drop s" ref" exit then
-   2dup s" references" STR= if 2drop s" refs" exit then
-   2dup s" description" STR= if 2drop s" desc" exit then
-   2dup s" certificate" STR= if 2drop s" cert" exit then
-   2dup s" certificates" STR= if 2drop s" certs" exit then
-   2dup s" maximum" STR= if 2drop s" max" exit then
-   2dup s" minimum" STR= if 2drop s" min" exit then
-   2dup s" number" STR= if 2drop s" num" exit then
-   2dup s" string" STR= if 2drop s" str" exit then
-   2dup s" integer" STR= if 2drop s" int" exit then
-   2dup s" boolean" STR= if 2drop s" bool" exit then
-   2dup s" character" STR= if 2drop s" char" exit then
-   2dup s" source" STR= if 2drop s" src" exit then
-   2dup s" destination" STR= if 2drop s" dest" exit then
-   2dup s" previous" STR= if 2drop s" prev" exit then
-   2dup s" current" STR= if 2drop s" curr" exit then
-   2dup s" original" STR= if 2drop s" orig" exit then
-   2dup s" address" STR= if 2drop s" addr" exit then
-   2dup s" memory" STR= if 2drop s" mem" exit then
-   2dup s" buffer" STR= if 2drop s" buf" exit then
-   2dup s" allocator" STR= if 2drop s" alloc" exit then
-   2dup s" context" STR= if 2drop s" ctx" exit then
-   2dup s" argument" STR= if 2drop s" arg" exit then
-   2dup s" arguments" STR= if 2drop s" args" exit then
-   2dup s" package" STR= if 2drop s" pkg" exit then
-   2dup s" packages" STR= if 2drop s" pkgs" exit then
-   2dup s" library" STR= if 2drop s" lib" exit then
-   2dup s" libraries" STR= if 2drop s" libs" exit then
-   ;
-: ABBREV-3 ( ptr u8 n -- ptr u8 n )
-   2dup s" command" STR= if 2drop s" cmd" exit then
-   2dup s" execute" STR= if 2drop s" exec" exit then
-   2dup s" execution" STR= if 2drop s" exec" exit then
-   2dup s" continue" STR= if 2drop s" cont" exit then
-   2dup s" index" STR= if 2drop s" idx" exit then
-   2dup s" length" STR= if 2drop s" len" exit then
-   2dup s" position" STR= if 2drop s" pos" exit then
-   2dup s" iterator" STR= if 2drop s" iter" exit then
-   2dup s" pointer" STR= if 2drop s" ptr" exit then
-   2dup s" object" STR= if 2drop s" obj" exit then
-   2dup s" exception" STR= if 2drop s" exc" exit then
-   2dup s" calculate" STR= if 2drop s" calc" exit then
-   2dup s" calculation" STR= if 2drop s" calc" exit then
-   2dup s" average" STR= if 2drop s" avg" exit then
-   2dup s" version" STR= if 2drop s" ver" exit then
-   2dup s" permission" STR= if 2drop s" perm" exit then
-   2dup s" permissions" STR= if 2drop s" perms" exit then
-   2dup s" password" STR= if 2drop s" pwd" exit then
-   2dup s" standard" STR= if 2drop s" std" exit then
-   2dup s" receive" STR= if 2drop s" recv" exit then
-   2dup s" callback" STR= if 2drop s" cb" exit then
-   2dup s" accumulator" STR= if 2drop s" acc" exit then
-   2dup s" condition" STR= if 2drop s" cond" exit then
-   2dup s" constant" STR= if 2drop s" const" exit then
-   2dup s" definition" STR= if 2drop s" def" exit then
-   2dup s" error" STR= if 2drop s" err" exit then
-   2dup s" server" STR= if 2drop s" srv" exit then
-   2dup s" service" STR= if 2drop s" svc" exit then
-   2dup s" services" STR= if 2drop s" svcs" exit then
-   2dup s" middleware" STR= if 2drop s" mw" exit then
-   2dup s" controller" STR= if 2drop s" ctrl" exit then
-   2dup s" variable" STR= if 2drop s" var" exit then
-   2dup s" variables" STR= if 2drop s" vars" exit then
-   2dup s" template" STR= if 2drop s" tmpl" exit then
-   2dup s" element" STR= if 2drop s" elem" exit then
-   2dup s" elements" STR= if 2drop s" elems" exit then
-   2dup s" protocol" STR= if 2drop s" proto" exit then
-   2dup s" statistics" STR= if 2drop s" stats" exit then
-   2dup s" component" STR= if 2drop s" comp" exit then
-   2dup s" components" STR= if 2drop s" comps" exit then
-   ;
-: ABBREV ( ptr u8 n -- ptr u8 n ) ABBREV-1 ABBREV-2 ABBREV-3 ;
+: ABBREV-STR, ( ptr u8 n -- )
+   {: a:ptr u:n :}
+   u 255 > if E-STR-CAPACITY throw then
+   u c,  u 0 ?do a i + c@ c, loop ;
+: ABBREV, ( ptr u8 n ptr u8 n -- )
+   {: kp:ptr ku:n vp:ptr vu:n :}
+   kp ku ABBREV-STR, vp vu ABBREV-STR, ;
+: ABBREV-ROWS ( -- )
+   s" authentication"   s" auth" ABBREV,
+   s" authorization"    s" authz" ABBREV,
+   s" configuration"    s" config" ABBREV,
+   s" application"      s" app" ABBREV,
+   s" database"         s" db" ABBREV,
+   s" implementation"   s" impl" ABBREV,
+   s" environment"      s" env" ABBREV,
+   s" development"      s" dev" ABBREV,
+   s" production"       s" prod" ABBREV,
+   s" repository"       s" repo" ABBREV,
+   s" function"         s" fn" ABBREV,
+   s" parameter"        s" param" ABBREV,
+   s" parameters"       s" params" ABBREV,
+   s" initialize"       s" init" ABBREV,
+   s" initialization"   s" init" ABBREV,
+   s" message"          s" msg" ABBREV,
+   s" messages"         s" msgs" ABBREV,
+   s" request"          s" req" ABBREV,
+   s" response"         s" resp" ABBREV,
+   s" temporary"        s" tmp" ABBREV,
+   s" directory"        s" dir" ABBREV,
+   s" document"         s" doc" ABBREV,
+   s" documents"        s" docs" ABBREV,
+   s" documentation"    s" docs" ABBREV,
+   s" management"       s" mgmt" ABBREV,
+   s" information"      s" info" ABBREV,
+   s" notification"     s" notif" ABBREV,
+   s" notifications"    s" notifs" ABBREV,
+   s" connection"       s" conn" ABBREV,
+   s" transaction"      s" txn" ABBREV,
+   s" transactions"     s" txns" ABBREV,
+   s" synchronization"  s" sync" ABBREV,
+   s" asynchronous"     s" async" ABBREV,
+   s" specification"    s" spec" ABBREV,
+   s" specifications"   s" specs" ABBREV,
+   s" validation"       s" valid" ABBREV,
+   s" generation"       s" gen" ABBREV,
+   s" interface"        s" iface" ABBREV,
+   s" property"         s" prop" ABBREV,
+   s" properties"       s" props" ABBREV,
+   s" attribute"        s" attr" ABBREV,
+   s" attributes"       s" attrs" ABBREV,
+   s" administrator"    s" admin" ABBREV,
+   s" administration"   s" admin" ABBREV,
+   s" communication"    s" comm" ABBREV,
+   s" utility"          s" util" ABBREV,
+   s" utilities"        s" utils" ABBREV,
+   s" dependency"       s" dep" ABBREV,
+   s" dependencies"     s" deps" ABBREV,
+   s" operation"        s" op" ABBREV,
+   s" operations"       s" ops" ABBREV,
+   s" expression"       s" expr" ABBREV,
+   s" reference"        s" ref" ABBREV,
+   s" references"       s" refs" ABBREV,
+   s" description"      s" desc" ABBREV,
+   s" certificate"      s" cert" ABBREV,
+   s" certificates"     s" certs" ABBREV,
+   s" maximum"          s" max" ABBREV,
+   s" minimum"          s" min" ABBREV,
+   s" number"           s" num" ABBREV,
+   s" string"           s" str" ABBREV,
+   s" integer"          s" int" ABBREV,
+   s" boolean"          s" bool" ABBREV,
+   s" character"        s" char" ABBREV,
+   s" source"           s" src" ABBREV,
+   s" destination"      s" dest" ABBREV,
+   s" previous"         s" prev" ABBREV,
+   s" current"          s" curr" ABBREV,
+   s" original"         s" orig" ABBREV,
+   s" address"          s" addr" ABBREV,
+   s" memory"           s" mem" ABBREV,
+   s" buffer"           s" buf" ABBREV,
+   s" allocator"        s" alloc" ABBREV,
+   s" context"          s" ctx" ABBREV,
+   s" argument"         s" arg" ABBREV,
+   s" arguments"        s" args" ABBREV,
+   s" package"          s" pkg" ABBREV,
+   s" packages"         s" pkgs" ABBREV,
+   s" library"          s" lib" ABBREV,
+   s" libraries"        s" libs" ABBREV,
+   s" command"          s" cmd" ABBREV,
+   s" execute"          s" exec" ABBREV,
+   s" execution"        s" exec" ABBREV,
+   s" continue"         s" cont" ABBREV,
+   s" index"            s" idx" ABBREV,
+   s" length"           s" len" ABBREV,
+   s" position"         s" pos" ABBREV,
+   s" iterator"         s" iter" ABBREV,
+   s" pointer"          s" ptr" ABBREV,
+   s" object"           s" obj" ABBREV,
+   s" exception"        s" exc" ABBREV,
+   s" calculate"        s" calc" ABBREV,
+   s" calculation"      s" calc" ABBREV,
+   s" average"          s" avg" ABBREV,
+   s" version"          s" ver" ABBREV,
+   s" permission"       s" perm" ABBREV,
+   s" permissions"      s" perms" ABBREV,
+   s" password"         s" pwd" ABBREV,
+   s" standard"         s" std" ABBREV,
+   s" receive"          s" recv" ABBREV,
+   s" callback"         s" cb" ABBREV,
+   s" accumulator"      s" acc" ABBREV,
+   s" condition"        s" cond" ABBREV,
+   s" constant"         s" const" ABBREV,
+   s" definition"       s" def" ABBREV,
+   s" error"            s" err" ABBREV,
+   s" server"           s" srv" ABBREV,
+   s" service"          s" svc" ABBREV,
+   s" services"         s" svcs" ABBREV,
+   s" middleware"       s" mw" ABBREV,
+   s" controller"       s" ctrl" ABBREV,
+   s" variable"         s" var" ABBREV,
+   s" variables"        s" vars" ABBREV,
+   s" template"         s" tmpl" ABBREV,
+   s" element"          s" elem" ABBREV,
+   s" elements"         s" elems" ABBREV,
+   s" protocol"         s" proto" ABBREV,
+   s" statistics"       s" stats" ABBREV,
+   s" component"        s" comp" ABBREV,
+   s" components"       s" comps" ABBREV, ;
+create ABBREV-TAB ABBREV-ROWS 0 c,
+\ The counted string at table offset at, and the offset past it.
+: ABBREV-AT ( n -- ptr u8 n n )
+   {: at:n :}
+   ABBREV-TAB at + 1+  ABBREV-TAB at + c@  dup at + 1+ ;
+: ABBREV ( ptr u8 n -- ptr u8 n )
+   {: a:ptr u:n :}
+   0 begin ABBREV-TAB over + c@ 0<> while
+      ABBREV-AT ABBREV-AT {: kp:ptr ku:n vp:ptr vu:n at:n :}
+      a u kp ku STR= if vp vu exit then
+      at
+   repeat drop a u ;
 ;package
