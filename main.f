@@ -1677,26 +1677,29 @@ variable STATUS-SAVE-IDX
 : REMOVE-REFERENCES ( n -- )
    {: deleted:n :}
    ISSUE-N @ 0 ?do i deleted REMOVE-BLOCK-REFERENCE loop ;
+\ As upstream deleteIssue does, a task takes the folder named after it in its
+\ partition only when its own path there starts with that folder, as
+\ <id>/<id>.md does, and first drops the references to the folder's direct
+\ files. Other folders named after it, such as the active one of an archived
+\ task, keep their files and the references to them.
 : RM-ONE ( n -- )
    {: idx:n :}
    idx CHECK-PATH
    idx REMOVE-REFERENCES
-   idx F-ID FIELD$ {: id:ptr iu:n :}
    idx F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" else s" .dots/" then
-   {: base:ptr bu:n :}
-   SB-RESET base bu SB-APPEND id iu SB-APPEND SB$ PATH-ONE!
-   idx F-CHILD REC-CELL @ 0= PATH-ONE$ DIR? and if
-      \ The folder is in the task's partition: an archived task's active
-      \ children survive it, with their dependents' references.
+   nip {: base-u:n :}
+   idx F-PATH FIELD$ {: path:ptr pu:n :}
+   idx F-ID FIELD$ {: id:ptr iu:n :}
+   path base-u + pu base-u - id iu STATUS-UNDER? if
+      path base-u iu + PATH-ONE!
       ISSUE-N @ 0 ?do
-         i F-PARENT FIELD$ idx F-ID FIELD$ STR=
-         i F-ARCHIVED REC-CELL @ idx F-ARCHIVED REC-CELL @ = and if
+         i F-PATH FIELD$ 2dup STATUS-DIR-U nip PATH-ONE$ STR= if
             i REMOVE-REFERENCES
          then
       loop
       PATH-ONE$ REMOVE-ISSUE-TREE
    else
-      idx F-PATH FIELD$ REMOVE-ISSUE-FILE
+      path pu REMOVE-ISSUE-FILE
    then
    idx F-PATH FIELD-EMPTY ;
 : RM-COMMAND ( -- )

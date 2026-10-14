@@ -65,6 +65,21 @@ def seed(root, case):
     elif case == 'rm-blocked-pair':
         put(root, 'a.md', issue('A', blocks=['b']))
         put(root, 'b.md', issue('B'))
+    elif case == 'rm-folder-scope':
+        # Removing P and archived R drops the references to their folders'
+        # direct files, not to files in other folders named p or r.
+        put(root, 'p/p.md', issue('P'))
+        put(root, 'p/c.md', issue('C'))
+        put(root, 'other/p/x2.md', issue('X2'))
+        put(root, 'archive/r/r.md', issue('R', 'closed'))
+        put(root, 'archive/r/d.md', issue('D', 'closed'))
+        put(root, 'archive/other/r/x3.md', issue('X3', 'closed'))
+        put(root, 'h.md', issue('H', blocks=['c', 'd', 'x2', 'x3']))
+    elif case == 'rm-deep-own-folder':
+        # X's path starts with the folder named after it, so removing X takes
+        # that folder, as it would for x/x.md.
+        put(root, 'x/y/x.md', issue('X'))
+        put(root, 'x/a.md', issue('A'))
     elif case == 'close-malformed-child':
         put(root, 'p/p.md', issue('Parent'))
         put(root, 'p/bad.md', 'not frontmatter\n')
@@ -328,6 +343,8 @@ def main():
         ('git-invalid', ['init']),
         ('field-alias', ['add', 'Child', '-P', 'a', '-d', 'x' * 44]),
         ('rm-blocked-pair', ['rm', 'a', 'b']),
+        ('rm-folder-scope', ['rm', 'p', 'r']),
+        ('rm-deep-own-folder', ['rm', 'x']),
         ('close-malformed-child', ['close', 'p']),
         ('slugify-archived-parent', ['slugify']),
         ('slugify-deep', ['slugify']),

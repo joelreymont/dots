@@ -299,6 +299,13 @@ FULL_SEQUENCES = [
         (['off', '@Y'], None), (['off', '@Q'], None), (['purge'], None),
         (['ls', '--json'], None),
     ]),
+    # Reopening Q puts its file beside the active .dots/<q>/ holding Y.
+    # Removing Q deletes only that file: Y and W's dependency on it remain.
+    ('reopened-parent', 'empty', [
+        (['add', 'Plain task'], 'Q'), (['off', '@Q'], None),
+        (['add', 'Late task', '-P', '@Q'], 'Y'), (['on', '@Q'], None),
+        (['add', 'Waiting task', '-a', '@Y'], 'W'), (['rm', '@Q'], None),
+    ]),
     ('aliases', 'empty', [
         (['Quick title'], 'Q'), (['it', '@Q'], None),
         (['done', '@Q', '-r', 'shipped'], None), (['delete', '@Q'], None),
