@@ -2496,7 +2496,7 @@ variable CYCLE-TAIL
    ARENA-U @ {: arena-before:n :}
    0 JSONL-FILE-BUF JSONL-LINE-A !
    JSONL-FILE-U @ JSONL-LINE-U !
-   [: JSONL-PARSE-LINE ;] catch 0<> if s" Invalid JSONL file" FAIL then
+   [: JSONL-PARSE-LINE ;] catch 0<> s" Invalid JSONL file" ?FAIL
    [: IMPORT-CREATE ;] catch 0<> if
       1 IMPORT-SKIPPED-N +!
       ISSUE-N @ 1- ISSUE-N !
@@ -2509,7 +2509,7 @@ variable CYCLE-TAIL
    0 IMPORTED-N ! 0 IMPORT-SKIPPED-N ! 0 DEP-SKIPPED-N !
    0 JSONL-FILE-U !
    path pu FS-PATHZ open-rd {: fd:n :}
-   fd 0 < if s" I/O error" FAIL then
+   fd 0 < s" I/O error" ?FAIL
    begin
       fd JSONL-CHUNK 8192 DOT-IO:READ-CHUNK JSONL-CHUNK-U !
       JSONL-CHUNK-U @ 0 >
@@ -2518,7 +2518,7 @@ variable CYCLE-TAIL
          JSONL-CHUNK i + c@ 10 = if
             IMPORT-PROCESS-LINE 0 JSONL-FILE-U !
          else
-            JSONL-FILE-U @ 1+ 1048576 >= if s" JSONL line too long" FAIL then
+            JSONL-FILE-U @ 1+ 1048576 >= s" JSONL line too long" ?FAIL
             JSONL-FILE-U @ 1+ JSONL-FILE-BUF-RESERVE
             JSONL-CHUNK i + c@ JSONL-FILE-U @ JSONL-FILE-BUF c!
             1 JSONL-FILE-U +!
@@ -2530,7 +2530,7 @@ variable CYCLE-TAIL
    IMPORT-ARCHIVE-CLOSED
    IMPORTED-N @ 0 > if
       s" Imported " DOT-IO:PRINT IMPORTED-N @ DOT-IO:INT
-      s"  issues from " DOT-IO:PRINT path pu DOT-IO:PRINT DOT-IO:NL
+      s"  issues from " DOT-IO:PRINT path pu DOT-IO:PRINTLN
    then
    IMPORT-SKIPPED-N @ s"  issues due to errors" WARN-IMPORT-NUM
    DEP-SKIPPED-N @ s"  dependencies due to errors" WARN-IMPORT-NUM ;
@@ -2592,7 +2592,7 @@ variable CYCLE-TAIL
       CMD-LS of 1 PARSE-LIST-ARGS false LOAD-ISSUES PRINT-LIST endof
       CMD-READY of PARSE-READY-ARGS false LOAD-ISSUES PRINT-LIST endof
       CMD-SHOW of
-         script-argc 2 < if s" Usage: dot show <id>" FAIL then
+         script-argc 2 < s" Usage: dot show <id>" ?FAIL
          1 SCAN-NAME-ONLY !
          true LOAD-ISSUES 1 script-argv$ RESOLVE LOAD-TARGET SHOW
       endof
