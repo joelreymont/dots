@@ -69,9 +69,9 @@ PTR-VARIABLE QUERY-A
 variable QUERY-U
 variable FIRST
 variable MATCH-I
-variable SORT-TMP
 variable SCAN-NAME-ONLY
 DYNAMIC-BUFFER ORDER n
+DYNAMIC-BUFFER SORT-BUF n
 
 : FAIL ( ptr u8 n -- ) 1 die ;
 : ?FAIL ( bool ptr u8 n -- ) rot if FAIL then 2drop ;
@@ -437,18 +437,41 @@ DYNAMIC-BUFFER ORDER n
       a F-PRIORITY REC-CELL @ b F-PRIORITY REC-CELL @ < exit
    then
    a F-CREATED FIELD$ b F-CREATED FIELD$ BYTE-LESS? ;
+: TAKE-RIGHT? ( n n n -- bool )
+   {: l:n r:n hi:n :}
+   r hi < if r ORDER @ l SORT-BUF @ ISSUE-LESS? exit then
+   false ;
+\ Merge sorted ORDER[lo,mid) and ORDER[mid,hi) via a SORT-BUF copy of the left
+\ run. Right moves first only when strictly less, so ties keep load order, as
+\ in the reference's stable std.mem.sort.
+: MERGE-RUN ( n n n -- )
+   {: lo:n mid:n hi:n :}
+   mid lo ?do i ORDER @ i lo - SORT-BUF ! loop
+   0 mid begin
+      {: l:n r:n :}
+      l mid lo - <
+   while
+      l r + mid - lo + {: k:n :}
+      l r hi TAKE-RIGHT? if
+         r ORDER @ k ORDER ! l r 1+
+      else
+         l SORT-BUF @ k ORDER ! l 1+ r
+      then
+   repeat ;
+: MERGE-PASS ( n -- )
+   {: width:n :}
+   0 begin
+      {: lo:n :}
+      lo width + ISSUE-N @ <
+   while
+      lo lo width + lo width 2 * + ISSUE-N @ min MERGE-RUN
+      lo width 2 * +
+   repeat ;
 : SORT-ISSUES ( -- )
    ISSUE-N @ ORDER-RESERVE
+   ISSUE-N @ SORT-BUF-RESERVE
    ISSUE-N @ 0 ?do i i ORDER ! loop
-   ISSUE-N @ 1 ?do
-      i begin dup 0 > while
-         dup ORDER @ over 1- ORDER @ ISSUE-LESS? if
-            dup ORDER @ SORT-TMP !
-            dup 1- ORDER @ over ORDER !
-            SORT-TMP @ over 1- ORDER ! 1-
-         else drop 0 then
-      repeat drop
-   loop ;
+   1 begin dup ISSUE-N @ < while dup MERGE-PASS 2 * repeat drop ;
 
 : BLOCKED? ( n -- bool )
    F-BLOCKS FIELD$ {: a:ptr u:n :}

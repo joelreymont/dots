@@ -320,6 +320,7 @@ FULL_SEQUENCES = [
         (['ls', '--json'], None), (['show', 'item-299'], None),
         (['ready', '--json'], None),
     ]),
+    ('ties', 'ties', [(['ls', '--json'], None)]),
 ]
 
 
@@ -351,6 +352,12 @@ def seed_full(root, kind):
             created = f'2026-01-01T{i // 3600:02}:{i // 60 % 60:02}:{i % 60:02}Z'
             put(root, f'item-{i:03}.md', issue(f'Item {i}', priority=i % 10, date=created,
                                            description='x' * 70000 if i == 299 else ''))
+    elif kind == 'ties':
+        # Equal priority and created-at: listing keeps load order, as the
+        # reference's stable std.mem.sort does.
+        for name in 'bdac':
+            put(root, f'tie-{name}.md', issue('Tie ' + name))
+        put(root, 'first.md', issue('First', priority=1))
 
 
 GENERATED_TIME = re.compile(r'\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}(?P<offset>[+-]\d{2}:\d{2})\b')
