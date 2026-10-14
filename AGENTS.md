@@ -14,7 +14,7 @@ Always use the current Habu; never pin a Habu revision in scripts, tests or
 docs.
 The compiler cache, temporary files, and binary are ignored by version control.
 Do not commit them. Measure a release binary with `wc -c < bin/dot`; the
-validated macOS arm64 build is 198,396 bytes.
+validated macOS arm64 build is 181,884 bytes.
 
 ## Test
 

@@ -78,31 +78,35 @@ and safe closing of standalone archived tasks beside unrelated records.
 
 ## Size
 
-Build with `sh build.sh`, which uses the installed `hb` on `PATH`. The
-validation evidence below was produced with Habu `c53b4d2c`, compiler SHA-256
-`ccf0798dd4e11a3ea4308386704bd09a5f183750d18b802b9b2d9c28d6af2b96`. A rebuild
-with Habu `436ff134` measured 198,396 bytes and passed all ten permanent suites.
+Build with `sh build.sh`, which uses the installed `hb` on `PATH`. A build
+with Habu `436ff134` measured 181,884 bytes and passed all ten permanent
+suites.
 
 | Executable, macOS arm64 | Bytes |
 | --- | ---: |
-| Habu, final repaired build | 198,396 |
-| Smallest verified Zig build | 268,320 |
-| Ordinary Zig Small differential reference | 335,280 |
+| Habu, current build | 181,884 |
+| Zig 0.15.2 ReleaseSmall, stripped, as shipped | 205,104 |
+| Zig 0.15.2, same source, smallest flags | 188,320 |
 | Habu, initial port | 165,372 |
 
-The repaired binary is **26.1% smaller than the smallest verified Zig build** and
-40.8% smaller than ordinary Zig Small. The increase from the initial Habu port
-is 33,024 bytes. The repairs add code and cross two 16 KiB Mach-O alignment
-boundaries; the increase is not all useful code or all padding. No arbitrary
-precision, binary128, or hexadecimal numeric parser was added. Reserved
-runtime capacity is distinct from bytes carried in the executable. Exact
-hashes and section totals are in the
-[validation record](../benchmark/results/adversarial-2026-10-13.json).
-The final file contains 155,816 bytes of code, 7,694 bytes of
-embedded data, 31,524 bytes of alignment padding, and 3,362 other bytes.
-The loader restores a 6,202,840-byte data window; 6,195,146 of those bytes do
+The Habu binary is **11.3% smaller than the shipped Zig build** and 3.4%
+smaller than the smallest Zig build of the same source. The shipped release
+used Zig 0.15.2 (`release.yml` at `3855fcf`): `zig build -Doptimize=ReleaseSmall`,
+then `strip`. The smallest build adds `-fsingle-threaded -fno-unwind-tables`
+and strips with `strip -u -r`. Zig 0.15.2 links against the macOS 27 SDK
+only with `-target aarch64-macos.14.0`, the shipped runner's target. The later
+Zig 0.16 and 0.17 ports add about 55 KB of `std.Io` code, so the 0.17
+differential reference under `benchmark/` is not a size baseline.
+
+The file contains 141,256 bytes of code, 9,918 bytes of embedded data, 27,549
+bytes of alignment padding, and 3,161 other bytes. Mach-O segments grow in
+16 KiB pages, so the file shrinks only when code and data leave a page empty.
+No arbitrary precision, binary128, or hexadecimal numeric parser was added.
+The loader restores a 5,926,872-byte data window; 5,916,954 of those bytes do
 not travel in the file. These are size measurements, not speed or memory
-benchmarks.
+benchmarks. The [validation record](../benchmark/results/adversarial-2026-10-13.json)
+holds hashes and section totals of the earlier 198,396-byte build with Habu
+`c53b4d2c`.
 
 ## Comparison contract
 
