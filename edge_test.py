@@ -80,6 +80,11 @@ def seed(root, case):
         # that folder, as it would for x/x.md.
         put(root, 'x/y/x.md', issue('X'))
         put(root, 'x/a.md', issue('A'))
+    elif case == 'tree-empty-id':
+        # g/g.md has no parent, so it never becomes a child of the empty ID.
+        put(root, '.md', issue('Empty'))
+        put(root, 'g/g.md', issue('G'))
+        put(root, 'g/k.md', issue('K'))
     elif case == 'close-malformed-child':
         put(root, 'p/p.md', issue('Parent'))
         put(root, 'p/bad.md', 'not frontmatter\n')
@@ -345,6 +350,7 @@ def main():
         ('rm-blocked-pair', ['rm', 'a', 'b']),
         ('rm-folder-scope', ['rm', 'p', 'r']),
         ('rm-deep-own-folder', ['rm', 'x']),
+        ('tree-empty-id', ['tree']),
         ('close-malformed-child', ['close', 'p']),
         ('slugify-archived-parent', ['slugify']),
         ('slugify-deep', ['slugify']),

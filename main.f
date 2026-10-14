@@ -1760,7 +1760,7 @@ variable TREE-CAP
 : TREE-CHILD? ( n -- bool )
    {: idx:n :}
    idx F-ERROR REC-CELL @ 0= idx F-ARCHIVED REC-CELL @ 0= and
-   idx TREE-SLASH @ 2 = and ;
+   idx F-CHILD REC-CELL @ 0<> and idx TREE-SLASH @ 2 = and ;
 : TREE-INDEX ( -- )
    ISSUE-N @ {: count:n :}
    2 begin dup count 2 * < while 2 * repeat {: cap:n :}
