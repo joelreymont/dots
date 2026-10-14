@@ -69,11 +69,19 @@ PTR-VARIABLE QUERY-A
 variable QUERY-U
 variable FIRST
 variable MATCH-I
-variable SCAN-NAME-ONLY
-\ The walk records only files whose id starts with this prefix: show sets the
-\ id it resolves, so RESOLVE sees exactly its candidates. Empty keeps all.
-PTR-VARIABLE SCAN-PREFIX-A
-variable SCAN-PREFIX-U
+\ A command that names its tasks sets SCAN-KEYED: the walk then records only
+\ the files SCAN-KEEP? admits and leaves their parsing to the command. Its keys
+\ are the ids or prefixes it names, back to back in SCAN-KEY-BYTES, each ending
+\ at its SCAN-KEY-ENDS offset. SCAN-FAMILY adds what a status change reaches
+\ beyond its keys; add's TAIL-ROW holds its new id's tail.
+variable SCAN-KEYED
+DYNAMIC-BUFFER SCAN-KEY-BYTES u8
+DYNAMIC-BUFFER SCAN-KEY-ENDS n
+variable SCAN-KEY-N
+variable SCAN-FAMILY
+\ "-slug-hex": a dash, a slug of at most 30 bytes, a dash and 8 hex digits.
+create TAIL-ROW 40 allot
+variable TAIL-U
 DYNAMIC-BUFFER ORDER n
 DYNAMIC-BUFFER SORT-BUF n
 
@@ -325,7 +333,7 @@ DYNAMIC-BUFFER SORT-BUF n
    child if 1 else 0 then CURRENT @ F-CHILD REC-CELL !
    1 CURRENT @ F-ERROR REC-CELL !
    ISSUE-N @ 1+ ISSUE-N !
-   SCAN-NAME-ONLY @ 0= if CURRENT @ PARSE-RECORD then ;
+   SCAN-KEYED @ 0= if CURRENT @ PARSE-RECORD then ;
 : FILE-ENTRY? ( ptr u8 n -- bool )
    {: name:ptr u:n :}
    u 3 < if false exit then
@@ -339,11 +347,42 @@ DYNAMIC-BUFFER SORT-BUF n
    a SCAN-NAMES-U @ 2 + SCAN-NAMES u BYTE-COPY
    SCAN-NAMES-U @ u 2 + + SCAN-NAMES-U ! ;
 
+: SCAN-KEY+ ( ptr u8 n -- )
+   {: a:ptr u:n :}
+   SCAN-KEY-N @ 0 > if SCAN-KEY-N @ 1- SCAN-KEY-ENDS @ else 0 then {: start:n :}
+   start u + 1+ SCAN-KEY-BYTES-RESERVE
+   a start SCAN-KEY-BYTES u BYTE-COPY
+   SCAN-KEY-N @ 1+ SCAN-KEY-ENDS-RESERVE
+   start u + SCAN-KEY-N @ SCAN-KEY-ENDS !
+   1 SCAN-KEY-N +! ;
+: KEY-PREFIX? ( ptr u8 n -- bool )
+   {: a:ptr u:n :}
+   0 SCAN-KEY-N @ 0 ?do
+      {: start:n :}
+      i SCAN-KEY-ENDS @ {: end:n :}
+      a u start SCAN-KEY-BYTES end start - STARTS-WITH? if true unloop exit then
+      end
+   loop drop false ;
+\ Below is set under a directory a key starts and owner for a folder's own
+\ file in the archive. With SCAN-FAMILY these are kept: the descendants and the
+\ archived ancestors a status change reaches. The tail keeps any file that
+\ could hold add's new id.
+: SCAN-KEEP? ( ptr u8 n bool bool -- bool )
+   {: id:ptr iu:n below:bool owner:bool :}
+   SCAN-KEYED @ 0= below or if true exit then
+   SCAN-FAMILY @ 0<> owner and if true exit then
+   id iu KEY-PREFIX? if true exit then
+   TAIL-U @ 0 > if id iu TAIL-ROW TAIL-U @ ENDS-WITH? exit then
+   false ;
+
 \ A separate names and path buffer per level permits recursive scans.
-: SCAN-DIR ( n n bool -- )
-   {: depth:n plen:n archived:bool :}
+: SCAN-DIR ( n n bool bool -- )
+   {: depth:n plen:n archived:bool below:bool :}
    depth MAX-DEPTH 1- >= ?CAP-FAIL
    depth PATH-AT {: path:ptr :}
+   \ A nested file named after its directory is that folder's own task; any
+   \ other nested file is a child of it.
+   path plen BASENAME {: dir:ptr du:n :}
    SCAN-NAMES-U @ {: begin-at:n :}
    path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
    SCAN-NAMES-U @ {: end-at:n :}
@@ -367,15 +406,18 @@ DYNAMIC-BUFFER SORT-BUF n
             some OF S-IFMT and ENDOF
          ;MATCH {: kind:n :}
          kind S-IFREG = name nu FILE-ENTRY? and if
-            name nu 3 - SCAN-PREFIX-A @ SCAN-PREFIX-U @ STARTS-WITH? if
-               depth 0 > if
-                  path plen BASENAME name nu 3 - STR= 0=
-               else false then {: is-child:bool :}
-               child child-u name nu 3 - archived is-child PARSE-FILE
-               is-child if path plen BASENAME CURRENT @ F-PARENT FIELD! then
+            name nu 3 - {: id:ptr iu:n :}
+            depth 0 > if dir du id iu STR= 0= else false then {: is-child:bool :}
+            id iu below archived depth 0 > and is-child 0= and SCAN-KEEP? if
+               child child-u id iu archived is-child PARSE-FILE
+               is-child if dir du CURRENT @ F-PARENT FIELD! then
             then
          else
-            kind S-IFDIR = if depth 1+ child-u archived RECURSE then
+            kind S-IFDIR = if
+               SCAN-FAMILY @ 0<> if name nu KEY-PREFIX? else false then
+               below or {: inner:bool :}
+               depth 1+ child-u archived inner RECURSE
+            then
          then
          next
       then
@@ -386,11 +428,11 @@ DYNAMIC-BUFFER SORT-BUF n
    0 ISSUE-N ! 0 ARENA-U ! 0 SCAN-NAMES-U !
    s" .dots/archive" MAKE-DIRS
    s" .dots" 0 PATH-AT swap BYTE-COPY
-   0 s" .dots" nip false SCAN-DIR
+   0 s" .dots" nip false false SCAN-DIR
    include-archive if
       s" .dots/archive" DIR? if
          s" .dots/archive" 0 PATH-AT swap BYTE-COPY
-         0 s" .dots/archive" nip true SCAN-DIR
+         0 s" .dots/archive" nip true false SCAN-DIR
       then
    then ;
 : ARCHIVED-CHILD? ( n -- bool )
@@ -1006,12 +1048,16 @@ variable PAD-COPY
       slug SLUG-ROW final BYTE-COPY final SLUG-U !
    then
    SLUG-ROW SLUG-U @ ;
-: NEW-ID$ ( ptr u8 n -- ptr u8 n )
+\ A new id is the prefix and a tail drawn from the title before the walk, so
+\ the walk keeps only the files that could already hold it.
+: NEW-TAIL! ( ptr u8 n -- )
    SLUGIFY$ 2drop
    RANDOM-SUFFIX drop HEX-ROW 8 BYTE-COPY
-   SB-RESET PREFIX$ SB-APPEND 45 SB-APPEND-C
-   SLUG-ROW SLUG-U @ SB-APPEND 45 SB-APPEND-C
-   HEX-ROW 8 SB-APPEND SB$ ;
+   SB-RESET 45 SB-APPEND-C SLUG-ROW SLUG-U @ SB-APPEND 45 SB-APPEND-C
+   HEX-ROW 8 SB-APPEND SB$ {: tail:ptr tu:n :}
+   tail TAIL-ROW tu BYTE-COPY tu TAIL-U ! ;
+: NEW-ID$ ( -- ptr u8 n )
+   SB-RESET PREFIX$ SB-APPEND TAIL-ROW TAIL-U @ SB-APPEND SB$ ;
 
 create PATH-ONE 512 allot
 variable PATH-ONE-U
@@ -1129,13 +1175,16 @@ variable PARENT-IDX
       PARENT-A @ PARENT-U @ AFTER-A @ AFTER-U @ STR=
       s" Error: parent and after cannot be the same issue" ?FAIL
    then
-   1 SCAN-NAME-ONLY !
+   1 SCAN-KEYED !
+   AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ SCAN-KEY+ then
+   PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ SCAN-KEY+ then
+   TITLE-A @ TITLE-U @ NEW-TAIL!
    true LOAD-ISSUES LOAD-PREFIX
    -1 AFTER-IDX !
    AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ s" After issue not found: " RESOLVE-LABELED AFTER-IDX ! then
    -1 PARENT-IDX !
    PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ s" Parent issue not found: " RESOLVE-LABELED PARENT-IDX ! then
-   TITLE-A @ TITLE-U @ NEW-ID$ 2dup VALID-ID? 0= s" Invalid issue id" ?FAIL
+   NEW-ID$ 2dup VALID-ID? 0= s" Invalid issue id" ?FAIL
    2dup FIND-EXACT -1 <> s" Issue already exists" ?FAIL
    NEW-RECORD {: idx:n :}
    TITLE-A @ TITLE-U @ idx F-TITLE FIELD!
@@ -1551,7 +1600,8 @@ variable STATUS-SAVE-IDX
       1 ARG-I +!
    repeat
    STATUS-INDEX @ 0= s" Usage: dot off <id> [id2 ...] [-r reason]" ?FAIL
-   1 SCAN-NAME-ONLY !
+   1 SCAN-KEYED ! 1 SCAN-FAMILY !
+   STATUS-INDEX @ 0 ?do i STATUS-ARGS @ script-argv$ SCAN-KEY+ loop
    true LOAD-ISSUES
    STATUS-MODE @ 2 = if
       TIMESTAMP$ {: ts:ptr tu:n :}
@@ -1588,7 +1638,7 @@ variable STATUS-SAVE-IDX
          1 ARG-I +!
       repeat
    then
-   1 SCAN-NAME-ONLY !
+   1 SCAN-KEYED ! 1 SCAN-FAMILY ! 1 script-argv$ SCAN-KEY+
    true LOAD-ISSUES 1 RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
    STATUS-MODE @ STATUS-CHANGE ;
 : INIT-EMPTY ( -- )
@@ -2644,8 +2694,7 @@ variable CYCLE-TAIL
       CMD-READY of PARSE-READY-ARGS false LOAD-ISSUES PRINT-LIST endof
       CMD-SHOW of
          script-argc 2 < s" Usage: dot show <id>" ?FAIL
-         1 SCAN-NAME-ONLY !
-         1 script-argv$ SCAN-PREFIX-U ! SCAN-PREFIX-A !
+         1 SCAN-KEYED ! 1 script-argv$ SCAN-KEY+
          true LOAD-ISSUES 1 script-argv$ RESOLVE LOAD-TARGET SHOW
       endof
       CMD-FIND of
