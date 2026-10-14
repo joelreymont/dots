@@ -74,10 +74,16 @@ variable SCAN-NAME-ONLY
 DYNAMIC-BUFFER ORDER n
 
 : FAIL ( ptr u8 n -- ) 1 die ;
-: CAP-FAIL ( -- ) s" Capacity exceeded" FAIL ;
+: ?FAIL ( bool ptr u8 n -- ) rot if FAIL then 2drop ;
+: ?CAP-FAIL ( bool -- ) s" Capacity exceeded" ?FAIL ;
 : ISSUE-ERROR ( ptr u8 n ptr u8 n -- )
    {: prefix:ptr pu:n id:ptr iu:n :}
    SB-RESET prefix pu SB-APPEND id iu SB-APPEND SB$ FAIL ;
+: ?ISSUE-ERROR ( bool ptr u8 n ptr u8 n -- )
+   {: c:bool prefix:ptr pu:n id:ptr iu:n :}
+   c if prefix pu id iu ISSUE-ERROR then ;
+: ?ARG-NOT-FOUND ( bool -- )
+   if s" Issue not found: " 1 script-argv$ ISSUE-ERROR then ;
 
 : REC-CELL ( n n -- ptr n )
    {: idx:n field:n :}
@@ -297,9 +303,8 @@ DYNAMIC-BUFFER ORDER n
    0 VALID ! 0 BLOCK-ON ! 0 BLOCK-U !
    1 idx F-ERROR REC-CELL !
    idx F-PATH FIELD$ {: path:ptr pu:n :}
-   path pu FILE-SIZE FILE-CAP > if
-      s" Unexpected internal error (code: StreamTooLong)" FAIL
-   then
+   path pu FILE-SIZE FILE-CAP >
+   s" Unexpected internal error (code: StreamTooLong)" ?FAIL
    path pu FILE-BUF FILE-CAP READ-ALL FILE-U !
    FILE-BUF FILE-U @ 0 NEXT-LINE {: head:ptr hu:n off:n more:bool :}
    head hu s" ---" STR= 0= if exit then
@@ -363,7 +368,7 @@ DYNAMIC-BUFFER ORDER n
 \ A separate names and path buffer per level permits recursive scans.
 : SCAN-DIR ( n n bool -- )
    {: depth:n plen:n archived:bool :}
-   depth MAX-DEPTH 1- >= if CAP-FAIL then
+   depth MAX-DEPTH 1- >= ?CAP-FAIL
    depth PATH-AT {: path:ptr :}
    SCAN-NAMES-U @ {: begin-at:n :}
    path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
@@ -379,9 +384,7 @@ DYNAMIC-BUFFER ORDER n
          path plen name nu depth 1+ PATH-AT PATH-JOIN {: child-u:n :}
          \ Upstream's scan path is relative to the active/archive directory
          \ and is formatted into a 512-byte array.
-         child-u archived if 14 else 6 then - 512 >= if
-            s" I/O error" FAIL
-         then
+         child-u archived if 14 else 6 then - 512 >= s" I/O error" ?FAIL
          depth 1+ PATH-AT {: child:ptr :}
          child child-u SYMLINK? if next else
             child child-u FILE? name nu FILE-ENTRY? and if
@@ -412,11 +415,9 @@ DYNAMIC-BUFFER ORDER n
    then ;
 : LOAD-TARGET ( n -- n )
    {: idx:n :}
-   idx F-ID FIELD$ VALID-ID? 0= if s" Invalid issue id" FAIL then
-   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and if
-      s" Issue not found: " 1 script-argv$ ISSUE-ERROR
-   then
-   idx PATH-SLASHES 11 > if s" Issue not found: " 1 script-argv$ ISSUE-ERROR then
+   idx F-ID FIELD$ VALID-ID? 0= s" Invalid issue id" ?FAIL
+   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and ?ARG-NOT-FOUND
+   idx PATH-SLASHES 11 > ?ARG-NOT-FOUND
    idx PARSE-RECORD
    idx ;
 
@@ -515,7 +516,7 @@ DYNAMIC-BUFFER ORDER n
    {: idx:n :}
    s" [" DOT-IO:PRINT idx F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
    idx F-STATUS REC-CELL @ STATUS>CHAR DOT-IO:PRINT-BYTE 32 DOT-IO:PRINT-BYTE
-   idx F-TITLE FIELD$ DOT-IO:PRINT DOT-IO:NL ;
+   idx F-TITLE FIELD$ DOT-IO:PRINTLN ;
 : PRINT-LIST ( -- )
    SORT-ISSUES
    USE-JSON @ 0<> if
@@ -529,7 +530,7 @@ DYNAMIC-BUFFER ORDER n
             1 FIRST !
          then
       loop
-      JSON-WRITE:ARRAY-END dup JSON-WRITE:$ DOT-IO:PRINT DOT-IO:NL JSON-WRITE:CLOSE
+      JSON-WRITE:ARRAY-END dup JSON-WRITE:$ DOT-IO:PRINTLN JSON-WRITE:CLOSE
       JSON-OUT-BUF BUF:DISPOSE
    else
       ISSUE-N @ 0 ?do i ORDER @ dup SHOW-IN-LIST? if PRINT-ISSUE else drop then loop
@@ -562,72 +563,44 @@ DYNAMIC-BUFFER ORDER n
    -1 MATCH-I !
    ISSUE-N @ 0 ?do
       i F-ID FIELD$ prefix pu STARTS-WITH? if
-         MATCH-I @ -1 <> if s" Ambiguous ID: " prefix pu ISSUE-ERROR then
+         MATCH-I @ -1 <> s" Ambiguous ID: " prefix pu ?ISSUE-ERROR
          i MATCH-I !
       then
    loop
-   MATCH-I @ -1 = if s" Issue not found: " prefix pu ISSUE-ERROR then
+   MATCH-I @ -1 = s" Issue not found: " prefix pu ?ISSUE-ERROR
    MATCH-I @ ;
+: CHECK-ERROR ( n -- )
+   F-ERROR REC-CELL @ dup 2 = s" Invalid issue status" ?FAIL
+   0<> s" Invalid issue frontmatter" ?FAIL ;
 : SHOW ( n -- )
    {: idx:n :}
-   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and if
-      s" Issue not found: " 1 script-argv$ ISSUE-ERROR
-   then
-   idx F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
-   idx F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
-   s" ID:       " DOT-IO:PRINT idx F-ID FIELD$ DOT-IO:PRINT DOT-IO:NL
-   s" Title:    " DOT-IO:PRINT idx F-TITLE FIELD$ DOT-IO:PRINT DOT-IO:NL
-   s" Status:   " DOT-IO:PRINT idx F-STATUS REC-CELL @ STATUS>DISPLAY DOT-IO:PRINT DOT-IO:NL
+   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and ?ARG-NOT-FOUND
+   idx CHECK-ERROR
+   s" ID:       " DOT-IO:PRINT idx F-ID FIELD$ DOT-IO:PRINTLN
+   s" Title:    " DOT-IO:PRINT idx F-TITLE FIELD$ DOT-IO:PRINTLN
+   s" Status:   " DOT-IO:PRINT idx F-STATUS REC-CELL @ STATUS>DISPLAY DOT-IO:PRINTLN
    s" Priority: " DOT-IO:PRINT idx F-PRIORITY REC-CELL @ DOT-IO:INT DOT-IO:NL
-   idx F-DESC FIELD$ dup 0<> if s" Desc:     " DOT-IO:PRINT DOT-IO:PRINT DOT-IO:NL else 2drop then
-   s" Created:  " DOT-IO:PRINT idx F-CREATED FIELD$ DOT-IO:PRINT DOT-IO:NL
-   idx F-CLOSED FIELD$ dup 0<> if s" Closed:   " DOT-IO:PRINT DOT-IO:PRINT DOT-IO:NL else 2drop then
+   idx F-DESC FIELD$ dup 0<> if s" Desc:     " DOT-IO:PRINT DOT-IO:PRINTLN else 2drop then
+   s" Created:  " DOT-IO:PRINT idx F-CREATED FIELD$ DOT-IO:PRINTLN
+   idx F-CLOSED FIELD$ dup 0<> if s" Closed:   " DOT-IO:PRINT DOT-IO:PRINTLN else 2drop then
    idx F-REASON-PRESENT REC-CELL @ 0<> if
-      s" Reason:   " DOT-IO:PRINT idx F-REASON FIELD$ DOT-IO:PRINT DOT-IO:NL
+      s" Reason:   " DOT-IO:PRINT idx F-REASON FIELD$ DOT-IO:PRINTLN
    then ;
 
 : ARG= ( ptr u8 n ptr u8 n -- bool ) STR= ;
 : USAGE ( -- )
-   s" dots - Connect the dots" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Usage: dot [command] [options]" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Commands:" DOT-IO:PRINT DOT-IO:NL
-   s"   dot " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" title" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"                   Quick add a dot" DOT-IO:PRINT DOT-IO:NL
-   s"   dot add " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" title" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"  [options]    Add a dot (-p priority, -d desc, -P parent, -a after)" DOT-IO:PRINT DOT-IO:NL
-   s"   dot ls [--status S] [--json] List dots" DOT-IO:PRINT DOT-IO:NL
-   s"   dot on <id>                  Start working (turn it on!)" DOT-IO:PRINT DOT-IO:NL
-   s"   dot off <id> [-r reason]     Complete (" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" cross it off" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" )" DOT-IO:PRINT DOT-IO:NL
-   s"   dot rm <id>                  Remove a dot" DOT-IO:PRINT DOT-IO:NL
-   s"   dot show <id>                Show dot details" DOT-IO:PRINT DOT-IO:NL
-   s"   dot ready [--json]           Show unblocked dots" DOT-IO:PRINT DOT-IO:NL
-   s"   dot tree [id]                Show hierarchy (with id: includes closed children)" DOT-IO:PRINT DOT-IO:NL
-   s"   dot fix                      Repair missing parents" DOT-IO:PRINT DOT-IO:NL
-   s"   dot find " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" query" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"              Search all dots (open first, then archived)" DOT-IO:PRINT DOT-IO:NL
-   s"   dot purge                    Delete archived dots" DOT-IO:PRINT DOT-IO:NL
-   s"   dot init                     Initialize .dots directory" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Examples:" DOT-IO:PRINT DOT-IO:NL
-   s"   dot " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" Fix the bug" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE DOT-IO:NL
-   s"   dot add " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" Design API" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"  -p 1 -d " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" REST endpoints" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE DOT-IO:NL
-   s"   dot add " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" Implement" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"  -P dots-1 -a dots-2" DOT-IO:PRINT DOT-IO:NL
-   s"   dot on dots-3" DOT-IO:PRINT DOT-IO:NL
-   s"   dot off dots-3 -r " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" shipped" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE DOT-IO:NL ;
-: VERSION ( -- ) s" dots 0.6.4 (f107d016)" DOT-IO:PRINT DOT-IO:NL ;
+   s\" dots - Connect the dots\n\nUsage: dot [command] [options]\n\nCommands:\n  dot \"title\"                  Quick add a dot\n  dot add \"title\" [options]    Add a dot (-p priority, -d desc, -P parent, -a after)\n  dot ls [--status S] [--json] List dots\n  dot on <id>                  Start working (turn it on!)\n  dot off <id> [-r reason]     Complete (\"cross it off\")\n  dot rm <id>                  Remove a dot\n  dot show <id>                Show dot details\n  dot ready [--json]           Show unblocked dots\n  dot tree [id]                Show hierarchy (with id: includes closed children)\n  dot fix                      Repair missing parents\n  dot find \"query\"             Search all dots (open first, then archived)\n  dot purge                    Delete archived dots\n  dot init                     Initialize .dots directory\n\nExamples:\n  dot \"Fix the bug\"\n  dot add \"Design API\" -p 1 -d \"REST endpoints\"\n  dot add \"Implement\" -P dots-1 -a dots-2\n  dot on dots-3\n  dot off dots-3 -r \"shipped\"\n" DOT-IO:PRINT ;
+: VERSION ( -- ) s" dots 0.6.4 (f107d016)" DOT-IO:PRINTLN ;
 : FIND-USAGE ( -- )
-   s" Usage: dot find <query>" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Search all dots (open first, then archived)." DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Searches: title, description, close-reason, created-at, closed-at" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Examples:" DOT-IO:PRINT DOT-IO:NL
-   s"   dot find " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" auth" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"       Search for dots mentioning auth" DOT-IO:PRINT DOT-IO:NL
-   s"   dot find " DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s" 2026-01" DOT-IO:PRINT 34 DOT-IO:PRINT-BYTE s"    Find dots from January 2026" DOT-IO:PRINT DOT-IO:NL ;
-: UNSUPPORTED ( -- ) s" Unsupported command" FAIL ;
+   s\" Usage: dot find <query>\n\nSearch all dots (open first, then archived).\n\nSearches: title, description, close-reason, created-at, closed-at\n\nExamples:\n  dot find \"auth\"      Search for dots mentioning auth\n  dot find \"2026-01\"   Find dots from January 2026\n" DOT-IO:PRINT ;
 : PARSE-LIST-ARGS ( n -- )
    0 USE-JSON ! -1 FILTER ! 0 WANT-READY !
    script-argc swap ?do
       i script-argv$ 2dup s" --json" ARG= if 2drop 1 USE-JSON ! else
       2dup s" --status" ARG= if
          2drop i 1+ script-argc < if
-            i 1+ script-argv$ PARSE-STATUS dup -1 = if
-               drop s" Invalid status: " i 1+ script-argv$ ISSUE-ERROR
-            then FILTER !
+            i 1+ script-argv$ PARSE-STATUS dup -1 =
+            s" Invalid status: " i 1+ script-argv$ ?ISSUE-ERROR FILTER !
          then
       else 2drop then then
    loop ;
@@ -729,11 +702,10 @@ PROCESS-SYMBOLS
 FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
 13 constant FS-ACCESS-DENIED
 : FS-DIR-NOT-EMPTY ( -- n ) HB-TARGET-MACOS? if 66 else 39 then ;
-: FS-MUTATION-ERROR ( n -- )
-   dup FS-ACCESS-DENIED = if drop s" Permission denied" FAIL then
-   FS-DIR-NOT-EMPTY = if
-      s" Unexpected internal error (code: DirNotEmpty)" FAIL
-   then
+: ?FS-MUTATION-ERROR ( n -- )
+   dup 0= if drop exit then
+   dup FS-ACCESS-DENIED = s" Permission denied" ?FAIL
+   FS-DIR-NOT-EMPTY = s" Unexpected internal error (code: DirNotEmpty)" ?FAIL
    E-FS-IO throw ;
 PROCESS-SYMBOLS
 FUNCTION: RENAME-CALL rename ( ptr u8 ptr u8 -- i32 ) ;FUNCTION
@@ -748,7 +720,7 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
    {: src:ptr su:n dst:ptr du:n :}
    src su FS-PATHZ dst du FS-MUT-PATHZ2 RENAME-CALL FS-CAUSE ;
 : RENAME-ISSUE ( ptr u8 n ptr u8 n -- )
-   RENAME-CAUSE dup 0<> if FS-MUTATION-ERROR else drop then ;
+   RENAME-CAUSE ?FS-MUTATION-ERROR ;
 \ macOS RENAME_EXCL is 4; Linux RENAME_NOREPLACE is 1 and AT_FDCWD is -100.
 \ Both calls refuse an occupied destination in the same rename operation.
 : RENAME-ISSUE-NOREPLACE ( ptr u8 n ptr u8 n -- )
@@ -762,15 +734,12 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
          -100 src-z -100 dst-z 1 RENAME-AT2-CALL FS-CAUSE
       else E-FS-IO throw then
    then
-   dup 17 = if drop s" Issue already exists" FAIL then
-   dup FS-DIR-NOT-EMPTY = if drop s" Issue already exists" FAIL then
-   dup 0<> if FS-MUTATION-ERROR else drop then ;
+   dup 17 = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
+   ?FS-MUTATION-ERROR ;
 : REMOVE-ISSUE-FILE ( ptr u8 n -- )
-   FS-PATHZ UNLINK-CALL FS-CAUSE
-   dup 0<> if FS-MUTATION-ERROR else drop then ;
+   FS-PATHZ UNLINK-CALL FS-CAUSE ?FS-MUTATION-ERROR ;
 : REMOVE-ISSUE-DIR ( ptr u8 n -- )
-   FS-PATHZ RMDIR-CALL FS-CAUSE
-   dup 0<> if FS-MUTATION-ERROR else drop then ;
+   FS-PATHZ RMDIR-CALL FS-CAUSE ?FS-MUTATION-ERROR ;
 PROCESS-SYMBOLS
 FUNCTION: ACCESS-WRITE access ( ptr u8 n -- i32 ) ;FUNCTION
 : PARENT-WRITABLE? ( ptr u8 n -- bool )
@@ -789,6 +758,9 @@ variable RESERVED-FD
 -91002 constant E-ISSUE-WRITE
 -91003 constant E-ISSUE-ISDIR
 -91004 constant E-ISSUE-DIR-NOT-EMPTY
+: TEMP-THROW ( n ptr u8 n n -- )
+   {: fd:n temp:ptr tu:n code:n :}
+   fd close temp tu REMOVE-FILE code throw ;
 : RESERVE-STASH ( ptr u8 n -- ptr u8 n )
    {: path:ptr pu:n :}
    path pu RESERVE-SIBLING {: temp:ptr tu:n fd:n :}
@@ -811,14 +783,10 @@ variable RESERVED-FD
    0 begin dup su < while
       {: off:n :}
       fd src off + su off - write {: count:n :}
-      count 0 <= if
-         fd close temp tu REMOVE-FILE E-ISSUE-WRITE throw
-      then
+      count 0 <= if fd temp tu E-ISSUE-WRITE TEMP-THROW then
       off count +
    repeat drop
-   fd FSYNC-CALL 0<> if
-      fd close temp tu REMOVE-FILE E-ISSUE-WRITE throw
-   then
+   fd FSYNC-CALL 0<> if fd temp tu E-ISSUE-WRITE TEMP-THROW then
    fd close
    temp tu path pu RENAME-CAUSE {: reason:n :}
    reason 0<> if
@@ -829,12 +797,11 @@ variable RESERVED-FD
       E-FS-IO throw
    then ;
 : REPORT-ISSUE-WRITE-ERROR ( n -- )
-   dup E-ISSUE-PERMISSION = if drop s" Permission denied" FAIL then
-   dup E-ISSUE-WRITE = if drop s" I/O error" FAIL then
-   dup E-ISSUE-ISDIR = if drop s" Unexpected internal error (code: IsDir)" FAIL then
-   dup E-ISSUE-DIR-NOT-EMPTY = if
-      drop s" Unexpected internal error (code: DirNotEmpty)" FAIL
-   then
+   dup E-ISSUE-PERMISSION = s" Permission denied" ?FAIL
+   dup E-ISSUE-WRITE = s" I/O error" ?FAIL
+   dup E-ISSUE-ISDIR = s" Unexpected internal error (code: IsDir)" ?FAIL
+   dup E-ISSUE-DIR-NOT-EMPTY =
+   s" Unexpected internal error (code: DirNotEmpty)" ?FAIL
    throw ;
 PTR-VARIABLE WRITE-PATH
 variable WRITE-PATH-U
@@ -893,8 +860,8 @@ variable PAD-COPY
    loop
    value FMT:SB-U ;
 : TIMESTAMP$ ( -- ptr u8 n )
-   TIMEVAL 0 GETTIME-CALL 0<> if s" Invalid system time" FAIL then
-   TIMEVAL CALENDAR LOCALTIME-CALL NULL-PTR = if s" Failed to read local time" FAIL then
+   TIMEVAL 0 GETTIME-CALL 0<> s" Invalid system time" ?FAIL
+   TIMEVAL CALENDAR LOCALTIME-CALL NULL-PTR = s" Failed to read local time" ?FAIL
    CALENDAR 20 + WORD32@ 1900 + {: year:n :}
    CALENDAR 16 + WORD32@ 1+ {: month:n :}
    CALENDAR 12 + WORD32@ {: day:n :}
@@ -920,13 +887,13 @@ variable PAD-COPY
       16 mod HEX-CHAR SB-APPEND-C
    loop SB$ ;
 : CWD-LEN ( -- n )
-   CWD-ROW 4096 GETCWD-CALL NULL-PTR = if s" I/O error" FAIL then
+   CWD-ROW 4096 GETCWD-CALL NULL-PTR = s" I/O error" ?FAIL
    0 begin dup 4096 < while
       dup CWD-ROW + c@ 0= if exit then 1+
    repeat ;
 : PREFIX! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 65536 > if CAP-FAIL then
+   u 65536 > ?CAP-FAIL
    a PREFIX-ROW u BYTE-COPY u PREFIX-U ! ;
 : PREFIX$ ( -- ptr u8 n ) PREFIX-ROW PREFIX-U @ ;
 : CONFIG-LATER? ( ptr u8 n n -- bool )
@@ -946,11 +913,11 @@ variable PAD-COPY
 : LOAD-PREFIX ( -- )
    0 CONFIG-U !
    s" .dots/config" FILE? if
-      s" .dots/config" FILE-SIZE 65536 > if
-         s" Unexpected internal error (code: StreamTooLong)" FAIL
-      then
+      s" .dots/config" FILE-SIZE 65536 >
+      s" Unexpected internal error (code: StreamTooLong)" ?FAIL
       [: s" .dots/config" CONFIG-ROW 65536 READ-ALL CONFIG-U ! ;] catch
-      dup E-FS-CAPACITY = if drop s" Unexpected internal error (code: StreamTooLong)" FAIL then
+      dup E-FS-CAPACITY =
+      s" Unexpected internal error (code: StreamTooLong)" ?FAIL
       dup 0<> if throw then drop
       CONFIG-U @ {: len:n :}
       0 begin dup len < while
@@ -1056,11 +1023,11 @@ variable PARENT-IDX
 
 : PATH-ONE! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 512 >= if s" I/O error" FAIL then
+   u 512 >= s" I/O error" ?FAIL
    a PATH-ONE u BYTE-COPY u PATH-ONE-U ! ;
 : PATH-TWO! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 512 >= if s" I/O error" FAIL then
+   u 512 >= s" I/O error" ?FAIL
    a PATH-TWO u BYTE-COPY u PATH-TWO-U ! ;
 : PATH-ONE$ ( -- ptr u8 n ) PATH-ONE PATH-ONE-U @ ;
 : PATH-TWO$ ( -- ptr u8 n ) PATH-TWO PATH-TWO-U @ ;
@@ -1085,10 +1052,9 @@ variable PARENT-IDX
    loop -1 ;
 : RESOLVE-LABELED ( ptr u8 n ptr u8 n -- n )
    {: a:ptr u:n label:ptr lu:n :}
-   a u FIND-PREFIX dup -1 = if
-      drop label lu a u ISSUE-ERROR
-   then
-   dup -2 = if drop s" Ambiguous ID: " a u ISSUE-ERROR then ;
+   a u FIND-PREFIX
+   dup -1 = label lu a u ?ISSUE-ERROR
+   dup -2 = s" Ambiguous ID: " a u ?ISSUE-ERROR ;
 : NEW-RECORD ( ptr u8 n -- n )
    {: id:ptr iu:n :}
    ISSUE-N @ 1+ REC-CELLS * RECORDS-RESERVE
@@ -1145,13 +1111,12 @@ variable PARENT-IDX
    repeat ;
 : ADD-COMMAND ( n -- )
    {: first:n :}
-   script-argc first = if s" Usage: dot add <title> [options]" FAIL then
+   script-argc first = s" Usage: dot add <title> [options]" ?FAIL
    first PARSE-ADD
-   TITLE-U @ 0= if s" Error: title required" FAIL then
+   TITLE-U @ 0= s" Error: title required" ?FAIL
    PARENT-SET @ 0<> AFTER-SET @ 0<> and if
-      PARENT-A @ PARENT-U @ AFTER-A @ AFTER-U @ STR= if
-         s" Error: parent and after cannot be the same issue" FAIL
-      then
+      PARENT-A @ PARENT-U @ AFTER-A @ AFTER-U @ STR=
+      s" Error: parent and after cannot be the same issue" ?FAIL
    then
    1 SCAN-NAME-ONLY !
    true LOAD-ISSUES LOAD-PREFIX
@@ -1159,8 +1124,8 @@ variable PARENT-IDX
    AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ s" After issue not found: " RESOLVE-LABELED AFTER-IDX ! then
    -1 PARENT-IDX !
    PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ s" Parent issue not found: " RESOLVE-LABELED PARENT-IDX ! then
-   TITLE-A @ TITLE-U @ NEW-ID$ 2dup VALID-ID? 0= if 2drop s" Invalid issue id" FAIL then
-   2dup FIND-EXACT -1 <> if 2drop s" Issue already exists" FAIL then
+   TITLE-A @ TITLE-U @ NEW-ID$ 2dup VALID-ID? 0= s" Invalid issue id" ?FAIL
+   2dup FIND-EXACT -1 <> s" Issue already exists" ?FAIL
    NEW-RECORD {: idx:n :}
    TITLE-A @ TITLE-U @ idx F-TITLE FIELD!
    DESC-U @ 0 > if DESC-A @ DESC-U @ idx F-DESC FIELD! then
@@ -1183,11 +1148,10 @@ variable PARENT-IDX
    s" --json" ARG-AT? if
       JSON-OUT-BUF 1024 BUF:N>BLEN BUF:INIT
       JSON-W JSON-OUT-BUF JSON-WRITE:OPEN-BUF
-      idx JSON-ISSUE dup JSON-WRITE:$ DOT-IO:PRINT DOT-IO:NL JSON-WRITE:CLOSE
+      idx JSON-ISSUE dup JSON-WRITE:$ DOT-IO:PRINTLN JSON-WRITE:CLOSE
       JSON-OUT-BUF BUF:DISPOSE
-   else idx F-ID FIELD$ DOT-IO:PRINT DOT-IO:NL then ;
+   else idx F-ID FIELD$ DOT-IO:PRINTLN then ;
 
-variable STATUS-TARGET
 PTR-VARIABLE REASON-A
 variable REASON-U
 variable REASON-PRESENT
@@ -1202,6 +1166,7 @@ variable CLOSED-TIME-U
    {: idx:n :}
    idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and if false exit then
    idx F-PATH FIELD$ FILE? ;
+: CHECK-PATH ( n -- ) RECORD-PATH? 0= s" Issue not found" ?FAIL ;
 : STATUS-DIR-U ( ptr u8 n -- n )
    {: path:ptr pu:n :}
    pu begin dup 0 > while
@@ -1242,19 +1207,16 @@ variable CLOSED-TIME-U
    {: idx:n :}
    ISSUE-N @ 0 ?do
       i idx STATUS-DESCENDANT? if
-         i F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
-         i F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
+         i CHECK-ERROR
       then
    loop ;
 : ARCHIVE-CHILDREN-CHECK ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
       i idx STATUS-DESCENDANT? if
-         i F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
-         i F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
-         i F-STATUS REC-CELL @ 2 <> if
-            s" Cannot close: children are not all closed" FAIL
-         then
+         i CHECK-ERROR
+         i F-STATUS REC-CELL @ 2 <>
+         s" Cannot close: children are not all closed" ?FAIL
       then
    loop ;
 : STATUS-IN-SUBTREE? ( ptr u8 n ptr u8 n -- bool )
@@ -1277,28 +1239,28 @@ variable CLOSED-TIME-U
    loop ;
 : REBASE-STATUS-MOVED ( -- ) PATH-ONE$ PATH-TWO$ REBASE-STATUS-SUBTREE ;
 : ASSERT-ARCHIVE-REAL ( -- )
-   s" .dots/archive" SYMLINK? if s" Unsafe archive symlink" FAIL then ;
+   s" .dots/archive" SYMLINK? s" Unsafe archive symlink" ?FAIL ;
 : ASSERT-ARCHIVE-PATH-REAL ( ptr u8 n -- )
    {: path:ptr pu:n :}
    ASSERT-ARCHIVE-REAL
    s" .dots/archive/" nip begin dup pu < while
       path over + c@ 47 = if
-         path over SYMLINK? if s" Unsafe archive symlink" FAIL then
+         path over SYMLINK? s" Unsafe archive symlink" ?FAIL
       then
       1+
    repeat drop
-   path pu SYMLINK? if s" Unsafe archive symlink" FAIL then ;
+   path pu SYMLINK? s" Unsafe archive symlink" ?FAIL ;
 : STATUS-ENSURE-ARCHIVE-PARENT ( ptr u8 n -- )
    {: path:ptr pu:n :}
    path pu STATUS-DIR-U {: parent-u:n :}
    s" .dots/archive" nip parent-u >= if exit then
    s" .dots/archive" nip 1+ begin dup parent-u < while
       path over + c@ 47 = if
-         path over SYMLINK? if s" Unsafe archive symlink" FAIL then
+         path over SYMLINK? s" Unsafe archive symlink" ?FAIL
       then
       1+
    repeat drop
-   path parent-u SYMLINK? if s" Unsafe archive symlink" FAIL then
+   path parent-u SYMLINK? s" Unsafe archive symlink" ?FAIL
    path parent-u MAKE-DIRS ;
 : MOVE-STATUS-PATH ( n bool -- )
    {: idx:n to-archive:bool :}
@@ -1354,7 +1316,7 @@ variable REOPEN-PARENT-KEEP-U
    at 1024 * REOPEN-BACKUP-PATHS +
    at cells REOPEN-BACKUP-US + @ ;
 : REOPEN-ADD ( n -- )
-   REOPEN-N @ REOPEN-MAX >= if CAP-FAIL then
+   REOPEN-N @ REOPEN-MAX >= ?CAP-FAIL
    REOPEN-N @ cells REOPEN-INDICES + !
    1 REOPEN-N +! ;
 : REOPEN-COLLECT ( n -- )
@@ -1369,8 +1331,7 @@ variable REOPEN-PARENT-KEEP-U
          dir-u s" .dots/archive" nip > and if
             path pu ASSERT-ARCHIVE-PATH-REAL
             i PARSE-RECORD
-            i F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
-            i F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
+            i CHECK-ERROR
             i F-STATUS REC-CELL @ 2 = if i REOPEN-ADD then
          then
       then
@@ -1381,7 +1342,7 @@ variable REOPEN-PARENT-KEEP-U
    s" .dots/archive/" nip {: base-u:n :}
    path pu STATUS-DIR-U {: dir-u:n :}
    dir-u base-u >= if dir-u else pu then {: root-u:n :}
-   root-u 512 >= if CAP-FAIL then
+   root-u 512 >= ?CAP-FAIL
    path REOPEN-SOURCE root-u BYTE-COPY root-u REOPEN-SOURCE-U !
    ISSUE-N @ 0 ?do
       i F-ARCHIVED REC-CELL @ 0<> i F-CHILD REC-CELL @ 0= and if
@@ -1398,23 +1359,23 @@ variable REOPEN-PARENT-KEEP-U
    SB-RESET s" .dots/" SB-APPEND
    REOPEN-SOURCE base-u + REOPEN-SOURCE-U @ base-u - SB-APPEND
    SB$ {: dst:ptr du:n :}
-   du 512 >= if CAP-FAIL then
+   du 512 >= ?CAP-FAIL
    dst REOPEN-DEST du BYTE-COPY
    du REOPEN-DEST-U ! ;
 : REOPEN-ENSURE-DEST-PARENT ( -- )
    REOPEN-DEST$ {: path:ptr pu:n :}
    path pu STATUS-DIR-U {: parent-u:n :}
-   s" .dots" SYMLINK? if s" Unsafe active symlink" FAIL then
+   s" .dots" SYMLINK? s" Unsafe active symlink" ?FAIL
    s" .dots" nip REOPEN-PARENT-KEEP-U !
    s" .dots" nip parent-u >= if exit then
    s" .dots" nip 1+ begin dup parent-u < while
       path over + c@ 47 = if
-         path over SYMLINK? if s" Unsafe active symlink" FAIL then
+         path over SYMLINK? s" Unsafe active symlink" ?FAIL
          path over DIR? if dup REOPEN-PARENT-KEEP-U ! then
       then
       1+
    repeat drop
-   path parent-u SYMLINK? if s" Unsafe active symlink" FAIL then
+   path parent-u SYMLINK? s" Unsafe active symlink" ?FAIL
    path parent-u DIR? if parent-u REOPEN-PARENT-KEEP-U ! then
    path parent-u MAKE-DIRS ;
 : REOPEN-CLEAN-NEW-PARENTS ( -- )
@@ -1442,22 +1403,16 @@ variable REOPEN-PARENT-KEEP-U
    path pu FILE-SIZE FILE-CAP > if E-ISSUE-WRITE throw then
    path pu FILE-BUF FILE-CAP READ-ALL {: size:n :}
    path pu RESERVE-ISSUE-SIBLING {: temp:ptr tu:n fd:n :}
-   tu 1024 >= if
-      fd close temp tu REMOVE-FILE E-FS-CAPACITY throw
-   then
+   tu 1024 >= if fd temp tu E-FS-CAPACITY TEMP-THROW then
    temp at 1024 * REOPEN-BACKUP-PATHS + tu BYTE-COPY
    tu at cells REOPEN-BACKUP-US + !
    0 begin dup size < while
       {: off:n :}
       fd FILE-BUF off + size off - write {: count:n :}
-      count 0 <= if
-         fd close temp tu REMOVE-FILE E-ISSUE-WRITE throw
-      then
+      count 0 <= if fd temp tu E-ISSUE-WRITE TEMP-THROW then
       off count +
    repeat drop
-   fd FSYNC-CALL 0<> if
-      fd close temp tu REMOVE-FILE E-ISSUE-WRITE throw
-   then
+   fd FSYNC-CALL 0<> if fd temp tu E-ISSUE-WRITE TEMP-THROW then
    fd close
    1 REOPEN-BACKUPS +! ;
 : REOPEN-STAGE-ALL ( -- )
@@ -1489,9 +1444,7 @@ variable REOPEN-PARENT-KEEP-U
       i REOPEN-BACKUP$ FS-PATHZ UNLINK-CALL FS-CAUSE
       dup 0<> if REOPEN-CLEAN-ERROR ! else drop then
    loop
-   REOPEN-CLEAN-ERROR @ 0<> if
-      s" Reopened issue; temporary cleanup failed" FAIL
-   then ;
+   REOPEN-CLEAN-ERROR @ 0<> s" Reopened issue; temporary cleanup failed" ?FAIL ;
 : REOPEN-ARCHIVED ( n n -- )
    {: idx:n status:n :}
    idx F-PATH FIELD$ ASSERT-ARCHIVE-PATH-REAL
@@ -1500,16 +1453,13 @@ variable REOPEN-PARENT-KEEP-U
    idx REOPEN-TARGET ! status REOPEN-WANTED-STATUS !
    0 REOPEN-BACKUPS !
    REOPEN-DEST$ {: dest:ptr du:n :}
-   dest du SYMLINK? dest du FILE? or dest du DIR? or if
-      s" Issue already exists" FAIL
-   then
+   dest du SYMLINK? dest du FILE? or dest du DIR? or s" Issue already exists" ?FAIL
    REOPEN-ENSURE-DEST-PARENT
    REOPEN-SOURCE$ REOPEN-DEST$ REOPEN-RENAME-CAUSE
    dup 0<> if
       REOPEN-CLEAN-NEW-PARENTS
-      dup 17 = if drop s" Issue already exists" FAIL then
-      dup FS-DIR-NOT-EMPTY = if drop s" Issue already exists" FAIL then
-      FS-MUTATION-ERROR
+      dup 17 = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
+      ?FS-MUTATION-ERROR
    else drop then
    [: REOPEN-FINISH ;] catch {: code:n :}
    code 0<> if
@@ -1524,26 +1474,21 @@ variable STATUS-SAVE-IDX
 : STATUS-CHANGE ( n n -- )
    {: idx:n status:n :}
    idx F-ARCHIVED REC-CELL @ 0<> status 2 <> and if
-      idx F-PATH FIELD$ FILE? 0= if s" Issue not found" FAIL then
-      idx F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
-      idx F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
+      idx F-PATH FIELD$ FILE? 0= s" Issue not found" ?FAIL
+      idx CHECK-ERROR
       idx status REOPEN-ARCHIVED exit
    then
-   idx RECORD-PATH? 0= if s" Issue not found" FAIL then
-   idx F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
-   idx F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
+   idx CHECK-PATH
+   idx CHECK-ERROR
    idx F-ARCHIVED REC-CELL @ 0<> if ASSERT-ARCHIVE-REAL then
    status 2 = if
       idx LOAD-STATUS-CHILDREN
       idx VALIDATE-STATUS-DESCENDANTS
       idx STATUS-CHILDREN-OPEN? if
-         CLOSED-STYLE @ 0= if
-            s" Cannot close: children are not all closed" FAIL
-         else
-            s" Cannot close " idx F-ID FIELD$ s" : children are not all closed" 
-            {: prefix:ptr pu:n id:ptr iu:n suffix:ptr su:n :}
-            SB-RESET prefix pu SB-APPEND id iu SB-APPEND suffix su SB-APPEND SB$ FAIL
-         then
+         CLOSED-STYLE @ 0= s" Cannot close: children are not all closed" ?FAIL
+         s" Cannot close " idx F-ID FIELD$ s" : children are not all closed"
+         {: prefix:ptr pu:n id:ptr iu:n suffix:ptr su:n :}
+         SB-RESET prefix pu SB-APPEND id iu SB-APPEND suffix su SB-APPEND SB$ FAIL
       then
    then
    0
@@ -1579,7 +1524,7 @@ variable STATUS-SAVE-IDX
 : STATUS-MULTI ( n -- )
    STATUS-MODE !
    script-argc 2 < if
-      STATUS-MODE @ 2 = if s" Usage: dot off <id> [id2 ...] [-r reason]" FAIL then
+      STATUS-MODE @ 2 = s" Usage: dot off <id> [id2 ...] [-r reason]" ?FAIL
       s" Usage: dot on <id> [id2 ...]" FAIL
    then
    0 REASON-U ! 0 REASON-PRESENT ! 0 CLOSED-TIME-U !
@@ -1595,7 +1540,7 @@ variable STATUS-SAVE-IDX
       then
       1 ARG-I +!
    repeat
-   STATUS-INDEX @ 0= if s" Usage: dot off <id> [id2 ...] [-r reason]" FAIL then
+   STATUS-INDEX @ 0= s" Usage: dot off <id> [id2 ...] [-r reason]" ?FAIL
    1 SCAN-NAME-ONLY !
    true LOAD-ISSUES
    STATUS-MODE @ 2 = if
@@ -1609,7 +1554,7 @@ variable STATUS-SAVE-IDX
 : STATUS-SINGLE ( n -- )
    STATUS-MODE !
    script-argc 2 < if
-      STATUS-MODE @ 2 = if s" Usage: dot close <id> [--reason R]" FAIL then
+      STATUS-MODE @ 2 = s" Usage: dot close <id> [--reason R]" ?FAIL
       s" Usage: dot update <id> [--status S]" FAIL
    then
    0 REASON-U ! 0 REASON-PRESENT ! 0 CLOSED-TIME-U !
@@ -1623,7 +1568,7 @@ variable STATUS-SAVE-IDX
          then
          1 ARG-I +!
       repeat
-      STATUS-MODE @ -1 = if s" --status required" FAIL then
+      STATUS-MODE @ -1 = s" --status required" ?FAIL
    else
       2 ARG-I !
       begin ARG-I @ script-argc < while
@@ -1644,7 +1589,7 @@ variable STATUS-SAVE-IDX
    at 2 + SCAN-NAMES size at size 2 + + ;
 : REMOVE-DEEP-TREE ( n n -- )
    {: depth:n plen:n :}
-   depth MAX-DEPTH 1- >= if s" I/O error" FAIL then
+   depth MAX-DEPTH 1- >= s" I/O error" ?FAIL
    depth PATH-AT {: path:ptr :}
    path plen SYMLINK? if path plen REMOVE-ISSUE-FILE exit then
    SCAN-NAMES-U @ {: begin-at:n :}
@@ -1671,7 +1616,7 @@ variable STATUS-SAVE-IDX
    s" .dots/archive" SYMLINK? 0= if s" .dots/archive" MAKE-DIRS then
    s" .dots/archive" REMOVE-ISSUE-TREE
    s" .dots/archive" MAKE-DIRS
-   s" Archive purged" DOT-IO:PRINT DOT-IO:NL ;
+   s" Archive purged" DOT-IO:PRINTLN ;
 : REMOVE-BLOCK-REFERENCE ( n n -- )
    {: idx:n deleted:n :}
    idx F-ERROR REC-CELL @ 0<> if exit then
@@ -1688,7 +1633,7 @@ variable STATUS-SAVE-IDX
    repeat drop
    VALID @ 0<> if
       0 BLOCK-BUF BLOCK-U @ idx F-BLOCKS FIELD!
-      idx RECORD-PATH? 0= if s" Issue not found" FAIL then
+      idx CHECK-PATH
       idx SAVE-RECORD
    then ;
 : REMOVE-REFERENCES ( n -- )
@@ -1696,7 +1641,7 @@ variable STATUS-SAVE-IDX
    ISSUE-N @ 0 ?do i deleted REMOVE-BLOCK-REFERENCE loop ;
 : RM-ONE ( n -- )
    {: idx:n :}
-   idx RECORD-PATH? 0= if s" Issue not found" FAIL then
+   idx CHECK-PATH
    idx REMOVE-REFERENCES
    idx F-ID FIELD$ {: id:ptr iu:n :}
    idx F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" else s" .dots/" then
@@ -1712,17 +1657,11 @@ variable STATUS-SAVE-IDX
    then
    idx F-PATH FIELD-EMPTY ;
 : RM-COMMAND ( -- )
-   script-argc 2 < if s" Usage: dot rm <id> [id2 ...]" FAIL then
+   script-argc 2 < s" Usage: dot rm <id> [id2 ...]" ?FAIL
    true LOAD-ISSUES
    script-argc 1 ?do i RESOLVE-ARG RM-ONE loop ;
 : TREE-HELP ( -- )
-   s" Usage: dot tree [id]" DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Show dot hierarchy." DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Without arguments: shows all open root dots and their children." DOT-IO:PRINT DOT-IO:NL
-   s" With id: shows that specific dot's tree (including closed children)." DOT-IO:PRINT DOT-IO:NL DOT-IO:NL
-   s" Examples:" DOT-IO:PRINT DOT-IO:NL
-   s"   dot tree                    Show all open root dots" DOT-IO:PRINT DOT-IO:NL
-   s"   dot tree my-project         Show specific dot and its children" DOT-IO:PRINT DOT-IO:NL ;
+   s\" Usage: dot tree [id]\n\nShow dot hierarchy.\n\nWithout arguments: shows all open root dots and their children.\nWith id: shows that specific dot's tree (including closed children).\n\nExamples:\n  dot tree                    Show all open root dots\n  dot tree my-project         Show specific dot and its children\n" DOT-IO:PRINT ;
 : STATUS-SYMBOL ( n -- ptr u8 n )
    dup 0 = if drop s" ○" exit then
    dup 1 = if drop s" >" exit then
@@ -1746,7 +1685,7 @@ variable STATUS-SAVE-IDX
    {: idx:n :}
    91 DOT-IO:PRINT-BYTE idx F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
    idx F-STATUS REC-CELL @ STATUS-SYMBOL DOT-IO:PRINT 32 DOT-IO:PRINT-BYTE
-   idx F-TITLE FIELD$ DOT-IO:PRINT DOT-IO:NL
+   idx F-TITLE FIELD$ DOT-IO:PRINTLN
    ISSUE-N @ 0 ?do
       i ORDER @ {: child:n :}
       child F-ERROR REC-CELL @ 0= child F-ARCHIVED REC-CELL @ 0= and if
@@ -1762,15 +1701,12 @@ variable STATUS-SAVE-IDX
    loop ;
 : TREE-COMMAND ( -- )
    FIND-HELP? if TREE-HELP exit then
-   script-argc 2 > if s" Usage: dot tree [id]" FAIL then
+   script-argc 2 > s" Usage: dot tree [id]" ?FAIL
    false LOAD-ISSUES
    SORT-ISSUES
    script-argc 2 = if
-      1 RESOLVE-ARG dup RECORD-PATH? 0= if
-         s" Issue not found: " 1 script-argv$ ISSUE-ERROR
-      then
-      dup F-ERROR REC-CELL @ 2 = if s" Invalid issue status" FAIL then
-      dup F-ERROR REC-CELL @ 0<> if s" Invalid issue frontmatter" FAIL then
+      1 RESOLVE-ARG dup RECORD-PATH? 0= ?ARG-NOT-FOUND
+      dup CHECK-ERROR
       PRINT-TREE-ROOT exit
    then
    ISSUE-N @ 0 ?do i ORDER @ dup TREE-ROOT? if PRINT-TREE-ROOT else drop then loop ;
@@ -1812,9 +1748,8 @@ create FIX-FOLDER-ROW 256 allot
       name nu FILE-ENTRY? if
          FIX-FOLDER-ROW fu name nu FIX-PATHS
          PATH-ONE$ SYMLINK? 0= PATH-ONE$ FILE? and if
-            PATH-TWO$ SYMLINK? PATH-TWO$ FILE? or PATH-TWO$ DIR? or if
-               s" Issue already exists" FAIL
-            then
+            PATH-TWO$ SYMLINK? PATH-TWO$ FILE? or PATH-TWO$ DIR? or
+            s" Issue already exists" ?FAIL
             1 FIX-COUNT +!
          then
       then
@@ -1853,10 +1788,10 @@ create FIX-FOLDER-ROW 256 allot
       then
       next
    repeat drop
-   FIX-FOLDERS @ 0= if s" No fixes needed" DOT-IO:PRINT DOT-IO:NL exit then
+   FIX-FOLDERS @ 0= if s" No fixes needed" DOT-IO:PRINTLN exit then
    s" Fixed " DOT-IO:PRINT FIX-FOLDERS @ DOT-IO:INT
    s"  orphan parent(s), moved " DOT-IO:PRINT FIX-FILES @ DOT-IO:INT
-   s"  file(s)" DOT-IO:PRINT DOT-IO:NL ;
+   s"  file(s)" DOT-IO:PRINTLN ;
 FUNCTION: STDERR-WRITE write ( n ptr u8 n -- n ) ;FUNCTION
 create OLD-ID-ROW 129 allot
 variable OLD-ID-U
@@ -1867,12 +1802,12 @@ variable SLUG-RENAMED
 variable SLUG-CHANGED
 : OLD-ID! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 128 > if s" Invalid issue id" FAIL then
+   u 128 > s" Invalid issue id" ?FAIL
    a OLD-ID-ROW u BYTE-COPY u OLD-ID-U ! ;
 : OLD-ID$ ( -- ptr u8 n ) OLD-ID-ROW OLD-ID-U @ ;
 : NEW-ID! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 512 > if s" Invalid issue id" FAIL then
+   u 512 > s" Invalid issue id" ?FAIL
    a NEW-ID-ROW u BYTE-COPY u NEW-ID-U ! ;
 : RENAMED-ID$ ( -- ptr u8 n ) NEW-ID-ROW NEW-ID-U @ ;
 : HEX? ( n -- bool )
@@ -1956,7 +1891,7 @@ variable SLUG-PATH-U
          i SLUG-LAST-SLASH !
       then
    loop
-   SLUG-LAST-SLASH @ -1 = if s" Missing issue file or directory in .dots" FAIL then
+   SLUG-LAST-SLASH @ -1 = s" Missing issue file or directory in .dots" ?FAIL
    idx F-CHILD REC-CELL @ 0= SLUG-PARENT-SLASH @ -1 <> and if
       PATH-ONE SLUG-PARENT-SLASH @ 1+ +
       SLUG-LAST-SLASH @ SLUG-PARENT-SLASH @ - 1-
@@ -2110,9 +2045,9 @@ variable SLUG-PATH-U
    idx F-ID FIELD$ OLD-ID!
    idx SLUG-NEW-ID
    OLD-ID$ RENAMED-ID$ STR= if exit then
-   RENAMED-ID$ VALID-ID? 0= if s" Invalid issue id" FAIL then
+   RENAMED-ID$ VALID-ID? 0= s" Invalid issue id" ?FAIL
    RENAMED-ID$ FIND-EXACT -1 <> if SLUG-SKIP exit then
-   idx F-PATH FIELD$ FILE? 0= if s" Issue not found" FAIL then
+   idx F-PATH FIELD$ FILE? 0= s" Issue not found" ?FAIL
    idx SLUG-PLAN-PATH
    SLUG-DEST-OCCUPIED? if SLUG-SKIP exit then
    idx SLUG-IDX !
@@ -2120,13 +2055,13 @@ variable SLUG-PATH-U
    [: SLUG-PREPARE SLUG-STAGE SLUG-COMMIT ;] catch {: code:n :}
    code 0<> if
       [: SLUG-ROLLBACK ;] catch dup 0<> if drop E-FS-IO throw then drop
-      code E-SLUG-COLLISION = if s" Issue already exists" FAIL then
+      code E-SLUG-COLLISION = s" Issue already exists" ?FAIL
       code REPORT-ISSUE-WRITE-ERROR
    then
    [: SLUG-CLEANUP ;] catch dup 0<> if
       drop s" Warning: temporary cleanup failed" 2 -rot STDERR-WRITE drop
    else drop then
-   OLD-ID$ DOT-IO:PRINT s"  -> " DOT-IO:PRINT RENAMED-ID$ DOT-IO:PRINT DOT-IO:NL
+   OLD-ID$ DOT-IO:PRINT s"  -> " DOT-IO:PRINT RENAMED-ID$ DOT-IO:PRINTLN
    1 SLUG-RENAMED +! ;
 create GIT-EXEC-ROW PATH-CAP allot
 : GIT-ADD-DOTS ( -- )
@@ -2155,7 +2090,7 @@ create GIT-EXEC-ROW PATH-CAP allot
    true LOAD-ISSUES LOAD-PREFIX
    0 SLUG-RENAMED !
    ISSUE-N @ 0 ?do i SLUGIFY-ONE loop
-   s" Slugified " DOT-IO:PRINT SLUG-RENAMED @ DOT-IO:INT s"  issue(s)" DOT-IO:PRINT DOT-IO:NL
+   s" Slugified " DOT-IO:PRINT SLUG-RENAMED @ DOT-IO:INT s"  issue(s)" DOT-IO:PRINTLN
    GIT-ADD-DOTS ;
 
 \ JSONL migration uses the checked JSON cursor and keeps each source line live
