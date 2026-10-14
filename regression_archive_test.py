@@ -359,6 +359,40 @@ class ArchiveRegression(unittest.TestCase):
         self.assertEqual((archived / 'p.md').read_bytes(), parent)
         self.assertEqual((archived / 'deep/leaf.md').read_bytes(), leaf)
 
+    def _seed_archived_parent_and_active_child(self, name, child):
+        archived = self.dots / 'archive/p/p.md'
+        archived.parent.mkdir(parents=True)
+        parent = issue('Parent')
+        archived.write_bytes(parent)
+        active = self.dots / 'p' / name
+        active.parent.mkdir(parents=True)
+        active.write_bytes(child)
+        return archived, parent, active
+
+    def test_archived_parent_refuses_close_with_malformed_active_child(self):
+        child = b'not frontmatter\n'
+        archived, parent, active = self._seed_archived_parent_and_active_child(
+            'bad.md', child)
+
+        result = self.run_dot('close', 'p')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, b'Invalid issue frontmatter\n')
+        self.assertEqual(archived.read_bytes(), parent)
+        self.assertEqual(active.read_bytes(), child)
+
+    def test_archived_parent_refuses_close_with_invalid_active_child_status(self):
+        child = issue('Odd', 'unknown')
+        archived, parent, active = self._seed_archived_parent_and_active_child(
+            'odd.md', child)
+
+        result = self.run_dot('close', 'p')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, b'Invalid issue status\n')
+        self.assertEqual(archived.read_bytes(), parent)
+        self.assertEqual(active.read_bytes(), child)
+
     def test_archived_parent_closes_with_closed_nested_descendant(self):
         leaf = issue('Leaf', 'closed')
         archived, _ = self._seed_archived_parent_and_nested_leaf(leaf)

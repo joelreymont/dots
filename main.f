@@ -1219,10 +1219,15 @@ variable CLOSED-TIME-U
    path du + c@ 47 = ;
 \ A task's descendants are the records of its partition under a folder named
 \ after it: the top-level one add -P creates, or the one holding its own file,
-\ which moves with it into the archive.
+\ which moves with it into the archive. An archived task also has the children
+\ add -P still puts directly in the active .dots/<id>/.
 : STATUS-DESCENDANT? ( n n -- bool )
    {: child:n parent:n :}
-   child F-ARCHIVED REC-CELL @ parent F-ARCHIVED REC-CELL @ <> if false exit then
+   child F-ARCHIVED REC-CELL @ parent F-ARCHIVED REC-CELL @ <> if
+      child F-ARCHIVED REC-CELL @ 0<> if false exit then
+      child PATH-SLASHES 2 <> if false exit then
+      child F-PARENT FIELD$ parent F-ID FIELD$ STR= exit
+   then
    child parent = if false exit then
    parent F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" else s" .dots/" then
    nip {: base-u:n :}
@@ -1681,8 +1686,13 @@ variable STATUS-SAVE-IDX
    {: base:ptr bu:n :}
    SB-RESET base bu SB-APPEND id iu SB-APPEND SB$ PATH-ONE!
    idx F-CHILD REC-CELL @ 0= PATH-ONE$ DIR? and if
+      \ The folder is in the task's partition: an archived task's active
+      \ children survive it, with their dependents' references.
       ISSUE-N @ 0 ?do
-         i F-PARENT FIELD$ idx F-ID FIELD$ STR= if i REMOVE-REFERENCES then
+         i F-PARENT FIELD$ idx F-ID FIELD$ STR=
+         i F-ARCHIVED REC-CELL @ idx F-ARCHIVED REC-CELL @ = and if
+            i REMOVE-REFERENCES
+         then
       loop
       PATH-ONE$ REMOVE-ISSUE-TREE
    else
