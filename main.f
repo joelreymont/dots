@@ -413,10 +413,13 @@ DYNAMIC-BUFFER ORDER n
          0 s" .dots/archive" nip true SCAN-DIR
       then
    then ;
+: ARCHIVED-CHILD? ( n -- bool )
+   {: idx:n :}
+   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and ;
 : LOAD-TARGET ( n -- n )
    {: idx:n :}
    idx F-ID FIELD$ VALID-ID? 0= s" Invalid issue id" ?FAIL
-   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and ?ARG-NOT-FOUND
+   idx ARCHIVED-CHILD? ?ARG-NOT-FOUND
    idx PATH-SLASHES 11 > ?ARG-NOT-FOUND
    idx PARSE-RECORD
    idx ;
@@ -574,7 +577,7 @@ DYNAMIC-BUFFER ORDER n
    0<> s" Invalid issue frontmatter" ?FAIL ;
 : SHOW ( n -- )
    {: idx:n :}
-   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and ?ARG-NOT-FOUND
+   idx ARCHIVED-CHILD? ?ARG-NOT-FOUND
    idx CHECK-ERROR
    s" ID:       " DOT-IO:PRINT idx F-ID FIELD$ DOT-IO:PRINTLN
    s" Title:    " DOT-IO:PRINT idx F-TITLE FIELD$ DOT-IO:PRINTLN
@@ -723,7 +726,7 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
    RENAME-CAUSE ?FS-MUTATION-ERROR ;
 \ macOS RENAME_EXCL is 4; Linux RENAME_NOREPLACE is 1 and AT_FDCWD is -100.
 \ Both calls refuse an occupied destination in the same rename operation.
-: RENAME-ISSUE-NOREPLACE ( ptr u8 n ptr u8 n -- )
+: RENAME-NOREPLACE-CAUSE ( ptr u8 n ptr u8 n -- n )
    {: src:ptr su:n dst:ptr du:n :}
    src su FS-PATHZ {: src-z:ptr :}
    dst du FS-MUT-PATHZ2 {: dst-z:ptr :}
@@ -733,7 +736,9 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
       HB-TARGET-LINUX? if
          -100 src-z -100 dst-z 1 RENAME-AT2-CALL FS-CAUSE
       else E-FS-IO throw then
-   then
+   then ;
+: RENAME-ISSUE-NOREPLACE ( ptr u8 n ptr u8 n -- )
+   RENAME-NOREPLACE-CAUSE
    dup 17 = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
    ?FS-MUTATION-ERROR ;
 : REMOVE-ISSUE-FILE ( ptr u8 n -- )
@@ -1164,7 +1169,7 @@ variable CLOSED-TIME-U
 
 : RECORD-PATH? ( n -- bool )
    {: idx:n :}
-   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and if false exit then
+   idx ARCHIVED-CHILD? if false exit then
    idx F-PATH FIELD$ FILE? ;
 : CHECK-PATH ( n -- ) RECORD-PATH? 0= s" Issue not found" ?FAIL ;
 : STATUS-DIR-U ( ptr u8 n -- n )
@@ -1386,17 +1391,6 @@ variable REOPEN-PARENT-KEEP-U
       path parent-u REMOVE-ISSUE-DIR
       path parent-u STATUS-DIR-U
    repeat drop ;
-: REOPEN-RENAME-CAUSE ( ptr u8 n ptr u8 n -- n )
-   {: src:ptr su:n dst:ptr du:n :}
-   src su FS-PATHZ {: src-z:ptr :}
-   dst du FS-MUT-PATHZ2 {: dst-z:ptr :}
-   HB-TARGET-MACOS? if
-      src-z dst-z 4 RENAME-X-CALL FS-CAUSE
-   else
-      HB-TARGET-LINUX? if
-         -100 src-z -100 dst-z 1 RENAME-AT2-CALL FS-CAUSE
-      else E-FS-IO throw then
-   then ;
 : REOPEN-STAGE-ONE ( n -- )
    {: at:n :}
    at REOPEN-INDEX F-PATH FIELD$ {: path:ptr pu:n :}
@@ -1455,7 +1449,7 @@ variable REOPEN-PARENT-KEEP-U
    REOPEN-DEST$ {: dest:ptr du:n :}
    dest du SYMLINK? dest du FILE? or dest du DIR? or s" Issue already exists" ?FAIL
    REOPEN-ENSURE-DEST-PARENT
-   REOPEN-SOURCE$ REOPEN-DEST$ REOPEN-RENAME-CAUSE
+   REOPEN-SOURCE$ REOPEN-DEST$ RENAME-NOREPLACE-CAUSE
    dup 0<> if
       REOPEN-CLEAN-NEW-PARENTS
       dup 17 = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
@@ -1959,16 +1953,7 @@ variable SLUG-PATH-U
       then
    loop ;
 : SLUG-RENAME-NOREPLACE-THROW ( ptr u8 n ptr u8 n -- )
-   {: src:ptr su:n dst:ptr du:n :}
-   src su FS-PATHZ {: src-z:ptr :}
-   dst du FS-MUT-PATHZ2 {: dst-z:ptr :}
-   HB-TARGET-MACOS? if
-      src-z dst-z 4 RENAME-X-CALL FS-CAUSE
-   else
-      HB-TARGET-LINUX? if
-         -100 src-z -100 dst-z 1 RENAME-AT2-CALL FS-CAUSE
-      else E-FS-IO throw then
-   then
+   RENAME-NOREPLACE-CAUSE
    dup 17 = if drop E-SLUG-COLLISION throw then
    dup FS-DIR-NOT-EMPTY = if drop E-SLUG-COLLISION throw then
    dup FS-ACCESS-DENIED = if drop E-ISSUE-PERMISSION throw then
@@ -2160,8 +2145,8 @@ variable JSONL-DEP-SEEN
    {: a:ptr u:n start:n :}
    start 0 0 begin
       {: at:n count:n value:n :}
-      at u < if a at + c@ else 0 then 95 = count 0 > and if at 1+ else at then {: pos:n :}
-      pos u < if a pos + c@ else 0 then 48 - {: d:n :}
+      a u at JSONL-PEEK 95 = count 0 > and if at 1+ else at then {: pos:n :}
+      a u pos JSONL-PEEK 48 - {: d:n :}
       d 0 < d 9 > or if at count value exit then
       pos 1+ count 1+ value 10 * d + dup 1048576 > if drop 1048576 then
    again ;
@@ -2256,23 +2241,15 @@ variable JSONL-BYTE-U
    kind JR:T-INT = if
       JR:INT IMPORT-IDX @ F-PRIORITY REC-CELL ! JR:CLOSE exit
    then
+   kind JR:T-STR = kind JR:T-FLOAT = or 0= if JSONL-MALFORMED then
    kind JR:T-STR = if
-      JSONL-DECODE-BUF 1048576 JR:STR {: size:n :}
-      JSONL-DECODE-BUF size JSONL-DECIMAL MATCH option
-         none OF JSONL-MALFORMED ENDOF
-         some OF IMPORT-IDX @ F-PRIORITY REC-CELL ! ENDOF
-      ;MATCH
-      JR:CLOSE exit
-   then
-   kind JR:T-FLOAT = if
-      JR:SPAN$ {: a:ptr u:n :}
-      a u JSONL-DECIMAL MATCH option
-         none OF JSONL-MALFORMED ENDOF
-         some OF IMPORT-IDX @ F-PRIORITY REC-CELL ! ENDOF
-      ;MATCH
-      JR:CLOSE exit
-   then
-   JSONL-MALFORMED ;
+      JSONL-DECODE-BUF 1048576 JR:STR {: size:n :} JSONL-DECODE-BUF size
+   else JR:SPAN$ then
+   JSONL-DECIMAL MATCH option
+      none OF JSONL-MALFORMED ENDOF
+      some OF IMPORT-IDX @ F-PRIORITY REC-CELL ! ENDOF
+   ;MATCH
+   JR:CLOSE ;
 : JSONL-STATUS ( -- )
    s" status" F-REASON JSONL-REQUIRED-STRING
    IMPORT-IDX @ F-REASON FIELD$ 2dup s" in_progress" STR= if 2drop 1 else

@@ -79,7 +79,7 @@ and safe closing of standalone archived tasks beside unrelated records.
 ## Size
 
 Build with `sh build.sh`, which uses the installed `hb` on `PATH`. A build
-with Habu `436ff134` measured 181,884 bytes and passed all ten permanent
+with Habu `bdd9a8ad` measured 181,884 bytes and passed all ten permanent
 suites.
 
 | Executable, macOS arm64 | Bytes |
@@ -98,7 +98,7 @@ only with `-target aarch64-macos.14.0`, the shipped runner's target. The later
 Zig 0.16 and 0.17 ports add about 55 KB of `std.Io` code, so the 0.17
 differential reference under `benchmark/` is not a size baseline.
 
-The file contains 141,256 bytes of code, 9,918 bytes of embedded data, 27,549
+The file contains 140,600 bytes of code, 9,918 bytes of embedded data, 28,205
 bytes of alignment padding, and 3,161 other bytes. Mach-O segments grow in
 16 KiB pages, so the file shrinks only when code and data leave a page empty.
 No arbitrary precision, binary128, or hexadecimal numeric parser was added.
