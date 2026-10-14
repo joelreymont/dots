@@ -73,6 +73,10 @@ variable QUERY-U
 variable FIRST
 variable MATCH-I
 variable SCAN-NAME-ONLY
+\ The walk records only files whose id starts with this prefix: show sets the
+\ id it resolves, so RESOLVE sees exactly its candidates. Empty keeps all.
+PTR-VARIABLE SCAN-PREFIX-A
+variable SCAN-PREFIX-U
 DYNAMIC-BUFFER ORDER n
 DYNAMIC-BUFFER SORT-BUF n
 
@@ -397,11 +401,13 @@ DYNAMIC-BUFFER SORT-BUF n
             some OF S-IFMT and ENDOF
          ;MATCH {: kind:n :}
          kind S-IFREG = name nu FILE-ENTRY? and if
-            depth 0 > if
-               path plen BASENAME name nu 3 - STR= 0=
-            else false then {: is-child:bool :}
-            child child-u name nu 3 - archived is-child PARSE-FILE
-            is-child if path plen BASENAME CURRENT @ F-PARENT FIELD! then
+            name nu 3 - SCAN-PREFIX-A @ SCAN-PREFIX-U @ STARTS-WITH? if
+               depth 0 > if
+                  path plen BASENAME name nu 3 - STR= 0=
+               else false then {: is-child:bool :}
+               child child-u name nu 3 - archived is-child PARSE-FILE
+               is-child if path plen BASENAME CURRENT @ F-PARENT FIELD! then
+            then
          else
             kind S-IFDIR = if depth 1+ child-u archived RECURSE then
          then
@@ -2681,6 +2687,7 @@ variable CYCLE-TAIL
       CMD-SHOW of
          script-argc 2 < s" Usage: dot show <id>" ?FAIL
          1 SCAN-NAME-ONLY !
+         1 script-argv$ SCAN-PREFIX-U ! SCAN-PREFIX-A !
          true LOAD-ISSUES 1 script-argv$ RESOLVE LOAD-TARGET SHOW
       endof
       CMD-FIND of
