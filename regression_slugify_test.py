@@ -418,6 +418,21 @@ class SlugifyRegression(unittest.TestCase):
         self.assertEqual((result.returncode, result.stderr), (0, b''), result.stdout)
         self.assertIn('archive/case-kept-task-11112222.md', self.tree())
 
+    def test_archived_task_named_archive_keeps_the_archive(self):
+        # .dots/archive/archive.md is a flat archived task, not its own folder.
+        self.put('archive/archive.md',
+                 issue('Archive', 'marker-task', status='closed'))
+        self.put('archive/case-kept-task-11112222.md',
+                 issue('Kept task', 'marker-kept', status='closed'))
+        result = self.run_dot()
+        self.assertEqual((result.returncode, result.stderr), (0, b''), result.stdout)
+        after = self.tree()
+        renamed = [path for path in after
+                   if re.fullmatch(r'archive/case-archive-[0-9a-f]{8}\.md', path)]
+        self.assertEqual(len(renamed), 1, sorted(after))
+        self.assertEqual(set(after), {renamed[0], 'archive/case-kept-task-11112222.md'})
+        self.assertIn(b'marker-task', after[renamed[0]])
+
 
 if __name__ == '__main__':
     unittest.main()

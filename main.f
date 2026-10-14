@@ -2008,7 +2008,10 @@ variable SLUG-PATH-U
       then
    loop
    SLUG-LAST-SLASH @ -1 = s" Missing issue file or directory in .dots" ?FAIL
-   idx F-CHILD REC-CELL @ 0= SLUG-PARENT-SLASH @ -1 <> and if
+   \ The task's own folder lies inside its partition, never .dots/archive.
+   idx F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" else s" .dots/" then
+   nip {: base-u:n :}
+   idx F-CHILD REC-CELL @ 0= SLUG-PARENT-SLASH @ 1+ base-u >= and if
       PATH-ONE SLUG-PARENT-SLASH @ 1+ +
       SLUG-LAST-SLASH @ SLUG-PARENT-SLASH @ - 1-
       OLD-ID$ STR= if
