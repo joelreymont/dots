@@ -16,6 +16,9 @@ require lock.f
 package DOT-READ
 
 1048576 constant FILE-CAP
+\ The reference's read limits are exclusive: a file of exactly the limit fails.
+FILE-CAP 1- constant ISSUE-MAX
+65535 constant CONFIG-MAX
 512 constant MAX-DEPTH
 31 constant REC-CELLS
 
@@ -303,7 +306,7 @@ DYNAMIC-BUFFER SORT-BUF n
    0 VALID ! 0 BLOCK-ON ! 0 BLOCK-U !
    1 idx F-ERROR REC-CELL !
    idx F-PATH FIELD$ {: path:ptr pu:n :}
-   path pu [: 2dup FILE-BUF FILE-CAP READ-ALL FILE-U ! ;] catch
+   path pu [: 2dup FILE-BUF ISSUE-MAX READ-ALL FILE-U ! ;] catch
    dup E-FS-CAPACITY =
    s" Unexpected internal error (code: StreamTooLong)" ?FAIL
    dup 0<> if throw then drop 2drop
@@ -942,7 +945,7 @@ variable PAD-COPY
 : LOAD-PREFIX ( -- )
    0 CONFIG-U !
    s" .dots/config" FILE? if
-      [: s" .dots/config" CONFIG-ROW 65536 READ-ALL CONFIG-U ! ;] catch
+      [: s" .dots/config" CONFIG-ROW CONFIG-MAX READ-ALL CONFIG-U ! ;] catch
       dup E-FS-CAPACITY =
       s" Unexpected internal error (code: StreamTooLong)" ?FAIL
       dup 0<> if throw then drop
@@ -1419,7 +1422,7 @@ variable REOPEN-PARENT-KEEP-U
 : REOPEN-STAGE-ONE ( n -- )
    {: at:n :}
    at REOPEN-INDEX F-PATH FIELD$ {: path:ptr pu:n :}
-   path pu [: 2dup FILE-BUF FILE-CAP READ-ALL FILE-U ! ;] catch
+   path pu [: 2dup FILE-BUF ISSUE-MAX READ-ALL FILE-U ! ;] catch
    dup E-FS-CAPACITY = if E-ISSUE-WRITE throw then
    dup 0<> if throw then drop 2drop
    FILE-U @ {: size:n :}

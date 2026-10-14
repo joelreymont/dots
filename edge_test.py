@@ -28,6 +28,8 @@ def seed(root, case):
         put(root, 'config', 'mode=old\n')
     elif case == 'config-over-limit':
         put(root, 'config', 'x' * 65537)
+    elif case in ('config-at-limit', 'config-below-limit'):
+        put(root, 'config', 'x' * (65536 if case == 'config-at-limit' else 65535))
     elif case == 'config-directory':
         (root / '.dots' / 'config').mkdir(parents=True)
     elif case == 'deep-directory':
@@ -172,6 +174,9 @@ def seed(root, case):
         (root / '.dots' / 'config').symlink_to('../config-target')
     elif case == 'oversized-issue':
         put(root, 'a.md', 'x' * (1048576 + 1))
+    elif case in ('issue-at-limit', 'issue-below-limit'):
+        size = 1048576 if case == 'issue-at-limit' else 1048575
+        put(root, 'a.md', issue('A', description='x' * (size - len(issue('A')))))
 
 
 def digest(value):
@@ -208,7 +213,8 @@ def run(binary, root, command, case):
         'stderr': err, 'tree_sha256': digest(json.dumps(tree, sort_keys=True)),
         'tree_entries': len(tree),
     }
-    if case in ('config-directory', 'config-over-limit') or case.startswith('jsonl-'):
+    if case in ('config-directory', 'config-over-limit', 'config-at-limit',
+                'config-below-limit') or case.startswith('jsonl-'):
         result['staged'] = sorted(p.name for p in (root / '.dots').rglob('*')
                                   if '.tmp-' in p.name)
     if case.startswith('jsonl-'):
@@ -300,6 +306,8 @@ def main():
         ('large-json', ['ls', '--json']),
         ('config-preservation', ['add', 'New task']),
         ('config-over-limit', ['add', 'X']),
+        ('config-at-limit', ['add', 'X']),
+        ('config-below-limit', ['add', 'X']),
         ('config-directory', ['add', 'X']),
         ('deep-directory', ['ls', '--json']),
         ('orphan-newline', ['fix']),
@@ -355,6 +363,8 @@ def main():
         ('rewrite-mode', ['off', 'a']),
         ('config-symlink', ['add', 'Child']),
         ('oversized-issue', ['ls']),
+        ('issue-at-limit', ['ls']),
+        ('issue-below-limit', ['ls']),
     ]
     results = []
     for case, command in cases:
@@ -391,6 +401,8 @@ def main():
         expected_errors = {
             'show-depth-eleven': 'Issue not found: leaf\n',
             'config-over-limit': 'Unexpected internal error (code: StreamTooLong)\n',
+            'config-at-limit': 'Unexpected internal error (code: StreamTooLong)\n',
+            'issue-at-limit': 'Unexpected internal error (code: StreamTooLong)\n',
             'config-directory': 'Unexpected internal error (code: IsDir)\n',
             'jsonl-priority-nonintegral': 'Invalid JSONL file\n',
             'jsonl-priority-overflow': 'Invalid JSONL file\n',

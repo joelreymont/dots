@@ -194,7 +194,7 @@ measurement is not a general performance claim.
 ## Bounds and deliberate difference
 
 The upstream compatible limits are an ID of at most 128 bytes, issue file
-of at most 1 MiB, config of at most 64 KiB, path buffer of 512 bytes,
+under 1 MiB, config under 64 KiB, path buffer of 512 bytes,
 recursive path search depth of 10, and JSONL line of at most 1 MiB. Issue
 count, aggregate data, and child count use dynamic buffers. The synthetic
 edges include more than 300 issues, 70 KiB descriptions, 630 long filenames,
