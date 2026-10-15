@@ -1,5 +1,5 @@
-\ case-maint.f - maintenance: rm strips the references to what it removes,
-\ purge empties the archive without following a symlink, fix moves the files of
+\ case-maint.f - maintenance: rm removes a task's whole family and strips the
+\ references to it, purge empties the archive without following a symlink, fix moves the files of
 \ a folder no task owns to the top, and each mutation reports Permission denied
 \ on a read-only store. Each case is one `dot` command on its own store.
 require dot.f
@@ -82,6 +82,214 @@ f .dots/c.md
 " TREE=
 ;
 s" rm-strips-references" ' RM-STRIPS-REFERENCES DOT-CASE
+
+\ P's file has no own folder: its family is P, its legacy folder p/ and, to a
+\ fixed point, C's legacy folder c/. Q keeps only its block on K.
+: RM-LEGACY-FAMILY ( -- )
+   s" p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" c/g.md" s" G" s" open" 2 PUT-ISSUE
+   s" k.md" s" K" s" open" 2 PUT-ISSUE
+   s" q.md" s" ---
+title: Q
+status: open
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+blocks:
+  - c
+  - g
+  - k
+---
+" PUT
+   s" rm|p" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/k.md
+  ---
+  title: K
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q.md
+  ---
+  title: Q
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  blocks:
+    - k
+  ---
+.
+" TREE=
+;
+s" rm-legacy-family" ' RM-LEGACY-FAMILY DOT-CASE
+
+\ c went with p's family, so its own operand is done.
+: RM-FAMILY-OPERAND ( -- )
+   s" p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" k.md" s" K" s" open" 2 PUT-ISSUE
+   s" rm|p|c" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+f .dots/k.md
+  ---
+  title: K
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" rm-family-operand" ' RM-FAMILY-OPERAND DOT-CASE
+
+: RM-ARCHIVE-SYMLINK ( -- )
+   s" ../outside/r/r.md" s" R" s" closed" 2 PUT-ISSUE
+   s" archive" RM-DIR
+   s" ../outside" s" archive" LINK
+   s" rm|r" RUN
+   1 RC=
+   s" " OUT=
+   s\" Unsafe archive symlink\n" ERR=
+   s" d .dots
+l .dots/archive -> ../outside
+" TREE=
+   s" outside" s" d outside
+d outside/r
+f outside/r/r.md
+  ---
+  title: R
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" DIR=
+;
+s" rm-archive-symlink" ' RM-ARCHIVE-SYMLINK DOT-CASE
+
+\ G's own folder sits under C's: it goes whole, with G's legacy folder g/, and
+\ P and C stay. P keeps only its block on C.
+: RM-DEEP-OWN-FOLDER ( -- )
+   s" p/p.md" s" ---
+title: P
+status: open
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+blocks:
+  - c
+  - g
+  - h
+  - k
+---
+" PUT
+   s" p/c/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" p/c/g/g.md" s" G" s" open" 2 PUT-ISSUE
+   s" p/c/g/h.md" s" H" s" open" 2 PUT-ISSUE
+   s" g/k.md" s" K" s" open" 2 PUT-ISSUE
+   s" rm|g" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+d .dots/p/c
+f .dots/p/c/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  blocks:
+    - c
+  ---
+.
+" TREE=
+;
+s" rm-deep-own-folder" ' RM-DEEP-OWN-FOLDER DOT-CASE
+
+\ Archived R's family is its own folder archive/r/ and its legacy folder r/ in
+\ the active partition; folders named r elsewhere are not R's. H keeps only its
+\ blocks on X2 and X3.
+: RM-ARCHIVED-FAMILY ( -- )
+   s" archive/r/r.md" s" R" s" closed" 2 PUT-ISSUE
+   s" archive/r/d.md" s" D" s" closed" 2 PUT-ISSUE
+   s" archive/o/r/x3.md" s" X3" s" closed" 2 PUT-ISSUE
+   s" r/x.md" s" X" s" open" 2 PUT-ISSUE
+   s" o/r/x2.md" s" X2" s" open" 2 PUT-ISSUE
+   s" h.md" s" ---
+title: H
+status: open
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+blocks:
+  - d
+  - x
+  - x2
+  - x3
+---
+" PUT
+   s" rm|r" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/archive/o
+d .dots/archive/o/r
+f .dots/archive/o/r/x3.md
+  ---
+  title: X3
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/h.md
+  ---
+  title: H
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  blocks:
+    - x2
+    - x3
+  ---
+.
+d .dots/o
+d .dots/o/r
+f .dots/o/r/x2.md
+  ---
+  title: X2
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" rm-archived-family" ' RM-ARCHIVED-FAMILY DOT-CASE
 
 \ A blocks B: removing A first must not write A back while stripping B.
 : RM-REFERENCER-FIRST ( -- )

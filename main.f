@@ -1802,17 +1802,48 @@ variable STATUS-SAVE-IDX
    s" .dots/archive" REMOVE-ISSUE-TREE
    s" .dots/archive" MAKE-DIRS
    s" Archive purged" DOT-IO:PRINTLN ;
-: REMOVE-BLOCK-REFERENCE ( n n -- )
-   {: idx:n deleted:n :}
+\ rm's family: the records one operand removes, the named task first.
+DYNAMIC-BUFFER FAMILY n
+variable FAMILY-N
+: FAMILY-ADD ( n -- )
+   FAMILY-N @ 1+ FAMILY-RESERVE
+   FAMILY-N @ FAMILY !
+   1 FAMILY-N +! ;
+: IN-FAMILY? ( n -- bool )
+   {: idx:n :}
+   FAMILY-N @ 0 ?do i FAMILY @ idx = if true unloop exit then loop false ;
+: FAMILY-ID? ( ptr u8 n -- bool )
+   {: id:ptr iu:n :}
+   FAMILY-N @ 0 ?do
+      i FAMILY @ F-ID FIELD$ id iu STR= if true unloop exit then
+   loop false ;
+\ A task's family is the task and, to a fixed point, every status descendant
+\ of a member. A record an earlier operand removed has no path.
+: GATHER-FAMILY ( n -- )
+   0 FAMILY-N ! FAMILY-ADD
+   0 begin dup FAMILY-N @ < while
+      dup FAMILY @ {: member:n :}
+      ISSUE-N @ 0 ?do
+         i F-PATH FIELD$ nip 0<> if
+            i member STATUS-DESCENDANT? if
+               i IN-FAMILY? 0= if i FAMILY-ADD then
+            then
+         then
+      loop
+      1+
+   repeat drop ;
+\ Drops every family id from a remaining task's blocks, archived ones too.
+: STRIP-FAMILY-REFERENCES ( n -- )
+   {: idx:n :}
    idx F-ERROR REC-CELL @ 0<> if exit then
-   \ Earlier operands of a multi-delete may have removed this snapshot entry.
-   idx RECORD-PATH? 0= if exit then
+   idx F-PATH FIELD$ nip 0= if exit then
+   idx IN-FAMILY? if exit then
    0 BLOCK-U ! 0 VALID !
    idx F-BLOCKS FIELD$ {: blocks:ptr bu:n :}
    0 begin dup bu < while
       {: at:n :}
       blocks bu at NEXT-LINE drop {: block:ptr sz:n next:n :}
-      block sz deleted F-ID FIELD$ STR= if 1 VALID !
+      block sz FAMILY-ID? if 1 VALID !
       else block sz BLOCK-ADD then
       next
    repeat drop
@@ -1821,36 +1852,42 @@ variable STATUS-SAVE-IDX
       idx CHECK-PATH
       idx SAVE-RECORD
    then ;
-: REMOVE-REFERENCES ( n -- )
-   {: deleted:n :}
-   ISSUE-N @ 0 ?do i deleted REMOVE-BLOCK-REFERENCE loop ;
-\ As upstream deleteIssue does, a task takes the folder named after it in its
-\ partition only when its own path there starts with that folder, as
-\ <id>/<id>.md does, and first drops the references to the folder's direct
-\ files. Other folders named after it, such as the active one of an archived
-\ task, keep their files and the references to them.
+\ Removes the folder named after a task under base when the scan reads it: a
+\ directory, never a symlink, and never the archive.
+: RM-FOLDER ( ptr u8 n ptr u8 n -- )
+   {: base:ptr bu:n id:ptr iu:n :}
+   id iu s" archive" STR= if exit then
+   SB-RESET base bu SB-APPEND id iu SB-APPEND SB$ PATH-ONE!
+   PATH-ONE$ FS-TRY-LSTAT-MODE MATCH option
+      none OF false ENDOF
+      some OF S-IFMT and S-IFDIR = ENDOF
+   ;MATCH if PATH-ONE$ REMOVE-ISSUE-TREE then ;
+\ A task's legacy folders, where add -P used to put its children: the one
+\ named after it at the top of its partition and, when archived, at the top of
+\ .dots.
+: RM-LEGACY ( n -- )
+   {: idx:n :}
+   idx F-ID FIELD$ {: id:ptr iu:n :}
+   idx F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" id iu RM-FOLDER then
+   s" .dots/" id iu RM-FOLDER ;
+\ A task goes with its family: its own folder, or else its file, and every
+\ member's legacy folders, which hold the rest of the family. The references to
+\ the family go first.
 : RM-ONE ( n -- )
    {: idx:n :}
+   \ An operand an earlier operand's family removed is done.
+   idx F-PATH FIELD$ nip 0= if exit then
    idx CHECK-PATH
-   idx REMOVE-REFERENCES
-   idx F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" else s" .dots/" then
-   nip {: base-u:n :}
+   idx GATHER-FAMILY
+   ISSUE-N @ 0 ?do i STRIP-FAMILY-REFERENCES loop
    idx F-PATH FIELD$ {: path:ptr pu:n :}
-   idx F-ID FIELD$ {: id:ptr iu:n :}
-   path base-u + pu base-u - id iu STATUS-UNDER? if
-      path base-u iu + PATH-ONE!
-      ISSUE-N @ 0 ?do
-         i F-PATH FIELD$ 2dup STATUS-DIR-U nip PATH-ONE$ STR= if
-            i REMOVE-REFERENCES
-         then
-      loop
-      PATH-ONE$ REMOVE-ISSUE-TREE
-   else
-      path pu REMOVE-ISSUE-FILE
-   then
-   idx F-PATH FIELD-EMPTY ;
+   idx OWN-FOLDER-U {: own-u:n :}
+   own-u 0 > if path own-u REMOVE-ISSUE-TREE else path pu REMOVE-ISSUE-FILE then
+   FAMILY-N @ 0 ?do i FAMILY @ RM-LEGACY loop
+   FAMILY-N @ 0 ?do i FAMILY @ F-PATH FIELD-EMPTY loop ;
 : RM-COMMAND ( -- )
    script-argc 2 < s" Usage: dot rm <id> [id2 ...]" ?FAIL
+   ASSERT-ARCHIVE-REAL
    true LOAD-ISSUES
    script-argc 1 ?do i RESOLVE-ARG RM-ONE loop ;
 : TREE-HELP ( -- )
