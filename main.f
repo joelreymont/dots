@@ -1058,6 +1058,7 @@ variable PAD-COPY
       next
    repeat drop
    s" prefix=" OUT-APPEND PREFIX$ OUT-APPEND 10 OUT-CHAR
+   OUT$ nip CONFIG-MAX > s" Config file too large: .dots/config" ?FAIL
    s" .dots/config" OUT$ WRITE-ATOMIC ;
 
 \ A slug ends at the last whole word within SLUG-CAP bytes, or at SLUG-CAP when

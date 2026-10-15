@@ -922,6 +922,18 @@ s" unreadable-file" ' UNREADABLE-FILE DOT-CASE
 ;
 s" not-a-file" ' NOT-A-FILE DOT-CASE
 
+\ A row whose task path is taken by a directory is refused.
+: IMPORT-OVER-TASK-DIR ( -- )
+   s" .dots/a.md" FILE$ MAKE-DIRS
+   ROW-A JSONL
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Not a file: .dots/a.md\n" ERR=
+   s\" d .dots\nd .dots/a.md\nd .dots/archive\n" TREE=
+;
+s" import-over-task-dir" ' IMPORT-OVER-TASK-DIR DOT-CASE
+
 \ A read that fails after the open is an I/O error, never the end of input.
 : READ-FAILURE ( -- )
    s" import.jsonl" FILE$ MAKE-DIRS

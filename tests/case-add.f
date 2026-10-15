@@ -838,6 +838,64 @@ s" config-too-large" ' CONFIG-TOO-LARGE DOT-CASE
 ;
 s" config-directory" ' CONFIG-DIRECTORY DOT-CASE
 
+\ A config of n bytes as one pad line and no prefix, so add records the
+\ store's derived prefix, the case name.
+: PUT-PAD ( n -- ) {: n:n :}
+   CONF BUF:CLEAR
+   s" pad=" CONF+  [char] x n 5 - CONF CONF-BYTES  s\" \n" CONF+
+   s" config" CONF$ PUT ;
+
+\ The tree of a store holding PUT-PAD's n bytes, up to the end of its pad line.
+: PAD-TREE ( n -- ) {: n:n :}
+   CONF-TREE BUF:CLEAR
+   s\" d .dots\nd .dots/archive\nf .dots/config\n  pad=" CONF-TREE+
+   [char] x n 5 - CONF-TREE CONF-BYTES
+   s\" \n" CONF-TREE+ ;
+
+\ The prefix line add appends in config-write-at-limit.
+: AT-LIMIT-PREFIX ( -- ptr u8 n ) s\" prefix=config-write-at-limit\n" ;
+
+\ A config add rewrites to exactly the limit is written.
+: CONFIG-WRITE-AT-LIMIT ( -- )
+   CONFIG-LIMIT AT-LIMIT-PREFIX nip - {: n:n :}
+   n PUT-PAD
+   s" add|T" RUN
+   s" A" SAVE-ID
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s" A" s" config-write-at-limit-t-<hex>" ID=
+   n PAD-TREE
+   s\"   prefix=config-write-at-limit
+.
+f .dots/<A>.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" CONF-TREE+
+   CONF-TREE$ TREE=
+;
+s" config-write-at-limit" ' CONFIG-WRITE-AT-LIMIT DOT-CASE
+
+\ dot never writes a config it cannot read: add refuses a config its prefix
+\ would take past the limit and leaves the store as it was.
+: CONFIG-WRITE-TOO-LARGE ( -- )
+   65530 PUT-PAD
+   s" add|T" RUN
+   1 RC=
+   s" " OUT=
+   s\" Config file too large: .dots/config\n" ERR=
+   65530 PAD-TREE
+   s\" .\n" CONF-TREE+
+   CONF-TREE$ TREE=
+;
+s" config-write-too-large" ' CONFIG-WRITE-TOO-LARGE DOT-CASE
+
 \ A config that holds a prefix is never rewritten: its lines stay as they were.
 : CONFIG-KEPT ( -- )
    s" config" s\" mode=a\nprefix=x\nmode=b\nnote\n" PUT
