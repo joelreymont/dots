@@ -26,9 +26,10 @@
 \ captured id reads `<A>`, `<B>`…, and each generated timestamp
 \ (2026-10-15T11:05:55.731062+00:00) reads `<time>`.
 \
-\ A seed's path is relative to `.dots/`. PUT writes a file and LINK makes a
-\ symlink to the target, each making the directories above it; PUT-FIFO makes
-\ a named pipe and PUT-ISSUE writes a task in dot's frontmatter.
+\ A seed's path is relative to `.dots/`; `../<name>` reaches beside it. PUT
+\ writes a file and LINK makes a symlink to the target, each making the
+\ directories above it; PUT-FIFO makes a named pipe and PUT-ISSUE writes a task
+\ in dot's frontmatter.
 require src/lib/errors.f
 require src/lib/string.f
 require src/lib/byte-buffer.f
