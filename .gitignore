@@ -1,6 +1,4 @@
 bin/
-benchmark/bin/
 .build/
-__pycache__/
 .jj-ws/
 SESSION.md

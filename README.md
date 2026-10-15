@@ -2,9 +2,6 @@
 
 # dots
 
-> **Validation:** the adversarial repairs and expanded regression suites are
-> documented in [validation and remaining limits](docs/parity.md).
-
 Fast task tracking in plain Markdown files. Dots is a single native Habu CLI;
 tasks live in `.dots/` and can be read, edited, and versioned with ordinary
 file tools. It needs no database or server at runtime.
@@ -12,9 +9,8 @@ file tools. It needs no database or server at runtime.
 The current stripped macOS arm64 binary is **198,396 bytes** (about 194 KiB),
 **3.3% smaller** than the shipped Zig build (205,104 bytes, Zig 0.15.2
 ReleaseSmall) and 5.4% larger than the same source built with the smallest
-Zig flags (188,320 bytes). See [validation and scope](docs/parity.md) for
-measurements and adversarial tests. The previous Zig source,
-build, CI, and release setup remain on the [`zig` branch](https://github.com/joelreymont/dots/tree/zig).
+Zig flags (188,320 bytes). The previous Zig source, build, CI, and release
+setup remain on the [`zig` branch](https://github.com/joelreymont/dots/tree/zig).
 
 ## Install from source
 
@@ -101,39 +97,19 @@ Describe the work here.
 
 The `.dots/config` file stores the project ID prefix. Parent task folders hold
 their task file and child files. Closed root tasks live under `.dots/archive/`.
-The complete storage and command compatibility contract is in
-[the parity ledger](docs/parity.md).
 
 ## Test
 
-The Python harnesses compare `bin/dot` with the adapted full Zig reference
-under `benchmark/zig-full/`. Zig 0.17 is required for the reference build.
-Its source has API compatibility changes and a narrow duplicate-config
-ownership fix relative to the `zig` branch:
-
 ```sh
 sh build.sh
-sh benchmark/build-zig.sh
-python3 test.py --full benchmark/bin/dot-zig-full-small bin/dot
-python3 edge_test.py benchmark/bin/dot-zig-full-small bin/dot
-python3 regression_fs_test.py bin/dot
-python3 regression_graph_test.py benchmark/bin/dot-zig-full-small bin/dot
-python3 regression_loading_test.py benchmark/bin/dot-zig-full-small bin/dot
-python3 regression_json_test.py bin/dot
-python3 regression_archive_test.py bin/dot
-python3 regression_slugify_test.py bin/dot
-python3 regression_io_test.py bin/dot
-python3 regression_concurrency_test.py bin/dot
+hb --load tests/run.f -- bin/dot
 ```
 
-They create synthetic stores in system temporary directories; they do not
-modify the repository's `.dots/`. The current port passes **289 checks across
-10 permanent suites**, including concurrent writers, failed reads and writes,
-archive rollback, symlink refusal, and slugify recovery. The broader adversarial
-run uses copied task stores from 11 repositories; see the
-[validation ledger](docs/parity.md) for results and the comparison contract.
-The I/O suite uses the installed `hb`; the slugify failure probe uses
-`cc`. Rebuild and rerun after a toolchain or source change.
+The harness runs each case in a synthetic store in a temporary directory and
+checks the exact exit status, stdout, stderr and resulting `.dots` tree; it
+never touches the repository's `.dots/`. It exits 0 only when every case
+passes. It compiles `tests/probe.c`, an interposer that pins add's random
+id and fails a rename mid-slugify, with `cc`. Rebuild and rerun after a toolchain or source change.
 
 ## Migrating from beads
 

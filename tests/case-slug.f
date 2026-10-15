@@ -777,11 +777,9 @@ f .dots/old-abcdef12.md
 ;
 s" archive-symlink" ' ARCHIVE-SYMLINK DOT-CASE
 
-\ The archived dependent cannot be rewritten: no task is renamed, no reference
-\ is stranded and no staged file stays behind.
-: UNWRITABLE-ARCHIVE ( -- )
-   PUT-PREFIX
-   s" old-12345678.md" s" Target" s" open" 2 PUT-ISSUE
+\ The target with an archived dependent whose blocks reference it.
+: PUT-DEPENDENT ( -- )
+   PUT-TARGET
    s" archive/dependent-22222222.md" s" ---
 title: Dependent
 status: closed
@@ -790,10 +788,11 @@ created-at: 2026-01-01T00:00:00Z
 blocks:
   - old-12345678
 ---
-" PUT
-   s" archive" READ-ONLY-DIR MODE
-   s" slugify" RUN
-   s" archive" FS-MUT-MODE-DIR MODE
+" PUT ;
+
+\ A failed write left PUT-DEPENDENT's store as it was: no task is renamed, no
+\ reference is stranded and no staged or backup file stays behind.
+: DEPENDENT-KEPT ( -- )
    1 RC=
    s" " OUT=
    s\" Permission denied\n" ERR=
@@ -820,9 +819,84 @@ f .dots/old-12345678.md
   created-at: 2026-01-01T00:00:00Z
   ---
 .
-" TREE=
+" TREE= ;
+
+\ The archived dependent cannot be rewritten.
+: UNWRITABLE-ARCHIVE ( -- )
+   PUT-DEPENDENT
+   s" archive" READ-ONLY-DIR MODE
+   s" slugify" RUN
+   s" archive" FS-MUT-MODE-DIR MODE
+   DEPENDENT-KEPT
 ;
 s" unwritable-archive" ' UNWRITABLE-ARCHIVE DOT-CASE
+
+\ The target's rename fails mid-commit, once its file has moved to its backup:
+\ every renamed and rewritten file is put back.
+: COMMIT-RENAME-FAILS ( -- )
+   PUT-DEPENDENT
+   s" slugify" s" .dots/p-target-12345678.md" s" .dots/old-12345678.md" RUN-PROBE
+   DEPENDENT-KEPT
+;
+s" commit-rename-fails" ' COMMIT-RENAME-FAILS DOT-CASE
+
+\ The parent's own rename fails once both its folders have moved: the folders
+\ move back, and the extra task keeps its file and its reference.
+: CHILD-FOLDER-RENAME-FAILS ( -- )
+   PUT-PREFIX
+   s" archive/parent-bbbbcccc/parent-bbbbcccc.md" s" Parent task" s" closed" 2 PUT-ISSUE
+   s" archive/parent-bbbbcccc/p-archived-child-ccccdddd.md" s" Archived child" s" closed" 2 PUT-ISSUE
+   s" parent-bbbbcccc/p-extra-task-ddddeeee.md" s" ---
+title: Extra task
+status: open
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+blocks:
+  - parent-bbbbcccc
+---
+" PUT
+   s" slugify"
+   s" .dots/archive/p-parent-task-bbbbcccc/p-parent-task-bbbbcccc.md"
+   s" .dots/parent-bbbbcccc" RUN-PROBE
+   1 RC=
+   s" " OUT=
+   s\" Permission denied\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/archive/parent-bbbbcccc
+f .dots/archive/parent-bbbbcccc/p-archived-child-ccccdddd.md
+  ---
+  title: Archived child
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/parent-bbbbcccc/parent-bbbbcccc.md
+  ---
+  title: Parent task
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/config
+  prefix=p
+.
+d .dots/parent-bbbbcccc
+f .dots/parent-bbbbcccc/p-extra-task-ddddeeee.md
+  ---
+  title: Extra task
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  blocks:
+    - parent-bbbbcccc
+  ---
+.
+" TREE=
+;
+s" child-folder-rename-fails" ' CHILD-FOLDER-RENAME-FAILS DOT-CASE
 
 \ A parent folder below a plain directory below another parent's folder.
 : DEEP-NESTING ( -- )

@@ -42,8 +42,14 @@
 \ line: `s" archive -> " s" A" SAVE-AFTER`.
 \
 \ RUN-LIMITED runs dot as RUN does under tests/limit.f, which lets it write no
-\ byte to any file. GIT runs git in the store as RUN runs dot, so RC=, OUT= and
-\ ERR= check git's rc and output. RUN-HB runs `hb --load <script> -- <main.f>`
+\ byte to any file. RUN-PROBE runs dot as RUN does with tests/probe.c, which
+\ the run compiles with `cc` into its root, preloaded: `s" slugify"
+\ s" .dots/new.md" s" .dots/old.md" RUN-PROBE` fails dot's no-replace rename
+\ to a destination ending `.dots/new.md` with EACCES once `.dots/old.md`, a
+\ path from the store, has moved. RUN-PINNED runs dot as RUN does with the
+\ probe preloaded and its random bytes pinned, so add's id ends `-5eed1d00`.
+\ GIT runs git in the store as RUN runs dot, so RC=, OUT= and ERR= check git's
+\ rc and output. RUN-HB runs `hb --load <script> -- <main.f>`
 \ as RUN runs bin/dot, for a probe script that loads dot's source to reach a
 \ path no command can. RUN's other variants give dot another stdout:
 \ RUN-CLOSED none, fd 1 closed; RUN-BROKEN a pipe with no reader; RUN-READONLY
@@ -87,6 +93,9 @@ create DOT-BUF FS-PATH-CAP allot        \ bin/dot, absolute
 variable DOT-U
 create LIMIT-BUF FS-PATH-CAP allot      \ tests/limit.f, absolute
 variable LIMIT-U
+create PROBE-BUF FS-PATH-CAP allot      \ the library cc builds from tests/probe.c
+variable PROBE-U
+create CC-BUF FS-PATH-CAP allot         \ cc, resolved on PATH
 create GIT-BUF FS-PATH-CAP allot        \ git, resolved on PATH
 create STORE-BUF FS-PATH-CAP allot      \ the current case's store
 variable STORE-U
@@ -457,6 +466,36 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
       idu k ID-U-PTR !
    then ;
 
+\ Build tests/probe.c into the run's root with cc; the run dies without cc,
+\ since no other suite covers what RUN-PROBE and RUN-PINNED do.
+: BUILD-PROBE ( -- )
+   s" cc" >LEN CC-BUF FIND-EXECUTABLE MATCH option
+      none OF s" tests/run.f: no cc on PATH to build tests/probe.c" 2 die ENDOF
+      some OF LEN>N ENDOF
+   ;MATCH {: ccu:n :}
+   GT-ROOT HB-TARGET-MACOS? if s" probe.dylib" else s" probe.so" then
+   PROBE-BUF PROBE-U JOIN!
+   SOURCE-ROOT:CURRENT$ s" probe.c" REPO-BUF REPO-U JOIN!
+   PROC-ARGV-RESET
+   HB-TARGET-MACOS? if
+      s" -dynamiclib" >LEN PROC-ARGV+
+   else
+      s" -shared" >LEN PROC-ARGV+  s" -fPIC" >LEN PROC-ARGV+
+   then
+   s" -o" >LEN PROC-ARGV+
+   PROBE-BUF PROBE-U @ >LEN PROC-ARGV+
+   REPO-BUF REPO-U @ >LEN PROC-ARGV+
+   HB-TARGET-MACOS? 0= if s" -ldl" >LEN PROC-ARGV+ then
+   CC-BUF ccu >LEN -1 >FD -1 >FD -1 >FD PROC-RUN-ARGV-IO-RC MATCH result
+      ok OF drop ENDOF
+      err OF drop s" tests/run.f: cc failed to build tests/probe.c" 2 die ENDOF
+   ;MATCH ;
+
+\ Preload the probe into the next LAUNCH.
+: PRELOAD ( -- )
+   HB-TARGET-MACOS? if s" DYLD_INSERT_LIBRARIES" else s" LD_PRELOAD" then
+   >LEN PROBE-BUF PROBE-U @ >LEN PROC-ENV+ ;
+
 public
 
 \ ---- the run --------------------------------------------------------------------
@@ -474,6 +513,7 @@ public
    DOT-BUF DOT-U @ FILE? 0= if s" tests/run.f: no dot binary at the argument" 2 die then
    SOURCE-ROOT:CURRENT$ s" limit.f" LIMIT-BUF LIMIT-U JOIN!
    LIMIT-BUF LIMIT-U @ FILE? 0= if s" tests/run.f: no tests/limit.f beside it" 2 die then
+   BUILD-PROBE
    UMASK SET-UMASK drop
    TEXT 256 BUF:N>BLEN BUF:INIT
    SNAP 4096 BUF:N>BLEN BUF:INIT
@@ -559,6 +599,24 @@ EXPORT FILE$
    DOT-BUF DOT-U @ >LEN PROC-ARGV+
    ARGV+
    ENGINE-ID:PATH$ s" out" OPEN-OUT LAUNCH WAIT ;
+
+\ RUN with tests/probe.c preloaded: dot's no-replace rename to a destination
+\ ending with dst fails with EACCES once the path `moved`, from the store, has
+\ moved.
+: RUN-PROBE ( ptr u8 n ptr u8 n ptr u8 n -- ) {: a:ptr u:n dst:ptr du:n moved:ptr mu:n :}
+   a u DOT-ARGV {: prog:ptr progu:n :}
+   PRELOAD
+   s" DOTS_PROBE_RENAME" >LEN dst du >LEN PROC-ENV+
+   s" DOTS_PROBE_MOVED" >LEN moved mu >LEN PROC-ENV+
+   prog progu s" out" OPEN-OUT LAUNCH WAIT ;
+
+\ RUN with tests/probe.c preloaded and the random bytes pinned: add's id ends
+\ `-5eed1d00`.
+: RUN-PINNED ( ptr u8 n -- )
+   DOT-ARGV {: prog:ptr progu:n :}
+   PRELOAD
+   s" DOTS_PROBE_RANDOM" >LEN s" 5eed1d00" >LEN PROC-ENV+
+   prog progu s" out" OPEN-OUT LAUNCH WAIT ;
 
 \ Run git in the store with the |-separated arguments as RUN runs dot.
 : GIT ( ptr u8 n -- ) {: a:ptr u:n :}

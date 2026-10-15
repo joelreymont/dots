@@ -18,7 +18,7 @@ require lock.f
 package DOT-READ
 
 1048576 constant FILE-CAP
-\ The reference's read limits are exclusive: a file of exactly the limit fails.
+\ The read limits are exclusive: a file of exactly the limit fails.
 FILE-CAP 1- constant ISSUE-MAX
 65535 constant CONFIG-MAX
 512 constant MAX-DEPTH
@@ -469,8 +469,8 @@ DYNAMIC-BUFFER SORT-BUF n
    r hi < if r ORDER @ l SORT-BUF @ ISSUE-LESS? exit then
    false ;
 \ Merge sorted ORDER[lo,mid) and ORDER[mid,hi) via a SORT-BUF copy of the left
-\ run. Right moves first only when strictly less, so ties keep load order, as
-\ in the reference's stable std.mem.sort.
+\ run. Right moves first only when strictly less, so ties keep load order: the
+\ sort is stable.
 : MERGE-RUN ( n n n -- )
    {: lo:n mid:n hi:n :}
    mid lo ?do i ORDER @ i lo - SORT-BUF ! loop
@@ -883,7 +883,7 @@ variable WRITE-SRC-U
    idx SERIALIZE
    idx F-PATH FIELD$ OUT$ WRITE-ATOMIC ;
 
-\ Match the Zig writer's localtime and secure 32-bit random suffix.
+\ Times are local; a new id ends in a secure 32-bit random suffix.
 PROCESS-SYMBOLS
 FUNCTION: GETTIME-CALL gettimeofday ( ptr u8 n -- i32 ) ;FUNCTION
 FUNCTION: LOCALTIME-CALL localtime_r ( ptr u8 ptr u8 -- ptr u8 ) ;FUNCTION
@@ -1136,11 +1136,10 @@ variable PARENT-IDX
    0 idx F-ERROR REC-CELL !
    0 idx F-CHILD REC-CELL !
    idx ;
-\ Add's duplicate check is the reference's findIssuePath. It probes the id's
-\ file and its folder's own file at the top of .dots and in the archive, then
-\ searches as searchForIssue does: every entry down to ten levels below .dots
-\ that lstat types a directory, so never a symlink, and that is not named
-\ archive is probed for the id's file.
+\ Add's duplicate check probes the id's file and its folder's own file at the
+\ top of .dots and in the archive, then searches: every entry down to ten
+\ levels below .dots that lstat types a directory, so never a symlink, and that
+\ is not named archive is probed for the id's file.
 10 constant SEARCH-DEPTH
 : ID-AT? ( ptr u8 n ptr u8 n bool -- bool )
    {: dir:ptr du:n id:ptr iu:n folder:bool :}
@@ -2380,8 +2379,8 @@ variable JSONL-DEP-SEEN
 : JSONL-FIND ( ptr u8 n -- JR:reader bool )
    {: key:ptr ku:n :}
    JSONL-START key ku JR:FIND-KEY ;
-\ The integer form, which alone accepts "1__2", then an exactly integral
-\ decimal or exponent form; docs/parity.md bounds the scope.
+\ A priority is a signed i64: the integer form, which alone accepts "1__2",
+\ then an exactly integral decimal or exponent form.
 : JSONL-DECIMAL ( ptr u8 n -- option<i64> )
    {: a:ptr u:n :}
    a u DECIMAL:INTEGER MATCH option
@@ -2671,8 +2670,8 @@ variable CYCLE-TAIL
       ISSUE-N @ 1- ISSUE-N !
    then
    IMPORT-IDX @ ISSUE-N @ >= if arena-before ARENA-U ! then ;
-\ A line holds at most 1048575 bytes before its LF: the reference's 1 MiB line
-\ limit is exclusive.
+\ A line holds at most 1048575 bytes before its LF: the 1 MiB line limit is
+\ exclusive.
 : IMPORT-LINES ( ptr u8 n -- )
    {: path:ptr pu:n :}
    JSONL-CURSOR path pu 1048575 BUF:N>BLEN JSONL:OPEN
@@ -2697,7 +2696,7 @@ variable CYCLE-TAIL
    then
    IMPORT-SKIPPED-N @ s"  issues due to errors" WARN-IMPORT-NUM
    DEP-SKIPPED-N @ s"  dependencies due to errors" WARN-IMPORT-NUM ;
-\ Like the reference, import skips a path that is not a regular file.
+\ Import skips a path that is not a regular file.
 : IMPORT-JSONL-FILE ( ptr u8 n -- )
    {: path:ptr pu:n :}
    path pu FILE? if path pu IMPORT-JSONL then ;

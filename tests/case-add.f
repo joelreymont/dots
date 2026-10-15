@@ -629,5 +629,666 @@ f .dots/<A>.md
 ;
 s" utf8-title" ' UTF8-TITLE DOT-CASE
 
+\ ---- id collisions ----------------------------------------------------------
+
+\ RUN-PINNED pins add's random suffix, so the new id, x-task-5eed1d00, is known
+\ before the run, and add refuses it where it is taken. The id is taken at the
+\ top and in the archive, file or folder, and in active folders other than any
+\ named archive, ten levels down, never through a symlink. An empty folder of
+\ the id's name takes the new task. Each store holds task a beside the
+\ placements.
+: PINNED-STORE ( -- )
+   PREFIX-X
+   s" a.md" s" A" s" open" 2 PUT-ISSUE ;
+
+: PINNED-TAKEN-TOP ( -- )
+   PINNED-STORE
+   s" x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+f .dots/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-taken-top" ' PINNED-TAKEN-TOP DOT-CASE
+
+: PINNED-TAKEN-FOLDER ( -- )
+   PINNED-STORE
+   s" x-task-5eed1d00/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/x-task-5eed1d00
+f .dots/x-task-5eed1d00/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-taken-folder" ' PINNED-TAKEN-FOLDER DOT-CASE
+
+: PINNED-TAKEN-ARCHIVE ( -- )
+   PINNED-STORE
+   s" archive/x-task-5eed1d00.md" s" Taken" s" closed" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/archive/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/config
+  prefix=x
+.
+" TREE=
+;
+s" pinned-taken-archive" ' PINNED-TAKEN-ARCHIVE DOT-CASE
+
+: PINNED-TAKEN-ARCHIVE-FOLDER ( -- )
+   PINNED-STORE
+   s" archive/x-task-5eed1d00/x-task-5eed1d00.md" s" Taken" s" closed" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+d .dots/archive/x-task-5eed1d00
+f .dots/archive/x-task-5eed1d00/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/config
+  prefix=x
+.
+" TREE=
+;
+s" pinned-taken-archive-folder" ' PINNED-TAKEN-ARCHIVE-FOLDER DOT-CASE
+
+: PINNED-TAKEN-ACTIVE-CHILD ( -- )
+   PINNED-STORE
+   s" p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/p
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-taken-active-child" ' PINNED-TAKEN-ACTIVE-CHILD DOT-CASE
+
+: PINNED-TAKEN-DEPTH-10 ( -- )
+   PINNED-STORE
+   s" d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/d1
+d .dots/d1/d2
+d .dots/d1/d2/d3
+d .dots/d1/d2/d3/d4
+d .dots/d1/d2/d3/d4/d5
+d .dots/d1/d2/d3/d4/d5/d6
+d .dots/d1/d2/d3/d4/d5/d6/d7
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10
+f .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-taken-depth-10" ' PINNED-TAKEN-DEPTH-10 DOT-CASE
+
+: PINNED-FREE-ARCHIVED-CHILD ( -- )
+   PINNED-STORE
+   s" archive/p/p.md" s" P" s" closed" 2 PUT-ISSUE
+   s" archive/p/x-task-5eed1d00.md" s" Taken" s" closed" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+d .dots/archive/p
+f .dots/archive/p/p.md
+  ---
+  title: P
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/p/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/config
+  prefix=x
+.
+f .dots/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" pinned-free-archived-child" ' PINNED-FREE-ARCHIVED-CHILD DOT-CASE
+
+: PINNED-FREE-ARCHIVED-CHILD-CHILD ( -- )
+   PINNED-STORE
+   s" archive/p/p.md" s" P" s" closed" 2 PUT-ISSUE
+   s" archive/p/x-task-5eed1d00.md" s" Taken" s" closed" 2 PUT-ISSUE
+   s" add|Task|-P|a" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/a
+f .dots/a/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/a/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+d .dots/archive
+d .dots/archive/p
+f .dots/archive/p/p.md
+  ---
+  title: P
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/p/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/config
+  prefix=x
+.
+" TREE=
+;
+s" pinned-free-archived-child-child" ' PINNED-FREE-ARCHIVED-CHILD-CHILD DOT-CASE
+
+: PINNED-FREE-NESTED-ARCHIVE ( -- )
+   PINNED-STORE
+   s" x/archive/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/x
+d .dots/x/archive
+f .dots/x/archive/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" pinned-free-nested-archive" ' PINNED-FREE-NESTED-ARCHIVE DOT-CASE
+
+: PINNED-FREE-NESTED-ARCHIVE-CHILD ( -- )
+   PINNED-STORE
+   s" x/archive/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task|-P|a" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/a
+f .dots/a/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/a/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/x
+d .dots/x/archive
+f .dots/x/archive/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-free-nested-archive-child" ' PINNED-FREE-NESTED-ARCHIVE-CHILD DOT-CASE
+
+: PINNED-FREE-SYMLINKED-DIR ( -- )
+   PINNED-STORE
+   s" ../outside/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" ../outside" s" linked" LINK
+   s" add|Task" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+l .dots/linked -> ../outside
+f .dots/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" pinned-free-symlinked-dir" ' PINNED-FREE-SYMLINKED-DIR DOT-CASE
+
+: PINNED-FREE-SYMLINKED-DIR-CHILD ( -- )
+   PINNED-STORE
+   s" ../outside/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" ../outside" s" linked" LINK
+   s" add|Task|-P|a" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/a
+f .dots/a/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/a/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+l .dots/linked -> ../outside
+" TREE=
+;
+s" pinned-free-symlinked-dir-child" ' PINNED-FREE-SYMLINKED-DIR-CHILD DOT-CASE
+
+: PINNED-FREE-DEPTH-11 ( -- )
+   PINNED-STORE
+   s" d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/d1
+d .dots/d1/d2
+d .dots/d1/d2/d3
+d .dots/d1/d2/d3/d4
+d .dots/d1/d2/d3/d4/d5
+d .dots/d1/d2/d3/d4/d5/d6
+d .dots/d1/d2/d3/d4/d5/d6/d7
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11
+f .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" pinned-free-depth-11" ' PINNED-FREE-DEPTH-11 DOT-CASE
+
+: PINNED-FREE-DEPTH-11-CHILD ( -- )
+   PINNED-STORE
+   s" d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task|-P|a" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/a
+f .dots/a/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/a/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/d1
+d .dots/d1/d2
+d .dots/d1/d2/d3
+d .dots/d1/d2/d3/d4
+d .dots/d1/d2/d3/d4/d5
+d .dots/d1/d2/d3/d4/d5/d6
+d .dots/d1/d2/d3/d4/d5/d6/d7
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11
+f .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-free-depth-11-child" ' PINNED-FREE-DEPTH-11-CHILD DOT-CASE
+
+: PINNED-FREE-EMPTY-FOLDER ( -- )
+   PINNED-STORE
+   s" .dots/x-task-5eed1d00" FILE$ MAKE-DIRS
+   s" add|Task" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/x-task-5eed1d00
+f .dots/x-task-5eed1d00/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" pinned-free-empty-folder" ' PINNED-FREE-EMPTY-FOLDER DOT-CASE
+
+: PINNED-FREE-EMPTY-FOLDER-CHILD ( -- )
+   PINNED-STORE
+   s" .dots/x-task-5eed1d00" FILE$ MAKE-DIRS
+   s" add|Task|-P|a" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/a
+f .dots/a/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/a/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/x-task-5eed1d00
+" TREE=
+;
+s" pinned-free-empty-folder-child" ' PINNED-FREE-EMPTY-FOLDER-CHILD DOT-CASE
+
 ;package
 ;using

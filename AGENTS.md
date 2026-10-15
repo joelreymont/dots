@@ -18,40 +18,18 @@ validated macOS arm64 build is 198,396 bytes.
 
 ## Test
 
-The parity harnesses use the adapted full Zig reference in
-`benchmark/zig-full/`, built with Zig 0.17. It has API compatibility changes
-and one duplicate-config ownership fix relative to the preserved `zig` branch.
-They run against synthetic stores in temporary directories and compare the
-Habu binary with the reference after every command:
+The integration harness is the one test suite:
 
 ```sh
-sh benchmark/build-zig.sh
-python3 test.py --full benchmark/bin/dot-zig-full-small bin/dot
-python3 edge_test.py benchmark/bin/dot-zig-full-small bin/dot
-python3 regression_fs_test.py bin/dot
-python3 regression_graph_test.py benchmark/bin/dot-zig-full-small bin/dot
-python3 regression_loading_test.py benchmark/bin/dot-zig-full-small bin/dot
-python3 regression_json_test.py bin/dot
-python3 regression_archive_test.py bin/dot
-python3 regression_slugify_test.py bin/dot
-python3 regression_io_test.py bin/dot
-python3 regression_concurrency_test.py bin/dot
 hb --load tests/run.f -- bin/dot
 ```
 
-The full harness checks exit status, stdout, stderr, and the complete `.dots`
-tree across command sequences. The edge harness checks large stores, unusual
-paths, JSONL import, configuration, and git index effects. The regression suites
-cover filesystem, graph/import, selective-loading, JSON, archive transitions,
-slugify failure recovery, I/O failures, and concurrent writers. The I/O suite
-uses the installed `hb` to load `main.f` and run JSONL import's read path,
-`IMPORT-JSONL`, on a directory whose read fails.
-The slugify suite uses `cc` for a deterministic rename-failure probe.
-Run all ten suites. Preserve exact differential checks except the explicitly
-asserted bug fixes documented in `docs/parity.md`. The accepted scope for JSONL
-priority is a signed i64 integer or an exactly integral decimal/exponent
-representation; see
-`docs/parity.md` for the bounded difference from the Zig parser.
+Each case seeds a synthetic store in a temporary directory, runs `bin/dot` in
+it and checks the exact exit status, stdout, stderr and resulting `.dots` tree.
+The run prints PASS or FAIL per case and exits 0 only when every case passed.
+The run compiles `tests/probe.c`, an interposer that pins add's random id
+and fails a rename mid-slugify, with `cc` and fails without it. `tests/dot.f` documents the case
+form.
 
 ## Source invariants
 
@@ -63,7 +41,6 @@ representation; see
 - Keep generated binaries and compiler cache out of commits. Update the size
   claim in README only after measuring a rebuilt, stripped binary on the same
   target platform.
-- Keep the adapted Zig source under `benchmark/` as a differential reference,
-  not as the product build. The root source and build are Habu.
+- The source and build are Habu; the Zig source stays on the `zig` branch.
 - Do not restore the Zig CI or release workflow without a verified Habu
   bootstrap and release process for every supported runner and target.

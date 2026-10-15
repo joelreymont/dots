@@ -1,6 +1,6 @@
-\ case-cli.f - invocation and diagnostics: help, version, the no-argument
-\ ready listing, quick add, every usage diagnostic, option parsing and the
-\ writer lock. Each case is one `dot` command on its own store.
+\ case-cli.f - invocation and diagnostics: help, version, command aliases, the
+\ no-argument ready listing, quick add, every usage diagnostic, option parsing
+\ and the writer lock. Each case is one `dot` command on its own store.
 require dot.f
 using DOT-T
 package DOT-CLI
@@ -125,6 +125,88 @@ d .dots/archive
 " TREE=
 ;
 s" hook-unknown" ' HOOK-UNKNOWN DOT-CASE
+
+\ Each alias runs its command: create is add, it on, done off and delete rm.
+: ALIAS-CREATE ( -- )
+   s" create|T|--json" RUN
+   s" A" SAVE-ID
+   s" A" s" alias-create-t-<hex>" ID=
+   0 RC=
+   s\" {\"id\":\"<A>\",\"title\":\"T\",\"description\":null,\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"created_at\":\"<time>\",\"closed_at\":null,\"close_reason\":null}\n" OUT=
+   s" " ERR=
+   s\" d .dots
+f .dots/<A>.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=alias-create
+.
+" TREE=
+;
+s" alias-create" ' ALIAS-CREATE DOT-CASE
+
+: ALIAS-IT ( -- )
+   s" t.md" s" T" s" open" 2 PUT-ISSUE
+   s" it|t" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/t.md
+  ---
+  title: T
+  status: active
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" alias-it" ' ALIAS-IT DOT-CASE
+
+: ALIAS-DONE ( -- )
+   s" t.md" s" T" s" open" 2 PUT-ISSUE
+   s" done|t|-r|shipped" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/archive/t.md
+  ---
+  title: T
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  close-reason: shipped
+  ---
+.
+" TREE=
+;
+s" alias-done" ' ALIAS-DONE DOT-CASE
+
+: ALIAS-DELETE ( -- )
+   s" t.md" s" T" s" open" 2 PUT-ISSUE
+   s" delete|t" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+" TREE=
+;
+s" alias-delete" ' ALIAS-DELETE DOT-CASE
 
 : NO-ARGS-READY-JSON ( -- )
    s" open.md" s" ---
