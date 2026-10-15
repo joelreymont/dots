@@ -18,12 +18,12 @@
 \ argument `@A` the id SAVE-ID captured as A. bin/dot runs with the store as
 \ its working directory, /dev/null as stdin, stdout and stderr in the files
 \ `out` and `err` beside `.dots`, and an environment of PATH, HOME and TZ=UTC
-\ only, for at most RUN-MS. TREE$ is the store's `.dots` in byte order, one
-\ line per entry: `d <path>`, `l <path> -> <target>`, `p <path>` for any other
-\ non-file, and `f <path>` followed by the file's lines, each indented two
-\ spaces, a `\` line when the bytes lack a final newline, and a `.` line. Every
-\ compared text is masked: each
-\ captured id reads `<A>`, `<B>`…, and each generated timestamp
+\ only, under umask 022, for at most RUN-MS. TREE$ is the store's `.dots` in
+\ byte order, one line per entry: `d <path>`, `l <path> -> <target>`,
+\ `p <path>` for any other non-file, and `f <path>` followed by the file's
+\ lines, each indented two spaces, a `\` line when the bytes lack a final
+\ newline, and a `.` line. Every compared text is masked: each captured id
+\ reads `<A>`, `<B>`…, and each generated timestamp
 \ (2026-10-15T11:05:55.731062+00:00) reads `<time>`.
 \
 \ A seed's path is relative to `.dots/`; `../<name>` reaches beside it. PUT
@@ -32,6 +32,13 @@
 \ in dot's frontmatter. MODE sets permission bits, `.` being `.dots` itself,
 \ and RM-DIR removes a directory tree: `s" archive" RM-DIR` leaves a store
 \ without an archive.
+\
+\ RUN-LIMITED runs dot as RUN does under tests/limit.f, which lets it write no
+\ byte to any file.
+\
+\ Beside RC=, OUT=, ERR= and TREE=, MODE= checks a path's permission bits,
+\ SAME-LINE that two files hold the same line under a prefix, unmasked, and
+\ DIR= a directory beside `.dots` in TREE$'s form.
 require src/lib/errors.f
 require src/lib/string.f
 require src/lib/byte-buffer.f
@@ -43,6 +50,7 @@ require src/lib/process.f
 require src/lib/process-argv.f
 require src/lib/process-env.f
 require src/lib/process-cwd.f
+require src/lib/engine-id.f
 require src/lib/fmt.f
 require src/lib/test/runner.f
 
@@ -54,9 +62,13 @@ package DOT-T
 512 constant ID-CAP                     \ main.f refuses a longer id
 64 constant NAME-CAP
 128 constant LABEL-CAP
+$12 constant UMASK                      \ 022: dot creates files rw-r--r--
+$1FF constant PERMISSIONS               \ a mode's rwxrwxrwx bits
 
 create DOT-BUF FS-PATH-CAP allot        \ bin/dot, absolute
 variable DOT-U
+create LIMIT-BUF FS-PATH-CAP allot      \ tests/limit.f, absolute
+variable LIMIT-U
 create STORE-BUF FS-PATH-CAP allot      \ the current case's store
 variable STORE-U
 create FILE-BUF FS-PATH-CAP allot       \ a path inside the store
@@ -280,17 +292,31 @@ variable BEST
    repeat drop
    at NAMES-U ! ;
 
-: TREE$ ( -- ptr u8 n )
+: SNAP$ ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
    SNAP BUF:CLEAR
    0 NAMES-U !
    STORE$ WALK-BUF FS-PATH-CAP WALK-U COPY!
    WALK-U @ 1+ REL-AT !
-   s" .dots" WALK-PUSH drop
+   a u WALK-PUSH drop
    WALK$ SYMLINK? WALK$ EXISTS? or if SNAP-ENTRY then
    SNAP B$ ;
 
+: TREE$ ( -- ptr u8 n ) s" .dots" SNAP$ ;
+
+\ The text's first line that starts with the prefix, else an empty span.
+: LINE-AT ( ptr u8 n ptr u8 n -- ptr u8 n ) {: a:ptr u:n p:ptr pu:n :}
+   0 begin dup u < while {: from:n :}
+      a u 10 from SPLIT-NEXT drop {: line:ptr lineu:n next:n :}
+      lineu pu >= if
+         line pu p pu STR= if line lineu exit then
+      then
+      next
+   repeat drop
+   a 0 ;
+
 PROCESS-SYMBOLS
 FUNCTION: MKFIFO-CALL mkfifo ( ptr u8 n -- i32 ) ;FUNCTION
+FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
 420 constant FIFO-MODE                  \ 0644
 
 \ ---- running dot ----------------------------------------------------------------
@@ -316,6 +342,20 @@ FUNCTION: MKFIFO-CALL mkfifo ( ptr u8 n -- i32 ) ;FUNCTION
 
 : CLOSE ( n -- )
    FS-ATOMIC:CLOSE-FD 0<> if E-FS-IO throw then ;
+
+\ Start the program in the store with the argv PROC-ARGV+ built.
+: LAUNCH ( ptr u8 n -- pid ) {: prog:ptr progu:n :}
+   s" PATH" ENV-COPY
+   s" HOME" ENV-COPY
+   s" TZ" >LEN s" UTC" >LEN PROC-ENV+
+   s" /dev/null" FS-PATHZ open-rd {: in:n :}
+   in 0 < if E-FS-OPEN throw then
+   s" out" OPEN-OUT {: out:n :}
+   s" err" OPEN-OUT {: err:n :}
+   prog progu >LEN STORE$ >LEN in >FD out >FD err >FD
+   PROC-CWD:SPAWN-ARGV-ENV-CWD-IO {: pid:pid :}
+   in CLOSE out CLOSE err CLOSE
+   pid ;
 
 \ `<section>/<case>`, the name PASS and FAIL lines give.
 : CASE$ ( -- ptr u8 n )
@@ -346,6 +386,9 @@ public
       SOURCE-ROOT:CWD$ a u DOT-BUF DOT-U JOIN!
    then
    DOT-BUF DOT-U @ FILE? 0= if s" tests/run.f: no dot binary at the argument" 2 die then
+   SOURCE-ROOT:CURRENT$ s" limit.f" LIMIT-BUF LIMIT-U JOIN!
+   LIMIT-BUF LIMIT-U @ FILE? 0= if s" tests/run.f: no tests/limit.f beside it" 2 die then
+   UMASK SET-UMASK drop
    TEXT 256 BUF:N>BLEN BUF:INIT
    SNAP 4096 BUF:N>BLEN BUF:INIT
    MASKED 4096 BUF:N>BLEN BUF:INIT ;
@@ -394,20 +437,10 @@ public
    path pathu TEXT B$ PUT ;
 
 \ Start bin/dot in the store with the |-separated arguments.
-: SPAWN ( ptr u8 n -- pid ) {: a:ptr u:n :}
+: SPAWN ( ptr u8 n -- pid )
    PROC-ARGV-ENV-RESET
-   a u ARGV+
-   s" PATH" ENV-COPY
-   s" HOME" ENV-COPY
-   s" TZ" >LEN s" UTC" >LEN PROC-ENV+
-   s" /dev/null" FS-PATHZ open-rd {: in:n :}
-   in 0 < if E-FS-OPEN throw then
-   s" out" OPEN-OUT {: out:n :}
-   s" err" OPEN-OUT {: err:n :}
-   DOT-BUF DOT-U @ >LEN STORE$ >LEN in >FD out >FD err >FD
-   PROC-CWD:SPAWN-ARGV-ENV-CWD-IO {: pid:pid :}
-   in CLOSE out CLOSE err CLOSE
-   pid ;
+   ARGV+
+   DOT-BUF DOT-U @ LAUNCH ;
 
 \ Wait for the child, at most RUN-MS, and keep its rc.
 : WAIT ( pid -- ) {: pid:pid :}
@@ -429,6 +462,16 @@ public
 
 : RUN ( ptr u8 n -- )
    SPAWN WAIT ;
+
+\ RUN under tests/limit.f, run by this hb.
+: RUN-LIMITED ( ptr u8 n -- )
+   PROC-ARGV-ENV-RESET
+   s" --load" >LEN PROC-ARGV+
+   LIMIT-BUF LIMIT-U @ >LEN PROC-ARGV+
+   s" --" >LEN PROC-ARGV+
+   DOT-BUF DOT-U @ >LEN PROC-ARGV+
+   ARGV+
+   ENGINE-ID:PATH$ LAUNCH WAIT ;
 
 \ The child is still running after ms: it waits on something the case holds.
 : WAITING ( pid n -- pid ) {: pid:pid ms:n :}
@@ -491,5 +534,20 @@ public
 
 : TREE= ( ptr u8 n -- ) {: want:ptr wantu:n :}
    TREE$ MASK want wantu s" tree" LABEL GT-CHECK$ ;
+
+\ The snapshot of a directory beside `.dots`, named as the store sees it.
+: DIR= ( ptr u8 n ptr u8 n -- ) {: a:ptr u:n want:ptr wantu:n :}
+   a u SNAP$ MASK want wantu s" dir" LABEL GT-CHECK$ ;
+
+: MODE= ( ptr u8 n n -- ) {: a:ptr u:n want:n :}
+   a u DOTS$ STAT-MODE PERMISSIONS and want s" mode" LABEL GT-CHECK-N ;
+
+\ `.dots/<a>` and `.dots/<b>` hold the same line under the prefix, unmasked:
+\ two times one command wrote.
+: SAME-LINE ( ptr u8 n ptr u8 n ptr u8 n -- ) {: a:ptr u:n b:ptr v:n p:ptr pu:n :}
+   a u DOTS$ READ-FILE p pu LINE-AT {: x:ptr xu:n :}
+   xu 0 > s" line" LABEL GT-CHECK
+   TEXT BUF:CLEAR x xu TEXT B+
+   b v DOTS$ READ-FILE p pu LINE-AT TEXT B$ s" same line" LABEL GT-CHECK$ ;
 
 ;package

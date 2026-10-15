@@ -9,4 +9,5 @@ require case-cli.f
 require case-read.f
 require case-layout.f
 require case-maint.f
+require case-status.f
 DOT-T:FINISH
