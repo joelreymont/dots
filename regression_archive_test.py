@@ -156,41 +156,69 @@ class ArchiveRegression(unittest.TestCase):
             (self.dots / path).write_bytes(issue(name.upper()))
         return family
 
-    def test_nested_family_lifecycle(self):
-        family = self._seed_nested_family()
-        for name in ('p', 'c', 'g'):
+    def _close_and_reopen_family(self, family, titles):
+        # family maps each id, root first and leaf last, to its file. No owner
+        # closes over an open child; members close in place until the root
+        # takes the whole folder to the archive, and the leaf brings it back.
+        root, *middle, leaf = family
+        before = {name: (self.dots / path).read_bytes() for name, path in family.items()}
+        for name in (root, *middle):
             result = self.run_dot('off', name)
             self.assertEqual((result.returncode, result.stderr),
                              (1, f'Cannot close {name}: children are not all closed\n'.encode()))
         for name, path in family.items():
-            self.assertEqual((self.dots / path).read_bytes(), issue(name.upper()))
+            self.assertEqual((self.dots / path).read_bytes(), before[name])
 
-        for name in ('l', 'g', 'c'):
+        for name in (leaf, *reversed(middle)):
             self.ok('off', name)
             self.assertIn(b'status: closed', (self.dots / family[name]).read_bytes())
             self.assertEqual(list((self.dots / 'archive').iterdir()), [])
 
-        self.ok('off', 'p')
-        self.assertFalse((self.dots / 'p').exists())
+        self.ok('off', root)
+        self.assertFalse((self.dots / root).exists())
         for name, path in family.items():
             self.assertIn(b'status: closed', (self.dots / 'archive' / path).read_bytes())
             shown = self.ok('show', name).stdout
-            self.assertTrue(shown.startswith(f'ID:       {name}\nTitle:    {name.upper()}\n'
+            self.assertTrue(shown.startswith(f'ID:       {name}\nTitle:    {titles[name]}\n'
                                              'Status:   done\n'.encode()), shown)
 
-        self.ok('on', 'l')
-        self.assertFalse((self.dots / 'archive/p').exists())
+        self.ok('on', leaf)
+        self.assertFalse((self.dots / 'archive' / root).exists())
         for name, path in family.items():
             content = (self.dots / path).read_bytes()
-            status = b'active' if name == 'l' else b'open'
+            status = b'active' if name == leaf else b'open'
             self.assertIn(b'status: ' + status + b'\n', content)
             self.assertNotIn(b'closed-at:', content)
 
+    def test_nested_family_lifecycle(self):
+        family = self._seed_nested_family()
+        self._close_and_reopen_family(family, {name: name.upper() for name in family})
         self.ok('off', 'l', 'g', 'c', 'p')
         self.assertTrue((self.dots / 'archive/p/c/g/l.md').exists())
         self.ok('purge')
         self.assertFalse((self.dots / 'p').exists())
         self.assertEqual(list((self.dots / 'archive').iterdir()), [])
+
+    def test_added_family_nests_in_own_folders(self):
+        # add -P files each child in its parent's own folder, first moving a
+        # parent without one into a new folder where its file lives.
+        titles = {}
+        parent = ()
+        for title in ('P', 'C', 'G', 'L'):
+            added = self.ok('add', title, *parent).stdout.decode().strip()
+            titles[added] = title
+            parent = ('-P', added)
+        p, c, g, l = titles
+        family = {p: f'{p}/{p}.md', c: f'{p}/{c}/{c}.md',
+                  g: f'{p}/{c}/{g}/{g}.md', l: f'{p}/{c}/{g}/{l}.md'}
+        self.assertEqual({str(path.relative_to(self.dots)) for path in self.dots.rglob('*.md')},
+                         set(family.values()))
+        self.assertEqual(self.ok('tree').stdout, f'[{p}] ○ P\n  └─ [{c}] ○ C\n'.encode())
+
+        self._close_and_reopen_family(family, titles)
+        self.ok('rm', l)
+        self.assertEqual({str(path.relative_to(self.dots)) for path in self.dots.rglob('*.md')},
+                         {family[p], family[c], family[g]})
 
     def test_nested_archived_child_reopens_beside_active_container(self):
         container = self.dots / 'container'

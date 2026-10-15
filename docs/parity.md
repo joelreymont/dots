@@ -184,7 +184,9 @@ A task with a parent closes in place; a parentless task moves to the archive
 with its whole folder. Reopening moves the top-most archived folder containing
 the target back and reopens its closed ancestors. Closing requires the
 descendants under the task's own folder, under `<partition>/<id>/` and, for an
-archived task, under `.dots/<id>/` to be closed at any depth. A folder
+archived task, under `.dots/<id>/` to be closed at any depth. `add -P` writes
+the child into the parent's own folder, first moving a parent without one from
+`D/p.md` to `D/p/p.md`, and refuses an archived parent. A folder
 `.dots/<id>/` whose task lives elsewhere, as Zig's `add -P` writes for a nested
 parent, still reads as that task's children; `tree` shows them as orphan
 roots, as Zig does. Habu finds a task at any depth the 512-byte path buffer
@@ -200,6 +202,8 @@ admits; Zig's search stops at 10 levels.
 | `rm` of an archived child | `Issue not found` | removes it | edge `rm-archived-child` |
 | `rm q` while an archived child blocks on `q` | `Issue not found` | removes `q` and the reference | edge `rm-archived-child-referencer` |
 | JSONL import blocking on an archived child | skips the dependency with a warning | keeps it | edge `import-block-archived-child` |
+| `add -P c` for `c` at `p/c.md` | keeps `p/c.md`, writes the child to `c/` | nests `c` and the child under `p/c/` | edge `add-nested-parent` |
+| `add -P p` for an archived `p` | writes the child to the active `p/` | `Parent issue is archived: p`, store unchanged | edge `add-archived-parent` |
 
 ## Deliberate behavior and limits
 

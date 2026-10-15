@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-from test import issue, normalize_full, put, tree_snapshot
+from test import issue, local_offset, normalize_full, put, tree_snapshot
 
 
 def seed(root, case):
@@ -101,6 +101,14 @@ def seed(root, case):
         put(root, 'config', 'prefix=p\n')
         put(root, 'archive.md', issue('Archive'))
         (root / '.dots' / 'archive').mkdir()
+    elif case == 'add-nested-parent':
+        put(root, 'config', 'prefix=p\n')
+        put(root, 'p/p.md', issue('P'))
+        put(root, 'p/c.md', issue('C'))
+    elif case == 'add-archived-parent':
+        # add writes config and the archive folder before it resolves -P.
+        put(root, 'config', 'prefix=p\n')
+        put(root, 'archive/p.md', issue('P', 'closed'))
     elif case == 'slugify-archived-parent':
         put(root, 'config', 'prefix=p\n')
         put(root, 'archive/a-12345678/a-12345678.md', issue('Archived parent', 'closed'))
@@ -298,11 +306,13 @@ def run(binary, root, command, case):
     if config_unique is not None:
         result['config_unique'] = config_unique
         result['config_values'] = config_values
-    return result
+    return result, ids
 
 
-def md_files(root):
-    return {str(path.relative_to(root / '.dots')): path.read_text()
+def md_files(root, ids=None):
+    """Task files by path under .dots, with generated ids and times normalized."""
+    return {normalize_full(str(path.relative_to(root / '.dots')), ids or {}):
+            normalize_full(path.read_text(), ids or {})
             for path in (root / '.dots').rglob('*.md')}
 
 
@@ -310,8 +320,9 @@ def md_files(root):
 # Zig's observed and Habu's (rc, stdout, stderr). Every task at any depth,
 # archived children included, is found, a nested folder's owner is a child of
 # the task enclosing it, and a deep child whose parent file is missing is an
-# orphan root. A read leaves both stores alike; CORRECTED_FILES
-# holds each side's task files after a write.
+# orphan root. add -P files the child in its parent's own folder and refuses an
+# archived parent. A read leaves both stores alike; CORRECTED_FILES holds each
+# side's task files after a write.
 CORRECTED = {
     'show-depth-eleven': (
         (1, '', 'Issue not found: leaf\n'),
@@ -330,11 +341,16 @@ CORRECTED = {
         (0, 'Imported 1 issues from import.jsonl\n',
          'Warning: skipped 1 dependencies due to errors\n'),
         (0, 'Imported 1 issues from import.jsonl\n', '')),
+    'add-nested-parent': ((0, 'p-kid-<random:A>\n', ''), (0, 'p-kid-<random:A>\n', '')),
+    'add-archived-parent': (
+        (0, 'p-kid-<random:A>\n', ''), (1, '', 'Parent issue is archived: p\n')),
 }
 ARCHIVED_CHILD = {'archive/p/p.md': issue('P', 'closed'),
                   'archive/p/c.md': issue('C', 'closed'), 'q.md': issue('Q')}
 IMPORTED_X = ('---\ntitle: X\nstatus: open\npriority: 1\nissue-type: task\n'
               'created-at: "2026-01-01T00:00:00Z"\n')
+ADDED_KID = ('---\ntitle: Kid\nstatus: open\npriority: 2\nissue-type: task\n'
+             f'created-at: "<generated-time>{local_offset()}"\n---\n')
 CORRECTED_FILES = {
     # Zig refuses before any write; Habu removes Q and its reference in C.
     'rm-archived-child-referencer': (
@@ -351,17 +367,26 @@ CORRECTED_FILES = {
     'import-block-archived-child': (
         dict(ARCHIVED_CHILD, **{'x.md': IMPORTED_X + '---\n'}),
         dict(ARCHIVED_CHILD, **{'x.md': IMPORTED_X + 'blocks:\n  - c\n---\n'})),
+    # Zig files the kid in .dots/c/ beside nested C; Habu nests C's own folder.
+    'add-nested-parent': (
+        {'p/p.md': issue('P'), 'p/c.md': issue('C'), 'c/p-kid-<random:A>.md': ADDED_KID},
+        {'p/p.md': issue('P'), 'p/c/c.md': issue('C'), 'p/c/p-kid-<random:A>.md': ADDED_KID}),
+    # Zig files the kid in the active .dots/p/; Habu refuses before any write.
+    'add-archived-parent': (
+        {'archive/p.md': issue('P', 'closed'), 'p/p-kid-<random:A>.md': ADDED_KID},
+        {'archive/p.md': issue('P', 'closed')}),
 }
 
 
-def corrected_case(case, roots, observed):
+def corrected_case(case, roots, observed, ids):
     for side, want in zip(observed, CORRECTED[case]):
         if (side['rc'], side['stdout_start'], side['stderr']) != want:
             return False
         if side['stdout_bytes'] != len(want[1].encode()):
             return False
     if case in CORRECTED_FILES:
-        return all(md_files(root) == want for root, want in zip(roots, CORRECTED_FILES[case]))
+        return all(md_files(root, side_ids) == want
+                   for root, side_ids, want in zip(roots, ids, CORRECTED_FILES[case]))
     return observed[0]['tree_sha256'] == observed[1]['tree_sha256']
 
 
@@ -448,6 +473,8 @@ def main():
         ('close-malformed-child', ['close', 'p']),
         ('import-archive-id', ['init', '--from-jsonl', 'import.jsonl']),
         ('add-parent-archive-id', ['add', 'Kid', '-P', 'archive']),
+        ('add-nested-parent', ['add', 'Kid', '-P', 'c']),
+        ('add-archived-parent', ['add', 'Kid', '-P', 'p']),
         ('slugify-archived-parent', ['slugify']),
         ('slugify-deep', ['slugify']),
         ('utf8-long-name', ['ls', '--json']),
@@ -504,17 +531,20 @@ def main():
     for case, command in cases:
         observed = []
         roots = []
+        ids = []
         for side, binary in enumerate(binaries):
             root = folder / str(side) / case / 'site'
             root.mkdir(parents=True)
             seed(root, case)
             roots.append(root)
-            observed.append(run(binary, root, command, case))
+            result, generated = run(binary, root, command, case)
+            observed.append(result)
+            ids.append(generated)
         same = observed[0] == observed[1]
         if case in ('slugify-archived-parent', 'slugify-deep'):
             same = corrected_slugify_case(case, roots, observed)
         if case in CORRECTED:
-            same = corrected_case(case, roots, observed)
+            same = corrected_case(case, roots, observed, ids)
         if case == 'close-malformed-child':
             # Failure must preserve the parent; Zig rewrites it as closed.
             same = all(side['rc'] == 1 and side['stdout_bytes'] == 0 and
@@ -547,6 +577,12 @@ def main():
                              files[1] == ['archive', 'archive.md', 'config'] and
                              (roots[1] / '.dots/archive.md').read_text() == issue('Archive') and
                              (roots[1] / '.dots/config').read_text() == 'prefix=p\n')
+        if case == 'add-archived-parent':
+            # Only the seeded config, archive and closed P remain.
+            habu_dots = roots[1] / '.dots'
+            same = same and (sorted(str(p.relative_to(habu_dots)) for p in habu_dots.rglob('*')) ==
+                             ['archive', 'archive/p.md', 'config'] and
+                             (habu_dots / 'config').read_text() == 'prefix=p\n')
         if case == 'multi-off-time':
             same = same and all(side['same_closed_at'] for side in observed)
         if case == 'rewrite-mode':

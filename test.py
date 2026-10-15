@@ -246,67 +246,6 @@ FULL_SEQUENCES = [
         (['show', '@P'], None), (['show', '@C'], None),
         (['rm', '@P'], None), (['ls', '--json'], None),
     ]),
-    # Nested C and G keep their children in top-level folders named after them.
-    # Zig's fix, and archiving P while C exists, strand those folders: not run.
-    ('grandchild', 'empty', [
-        (['init'], None), (['add', 'Parent task'], 'P'),
-        (['add', 'Child task', '-P', '@P'], 'C'),
-        (['add', 'Grandchild task', '-P', '@C'], 'G'),
-        (['add', 'Leaf task', '-P', '@G'], 'L'),
-        (['tree'], None), (['tree', '@C'], None), (['tree', '@G'], None),
-        (['ready'], None), (['show', '@C'], None), (['ls', '--json'], None),
-        (['off', '@C', '-r', 'early'], None), (['done', '@C'], None),
-        (['close', '@C', '--reason', 'early'], None),
-        (['update', '@C', '--status', 'done'], None),
-        (['off', '@P'], None), (['off', '@G'], None),
-        (['off', '@L', '-r', 'leaf done'], None), (['off', '@G'], None),
-        (['tree', '@C'], None), (['update', '@C', '--status', 'done'], None),
-        (['tree', '@P'], None), (['show', '@C'], None),
-        (['on', '@C'], None), (['close', '@C', '--reason', 'child done'], None),
-        (['on', '@C'], None), (['done', '@C', '-r', 'again'], None),
-        (['on', '@L'], None), (['on', '@C'], None), (['off', '@C'], None),
-        (['tree'], None), (['tree', '@G'], None), (['ready'], None),
-        (['slugify'], None), (['rm', '@C'], None), (['tree'], None),
-        (['ls', '--json'], None), (['show', '@G'], None), (['tree', '@G'], None),
-        (['off', '@P'], None), (['on', '@G'], None), (['tree'], None),
-        (['purge'], None), (['show', '@P'], None),
-    ]),
-    # add -P puts children of archived P and Q in the active .dots/<id>/.
-    # Reopening P meets that folder as a competing destination, asserted in
-    # regression_archive_test.py. Fix runs once P is gone: beside an archived
-    # parent it would detach the children.
-    ('archived-parent', 'empty', [
-        (['init'], None), (['add', 'Parent task'], 'P'),
-        (['add', 'Child task', '-P', '@P'], 'C'),
-        (['off', '@C'], None), (['off', '@P'], None),
-        (['add', 'Extra task', '-P', '@P'], 'X'),
-        (['add', 'Waiting task', '-a', '@X'], 'W'),
-        (['tree'], None), (['tree', '@P'], None), (['show', '@P'], None),
-        (['ready'], None), (['ls'], None),
-        (['off', '@P'], None), (['close', '@P', '--reason', 'early'], None),
-        (['update', '@P', '--status', 'done'], None),
-        (['on', '@X'], None), (['off', '@P'], None),
-        (['off', '@X', '-r', 'extra done'], None),
-        (['tree'], None), (['tree', '@P'], None), (['show', '@P'], None),
-        (['ready'], None), (['ls'], None),
-        (['off', '@P'], None), (['close', '@P', '--reason', 'all done'], None),
-        (['update', '@P', '--status', 'done'], None), (['show', '@P'], None),
-        (['on', '@X'], None), (['slugify'], None), (['rm', '@P'], None),
-        (['ready'], None), (['fix'], None), (['tree'], None),
-        (['rm', '@X'], None), (['ready'], None),
-        (['add', 'Plain task'], 'Q'), (['off', '@Q'], None),
-        (['add', 'Late task', '-P', '@Q'], 'Y'), (['off', '@Q'], None),
-        (['on', '@Q'], None), (['tree'], None), (['off', '@Q'], None),
-        (['off', '@Y'], None), (['off', '@Q'], None), (['purge'], None),
-        (['ls', '--json'], None),
-    ]),
-    # Reopening Q puts its file beside the active .dots/<q>/ holding Y.
-    # Removing Q deletes only that file: Y and W's dependency on it remain.
-    ('reopened-parent', 'empty', [
-        (['add', 'Plain task'], 'Q'), (['off', '@Q'], None),
-        (['add', 'Late task', '-P', '@Q'], 'Y'), (['on', '@Q'], None),
-        (['add', 'Waiting task', '-a', '@Y'], 'W'), (['rm', '@Q'], None),
-    ]),
     ('aliases', 'empty', [
         (['Quick title'], 'Q'), (['it', '@Q'], None),
         (['done', '@Q', '-r', 'shipped'], None), (['delete', '@Q'], None),

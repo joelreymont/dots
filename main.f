@@ -1183,16 +1183,19 @@ variable PARENT-IDX
    0 SCAN-NAMES-U !
    s" .dots" 0 PATH-AT swap BYTE-COPY
    0 s" .dots" nip id iu SEARCH-DIR ;
-: MAKE-CHILD-FOLDER ( n -- )
+\ A parent without its own folder gets one where its file lives: D/p.md moves
+\ to D/p/p.md, D being a partition root or the own folder of p's parent.
+: ENSURE-OWN-FOLDER ( n -- )
    {: parent:n :}
-   SB-RESET s" .dots/" SB-APPEND parent F-ID FIELD$ SB-APPEND SB$ PATH-ONE!
+   parent OWN-FOLDER? if exit then
+   parent F-PATH FIELD$ {: path:ptr pu:n :}
+   pu path pu BASENAME nip - {: dir-u:n :}
+   SB-RESET path dir-u SB-APPEND parent F-ID FIELD$ SB-APPEND SB$ PATH-ONE!
    PATH-ONE$ MAKE-DIRS
-   SB-RESET PATH-ONE$ SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
-   PATH-TWO$ FILE? if
-      SB-RESET PATH-ONE$ SB-APPEND 47 SB-APPEND-C
-      parent F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$ PATH-ONE!
-      PATH-TWO$ PATH-ONE$ RENAME-FILE
-   then ;
+   SB-RESET PATH-ONE$ SB-APPEND 47 SB-APPEND-C
+   parent F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
+   path pu PATH-TWO$ RENAME-ISSUE-NOREPLACE
+   PATH-TWO$ parent F-PATH FIELD! ;
 : PARSE-ADD ( n -- )
    ARG-I !
    0 TITLE-U ! 0 DESC-U ! 0 PARENT-U ! 0 AFTER-U !
@@ -1236,7 +1239,11 @@ variable PARENT-IDX
    AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ s" After issue not found: " RESOLVE-LABELED AFTER-IDX ! then
    -1 PARENT-IDX !
    PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ s" Parent issue not found: " RESOLVE-LABELED PARENT-IDX ! then
-   PARENT-IDX @ -1 <> if PARENT-IDX @ F-ID FIELD$ CREATABLE-ID? 0= s" Invalid issue id" ?FAIL then
+   PARENT-IDX @ -1 <> if
+      PARENT-IDX @ F-ID FIELD$ CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
+      PARENT-IDX @ F-ARCHIVED REC-CELL @ 0<>
+      s" Parent issue is archived: " PARENT-A @ PARENT-U @ ?ISSUE-ERROR
+   then
    TITLE-A @ TITLE-U @ NEW-ID$ 2dup CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
    NEW-RECORD {: idx:n :}
    idx F-ID FIELD$ ID-TAKEN? s" Issue already exists" ?FAIL
@@ -1249,15 +1256,18 @@ variable PARENT-IDX
       0 BLOCK-BUF BLOCK-U @ idx F-BLOCKS FIELD!
    then
    PARENT-IDX @ -1 <> if
-      PARENT-IDX @ MAKE-CHILD-FOLDER
+      PARENT-IDX @ ENSURE-OWN-FOLDER
       PARENT-IDX @ F-ID FIELD$ idx F-PARENT FIELD!
       1 idx F-CHILD REC-CELL !
    then
-   SB-RESET s" .dots/" SB-APPEND
-   PARENT-IDX @ -1 <> if PARENT-IDX @ F-ID FIELD$ SB-APPEND 47 SB-APPEND-C then
-   idx F-ID FIELD$ SB-APPEND
-   \ With no parent, a folder already named after the task holds it.
-   PARENT-IDX @ -1 = if
+   \ A child goes in its parent's own folder. With no parent, a folder already
+   \ named after the task holds it.
+   SB-RESET
+   PARENT-IDX @ -1 <> if
+      PARENT-IDX @ F-PATH FIELD$ drop PARENT-IDX @ OWN-FOLDER-U SB-APPEND
+      47 SB-APPEND-C idx F-ID FIELD$ SB-APPEND
+   else
+      s" .dots/" SB-APPEND idx F-ID FIELD$ SB-APPEND
       SB$ DIR? if 47 SB-APPEND-C idx F-ID FIELD$ SB-APPEND then
    then
    s" .md" SB-APPEND SB$
@@ -1294,9 +1304,9 @@ variable CLOSED-TIME-U
    path du dir du STR= 0= if false exit then
    path du + c@ 47 = ;
 \ A task's descendants are the records, at any depth, under its own folder and
-\ under the folder named after it at the top of its partition, where add -P
-\ puts its children. An archived task also has those under the active
-\ .dots/<id>/.
+\ under its legacy folder, the one named after it at the top of its partition,
+\ where add -P used to put its children. An archived task also has those under
+\ the active .dots/<id>/.
 : STATUS-DESCENDANT? ( n n -- bool )
    {: child:n parent:n :}
    child parent = if false exit then
@@ -2112,9 +2122,9 @@ variable SLUG-PATH-U
          i F-PATH FIELD$ SLUG-CHILD-FROM$ STATUS-UNDER? if true unloop exit then
       then
    loop false ;
-\ add -P puts a task's children in the active .dots/<id>/ wherever its own
-\ file lives, and that folder takes the new ID with the task. The archive
-\ directory is never a child folder.
+\ A task's legacy .dots/<id>/, where add -P used to put its children wherever
+\ its own file lived, takes the new ID with the task. The archive directory is
+\ never a child folder.
 : SLUG-CHILD-MOVES? ( -- bool )
    SLUG-CHILD-FROM$ s" .dots/archive" STR= if false exit then
    SLUG-CHILD-FROM$ SYMLINK? if false exit then

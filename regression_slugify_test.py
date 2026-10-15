@@ -331,8 +331,8 @@ class SlugifyRegression(unittest.TestCase):
         self.assertEqual(self.run_dot().stdout, b'Slugified 0 issue(s)\n')
 
     def test_child_folder_follows_renamed_parent(self):
-        # add -P files children in the active .dots/<id>/ wherever the parent
-        # lives: archived with its own children, a plain file, or nested.
+        # A legacy .dots/<id>/ holds children wherever the parent lives:
+        # archived with its own children, a plain file, or nested.
         old, new = 'parent-bbbbcccc', 'case-parent-task-bbbbcccc'
         child = f'{new}/case-extra-task-ddddeeee.md'
         layouts = {
