@@ -12,4 +12,5 @@ require case-maint.f
 require case-status.f
 require case-add.f
 require case-slug.f
+require case-import.f
 DOT-T:FINISH

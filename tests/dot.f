@@ -31,7 +31,8 @@
 \ directories above it; PUT-FIFO makes a named pipe and PUT-ISSUE writes a task
 \ in dot's frontmatter. MODE sets permission bits, `.` being `.dots` itself,
 \ and RM-DIR removes a directory tree: `s" archive" RM-DIR` leaves a store
-\ without an archive.
+\ without an archive. FILE$ is a path beside `.dots` for a Habu fs word no seed
+\ covers: `s" .git" FILE$ MAKE-DIRS`.
 \
 \ SAVE-ID captures the id on stdout's first line: the whole line, as add prints
 \ it, or the `id` of the JSON object `add --json` prints. ID= states a captured
@@ -42,7 +43,9 @@
 \
 \ RUN-LIMITED runs dot as RUN does under tests/limit.f, which lets it write no
 \ byte to any file. GIT runs git in the store as RUN runs dot, so RC=, OUT= and
-\ ERR= check git's rc and output.
+\ ERR= check git's rc and output. RUN-HB runs `hb --load <script> -- <main.f>`
+\ as RUN runs bin/dot, for a probe script that loads dot's source to reach a
+\ path no command can.
 \
 \ Beside RC=, OUT=, ERR= and TREE=, MODE= checks a path's permission bits,
 \ SAME-LINE that two files hold the same line under a prefix, unmasked, and
@@ -83,6 +86,9 @@ create STORE-BUF FS-PATH-CAP allot      \ the current case's store
 variable STORE-U
 create FILE-BUF FS-PATH-CAP allot       \ a path inside the store
 variable FILE-U
+create REPO-BUF FS-PATH-CAP allot       \ a path inside the repository
+variable REPO-U
+create HB-BUF FS-PATH-CAP allot         \ the installed hb, absolute
 create WALK-BUF FS-PATH-CAP allot       \ the entry TREE$ visits
 variable WALK-U
 variable REL-AT                         \ where WALK-BUF's store-relative path starts
@@ -129,6 +135,12 @@ variable NAMES-U
 : FILE$ ( ptr u8 n -- ptr u8 n )
    STORE$ 2swap FILE-BUF FILE-U JOIN!
    FILE-BUF FILE-U @ ;
+
+\ A path inside the repository, the directory the run started in; the next
+\ call reuses the buffer.
+: REPO$ ( ptr u8 n -- ptr u8 n )
+   SOURCE-ROOT:CWD$ 2swap REPO-BUF REPO-U JOIN!
+   REPO-BUF REPO-U @ ;
 
 : DOTS$ ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
    SB-RESET s" .dots/" SB-APPEND a u SB-APPEND SB$ FILE$ ;
@@ -481,6 +493,9 @@ public
    s\" \ncreated-at: 2026-01-01T00:00:00Z\n---\n" TEXT B+
    path pathu TEXT B$ PUT ;
 
+\ A path beside `.dots` for a Habu fs word no seed covers.
+EXPORT FILE$
+
 \ Start bin/dot in the store with the |-separated arguments.
 : SPAWN ( ptr u8 n -- pid )
    PROC-ARGV-ENV-RESET
@@ -524,6 +539,17 @@ public
    PROC-ARGV-ENV-RESET
    a u ARGV+
    GIT-BUF gu LAUNCH WAIT ;
+
+\ Run `hb --load <script> -- <main.f>` in the store as RUN runs bin/dot, the
+\ script a path from the repository root: a probe that loads dot's source.
+: RUN-HB ( ptr u8 n -- ) {: a:ptr u:n :}
+   PROC-ARGV-ENV-RESET
+   s" --load" >LEN PROC-ARGV+
+   a u REPO$ >LEN PROC-ARGV+
+   s" --" >LEN PROC-ARGV+
+   s" main.f" REPO$ >LEN PROC-ARGV+
+   s" hb" >LEN HB-BUF RESOLVE-EXECUTABLE LEN>N {: hbu:n :}
+   HB-BUF hbu LAUNCH WAIT ;
 
 \ The child is still running after ms: it waits on something the case holds.
 : WAITING ( pid n -- pid ) {: pid:pid ms:n :}
