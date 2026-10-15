@@ -698,6 +698,59 @@ f .dots/archive/p.md
 ;
 s" archived-parent" ' ARCHIVED-PARENT DOT-CASE
 
+: CLOSED-PARENT ( -- )
+   PREFIX-X
+   s" p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" add|Kid|-P|c" RUN
+   1 RC=
+   s" " OUT=
+   s\" Parent issue is closed: c\n" ERR=
+   s" d .dots
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" closed-parent" ' CLOSED-PARENT DOT-CASE
+
+: MALFORMED-PARENT ( -- )
+   PREFIX-X
+   s" c.md" s\" not frontmatter\n" PUT
+   s" add|Kid|-P|c" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
+   s" d .dots
+d .dots/archive
+f .dots/c.md
+  not frontmatter
+.
+f .dots/config
+  prefix=x
+.
+" TREE=
+;
+s" malformed-parent" ' MALFORMED-PARENT DOT-CASE
+
 \ A config without a prefix gains one; its other keys stay, a repeated key
 \ once, with its last value.
 : CONFIG-KEYS ( -- )

@@ -374,8 +374,8 @@ DYNAMIC-BUFFER SORT-BUF n
       end
    loop drop false ;
 \ Below is set under a directory a key starts and owner for a folder's own
-\ file in the archive. With SCAN-FAMILY these are kept: the descendants and the
-\ archived ancestors a status change reaches.
+\ file. With SCAN-FAMILY these are kept: the descendants and the ancestors a
+\ status change reaches.
 : SCAN-KEEP? ( ptr u8 n bool bool -- bool )
    {: id:ptr iu:n below:bool owner:bool :}
    SCAN-KEYED @ 0= below or if true exit then
@@ -417,7 +417,7 @@ DYNAMIC-BUFFER SORT-BUF n
             name nu 3 - {: id:ptr iu:n :}
             depth 0 > if dir du id iu STR= else false then {: owner:bool :}
             depth 0 > owner 0= and owner depth 1 > and or {: has-parent:bool :}
-            id iu below archived owner and SCAN-KEEP? if
+            id iu below owner SCAN-KEEP? if
                child child-u id iu archived has-parent PARSE-FILE
                has-parent if
                   owner if path plen du - 1- BASENAME else dir du then
@@ -1296,6 +1296,10 @@ variable PARENT-IDX
       PARENT-IDX @ F-ID FIELD$ CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
       PARENT-IDX @ F-ARCHIVED REC-CELL @ 0<>
       s" Parent issue is archived: " PARENT-A @ PARENT-U @ ?ISSUE-ERROR
+      PARENT-IDX @ PARSE-RECORD
+      PARENT-IDX @ CHECK-ERROR
+      PARENT-IDX @ F-STATUS REC-CELL @ 2 =
+      s" Parent issue is closed: " PARENT-A @ PARENT-U @ ?ISSUE-ERROR
    then
    TITLE-A @ TITLE-U @ NEW-ID$ 2dup CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
    NEW-RECORD {: idx:n :}
@@ -1502,15 +1506,18 @@ variable REOPEN-PARENT-KEEP-U
    REOPEN-N @ REOPEN-MAX >= ?CAP-FAIL
    REOPEN-N @ cells REOPEN-INDICES + !
    1 REOPEN-N +! ;
+\ The records a reopen changes: the closed ancestors in the target's partition,
+\ each the owner of a folder holding it, then the target.
 : REOPEN-COLLECT ( n -- )
    {: idx:n :}
    0 REOPEN-N !
+   idx F-ARCHIVED REC-CELL @ {: archived:n :}
    ISSUE-N @ 0 ?do
-      i idx <> i F-ARCHIVED REC-CELL @ 0<> and i OWN-FOLDER? and if
+      i idx <> i F-ARCHIVED REC-CELL @ archived = and i OWN-FOLDER? and if
          i F-PATH FIELD$ {: path:ptr pu:n :}
          path pu STATUS-DIR-U {: dir-u:n :}
          idx F-PATH FIELD$ path dir-u STATUS-IN-SUBTREE? if
-            path pu ASSERT-ARCHIVE-PATH-REAL
+            archived 0<> if path pu ASSERT-ARCHIVE-PATH-REAL then
             i PARSE-RECORD
             i CHECK-ERROR
             i F-STATUS REC-CELL @ 2 = if i REOPEN-ADD then
@@ -1600,11 +1607,13 @@ variable REOPEN-PARENT-KEEP-U
    loop ;
 : REOPEN-WRITE-ALL ( -- )
    REOPEN-N @ 0 ?do i REOPEN-INDEX SAVE-RECORD-THROW loop ;
-: REOPEN-FINISH ( -- )
-   REOPEN-SOURCE$ REOPEN-DEST$ REBASE-STATUS-SUBTREE
+: REOPEN-RECORDS ( -- )
    REOPEN-STAGE-ALL
    REOPEN-CHANGE-RECORDS
    REOPEN-WRITE-ALL ;
+: REOPEN-FINISH ( -- )
+   REOPEN-SOURCE$ REOPEN-DEST$ REBASE-STATUS-SUBTREE
+   REOPEN-RECORDS ;
 : REOPEN-RESTORE ( -- )
    REOPEN-BACKUPS @ 0 ?do
       i REOPEN-BACKUP$ i REOPEN-INDEX F-PATH FIELD$ RENAME-ISSUE
@@ -1641,6 +1650,16 @@ variable REOPEN-PARENT-KEEP-U
       code REPORT-FAILURE
    then
    REOPEN-CLEAN-BACKUPS ;
+\ An active target's closed ancestors reopen where they lie, its whole family
+\ written from staged copies that a failed write restores.
+: REOPEN-IN-PLACE ( n n -- )
+   REOPEN-WANTED-STATUS ! REOPEN-TARGET !
+   [: REOPEN-RECORDS ;] catch {: code:n :}
+   code 0<> if
+      REOPEN-RESTORE
+      code REPORT-ISSUE-WRITE-ERROR
+   then
+   REOPEN-CLEAN-BACKUPS ;
 variable STATUS-SAVE-IDX
 : STATUS-CHANGE ( n n -- )
    {: idx:n status:n :}
@@ -1652,6 +1671,10 @@ variable STATUS-SAVE-IDX
    idx CHECK-PATH
    idx CHECK-ERROR
    status 2 = idx F-STATUS REC-CELL @ 2 = and if exit then
+   status 2 <> if
+      idx REOPEN-COLLECT
+      REOPEN-N @ 1 > if idx status REOPEN-IN-PLACE exit then
+   then
    idx F-ARCHIVED REC-CELL @ 0<> if ASSERT-ARCHIVE-REAL then
    status 2 = if
       idx LOAD-STATUS-CHILDREN
@@ -1835,12 +1858,14 @@ variable STATUS-SAVE-IDX
    dup 0 = if drop s" ○" exit then
    dup 1 = if drop s" >" exit then
    drop s" ✓" ;
-\ The tree index, built once after SORT-ISSUES. Per record: the first of its
-\ children and its next sibling, -1 ending a list.
+\ The tree index, built once after SORT-ISSUES. Per record: its parent, the
+\ first of its children and its next sibling, -1 for none and ending a list.
 \ TREE-SLOT interleaves two open-addressed tables of TREE-CAP slots, each
 \ holding a record index + 1 (0 empty): PATH-KEYS by F-PATH among non-error
-\ records and ID-KEYS by F-ID among all records. The first record per key
-\ owns the slot, so records sharing an ID share one child list.
+\ records and ID-KEYS by F-ID among valid active records. The first record per
+\ key owns the slot.
+DYNAMIC-BUFFER TREE-UP n
+DYNAMIC-BUFFER TREE-SEEN n
 DYNAMIC-BUFFER TREE-HEAD n
 DYNAMIC-BUFFER TREE-NEXT n
 DYNAMIC-BUFFER TREE-SLOT n
@@ -1877,59 +1902,100 @@ variable TREE-CAP
    {: idx:n :}
    idx F-ERROR REC-CELL @ 0= idx F-ARCHIVED REC-CELL @ 0= and
    idx F-CHILD REC-CELL @ 0<> and ;
+\ A child's parent is the valid record at its parent file, <parent>.md in the
+\ enclosing folder named after the parent: the child's own directory, or the
+\ one above a folder's own task. A folder at the top of .dots is also the
+\ parent's legacy folder: without that file, the parent is the first valid
+\ active record with its id. Any other child is an orphan root.
+: TREE-PARENT ( n -- n )
+   {: idx:n :}
+   idx TREE-CHILD? 0= if -1 exit then
+   idx F-PATH FIELD$ {: path:ptr pu:n :}
+   path pu STATUS-DIR-U {: dir-u:n :}
+   idx OWN-FOLDER? if path dir-u STATUS-DIR-U else dir-u then {: at-u:n :}
+   SB-RESET path at-u SB-APPEND 47 SB-APPEND-C
+   idx F-PARENT FIELD$ SB-APPEND s" .md" SB-APPEND SB$ PATH-KEYS TREE-GET
+   dup 0 >= if exit then drop
+   path at-u STATUS-DIR-U s" .dots" nip <> if -1 exit then
+   idx F-PARENT FIELD$ ID-KEYS TREE-GET ;
+\ Legacy parents can close a loop in a hand-made store: `.dots/p/x.md` beside
+\ `.dots/x/p.md`. Walking up from each record in ORDER, a walk that meets its
+\ own trail cuts the loop there, and the record it met becomes a root.
+: TREE-CUT-LOOPS ( -- )
+   ISSUE-N @ 0 ?do -1 i TREE-SEEN ! loop
+   ISSUE-N @ 0 ?do
+      i ORDER @ {: start:n :}
+      start begin dup 0 >= if dup TREE-SEEN @ 0< else false then while
+         start over TREE-SEEN ! TREE-UP @
+      repeat {: at:n :}
+      at 0 >= if at TREE-SEEN @ start = if -1 at TREE-UP ! then then
+   loop ;
 : TREE-INDEX ( -- )
    ISSUE-N @ {: count:n :}
    2 begin dup count 2 * < while 2 * repeat {: cap:n :}
    cap TREE-CAP !
+   count TREE-UP-RESERVE count TREE-SEEN-RESERVE
    count TREE-HEAD-RESERVE count TREE-NEXT-RESERVE
    cap 2 * TREE-SLOT-RESERVE
    cap 2 * 0 ?do 0 i TREE-SLOT ! loop
    count 0 ?do
       -1 i TREE-HEAD !
-      i ID-KEYS TREE-ADD
-      i F-ERROR REC-CELL @ 0= if i PATH-KEYS TREE-ADD then
+      i F-ERROR REC-CELL @ 0= if
+         i PATH-KEYS TREE-ADD
+         i F-ARCHIVED REC-CELL @ 0= if i ID-KEYS TREE-ADD then
+      then
    loop
+   count 0 ?do i TREE-PARENT i TREE-UP ! loop
+   TREE-CUT-LOOPS
    \ Prepend in reverse ORDER so every child list runs in ORDER.
    count 0 ?do
       count i - 1- ORDER @ {: child:n :}
-      child TREE-CHILD? if
-         child F-PARENT FIELD$ ID-KEYS TREE-GET {: parent:n :}
-         parent 0 >= if
-            parent TREE-HEAD @ child TREE-NEXT !
-            child parent TREE-HEAD !
-         then
+      child TREE-UP @ {: parent:n :}
+      parent 0 >= if
+         parent TREE-HEAD @ child TREE-NEXT !
+         child parent TREE-HEAD !
       then
    loop ;
-\ A child's parent file lies in the directory named after the parent that
-\ encloses it: the child's own directory, or the one above a folder's own task.
-: ATTACH-FILE$ ( n -- ptr u8 n )
-   {: idx:n :}
-   idx F-PATH FIELD$ {: path:ptr pu:n :}
-   path pu STATUS-DIR-U {: dir-u:n :}
-   idx OWN-FOLDER? if path dir-u STATUS-DIR-U else dir-u then {: at-u:n :}
-   SB-RESET path at-u SB-APPEND 47 SB-APPEND-C
-   idx F-PARENT FIELD$ SB-APPEND s" .md" SB-APPEND SB$ ;
-\ A child is attached when a valid record holds its parent file; any other
-\ open child is an orphan root, as is every open task without a parent.
+\ Every open, valid active task without a parent is a root.
 : TREE-ROOT? ( n -- bool )
    {: idx:n :}
    idx F-ARCHIVED REC-CELL @ 0<> idx F-ERROR REC-CELL @ 0<> or if false exit then
    idx F-STATUS REC-CELL @ 2 = if false exit then
-   idx F-PARENT FIELD$ nip 0= if true exit then
-   idx ATTACH-FILE$ PATH-KEYS TREE-GET 0< ;
-: PRINT-TREE-ROOT ( n -- )
-   {: idx:n :}
+   idx TREE-UP @ 0< ;
+\ A task at depth d below the tree's root: 2·d spaces and `└─ `, then its row,
+\ which notes an open blocker.
+: PRINT-TREE-ROW ( n n -- )
+   {: idx:n depth:n :}
+   depth 0 ?do s"   " DOT-IO:PRINT loop
+   depth 0 > if s" └─ " DOT-IO:PRINT then
    91 DOT-IO:PRINT-BYTE idx F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
    idx F-STATUS REC-CELL @ STATUS-SYMBOL DOT-IO:PRINT 32 DOT-IO:PRINT-BYTE
-   idx F-TITLE FIELD$ DOT-IO:PRINTLN
-   idx F-ID FIELD$ ID-KEYS TREE-GET TREE-HEAD @ begin dup 0 >= while
-      {: child:n :}
-      s"   └─ [" DOT-IO:PRINT child F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
-      child F-STATUS REC-CELL @ STATUS-SYMBOL DOT-IO:PRINT 32 DOT-IO:PRINT-BYTE
-      child F-TITLE FIELD$ DOT-IO:PRINT
-      child BLOCKED? if s"  (blocked)" DOT-IO:PRINT then DOT-IO:NL
-      child TREE-NEXT @
-   repeat drop ;
+   idx F-TITLE FIELD$ DOT-IO:PRINT
+   depth 0 > if idx BLOCKED? if s"  (blocked)" DOT-IO:PRINT then then
+   DOT-IO:NL ;
+\ The row after a task without children: the next sibling of the task or of its
+\ nearest ancestor below root that has one, -1 once the walk is back at root.
+: TREE-SUCCESSOR ( n n n -- n n )
+   {: idx:n depth:n root:n :}
+   idx depth begin
+      {: at:n d:n :}
+      at root = if -1 0 exit then
+      at TREE-NEXT @ dup 0 >= if d exit then drop
+      at TREE-UP @ d 1-
+   again ;
+\ The task and every descendant in pre-order, children in ORDER. The walk
+\ follows the forest TREE-INDEX built, so a chain as long as the store needs
+\ neither a stack nor a depth limit.
+: PRINT-TREE-ROOT ( n -- )
+   {: root:n :}
+   root 0 begin
+      {: idx:n depth:n :}
+      idx depth PRINT-TREE-ROW
+      idx TREE-HEAD @ dup 0 >= if depth 1+ else
+         drop idx depth root TREE-SUCCESSOR
+      then
+      over 0<
+   until 2drop ;
 : TREE-COMMAND ( -- )
    FIND-HELP? if TREE-HELP exit then
    script-argc 2 > s" Usage: dot tree [id]" ?FAIL

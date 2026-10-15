@@ -293,6 +293,66 @@ f .dots/p/p.md
 ;
 s" on-owner-in-place" ' ON-OWNER-IN-PLACE DOT-CASE
 
+\ Reopening L reopens its closed ancestors where they lie, and tree shows the
+\ whole chain.
+: ON-REOPENS-CLOSED-ANCESTORS ( -- )
+   s" closed" s" closed" s" closed" FAMILY
+   s" on|l" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s" tree" RUN
+   0 RC=
+   s" [p] ○ P
+  └─ [c] ○ C
+    └─ [g] ○ G
+      └─ [l] > L
+" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+d .dots/p/c
+f .dots/p/c/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+d .dots/p/c/g
+f .dots/p/c/g/g.md
+  ---
+  title: G
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/c/g/l.md
+  ---
+  title: L
+  status: active
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" on-reopens-closed-ancestors" ' ON-REOPENS-CLOSED-ANCESTORS DOT-CASE
+
 : ON-REOPENS-ARCHIVED-FAMILY ( -- )
    ARCHIVED-FAMILY
    s" on|l" RUN
@@ -512,6 +572,7 @@ s" import-blocks-archived-child" ' IMPORT-BLOCKS-ARCHIVED-CHILD DOT-CASE
    0 RC=
    s" [p] ○ P
   └─ [c] ○ C
+    └─ [g] ○ G
 " OUT=
    s" " ERR=
    s" d .dots
@@ -585,6 +646,120 @@ f .dots/p/p.md
 " TREE=
 ;
 s" tree-owner-children" ' TREE-OWNER-CHILDREN DOT-CASE
+
+\ A task's tree holds its whole subtree, each level indented further.
+: TREE-ID-SUBTREE ( -- )
+   s" open" s" open" s" active" FAMILY
+   s" tree|c" RUN
+   0 RC=
+   s" [c] ○ C
+  └─ [g] ○ G
+    └─ [l] > L
+" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+d .dots/p/c
+f .dots/p/c/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p/c/g
+f .dots/p/c/g/g.md
+  ---
+  title: G
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/c/g/l.md
+  ---
+  title: L
+  status: active
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" tree-id-subtree" ' TREE-ID-SUBTREE DOT-CASE
+
+\ After the chain under c ends, the walk climbs back to p and prints c's
+\ sibling d at depth 1.
+: TREE-SIBLING-AFTER-CLIMB ( -- )
+   s" open" s" open" s" active" FAMILY
+   s" p/d.md" s" D" s" open" 2 PUT-ISSUE
+   s" tree" RUN
+   0 RC=
+   s" [p] ○ P
+  └─ [c] ○ C
+    └─ [g] ○ G
+      └─ [l] > L
+  └─ [d] ○ D
+" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+d .dots/p/c
+f .dots/p/c/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p/c/g
+f .dots/p/c/g/g.md
+  ---
+  title: G
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/c/g/l.md
+  ---
+  title: L
+  status: active
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/d.md
+  ---
+  title: D
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" tree-sibling-after-climb" ' TREE-SIBLING-AFTER-CLIMB DOT-CASE
 
 \ Each child shows its status marker, and a blocked open child says so.
 : TREE-CHILD-MARKERS ( -- )
@@ -828,13 +1003,13 @@ f .dots/lead/shut.md
 ;
 s" tree-malformed-id" ' TREE-MALFORMED-ID DOT-CASE
 
+\ `a/b/` has no owner `a/b/b.md` and is no legacy folder, so C is a root only.
 : TREE-STRAY-CHILD ( -- )
    s" b.md" s" B" s" open" 2 PUT-ISSUE
    s" a/b/c.md" s" C" s" open" 2 PUT-ISSUE
    s" tree" RUN
    0 RC=
    s" [b] ○ B
-  └─ [c] ○ C
 [c] ○ C
 " OUT=
    s" " ERR=
@@ -869,7 +1044,6 @@ s" tree-stray-child" ' TREE-STRAY-CHILD DOT-CASE
    0 RC=
    s" [p] ○ P
   └─ [x] ○ X
-[x] ○ X
 " OUT=
    s" " ERR=
    s" d .dots
@@ -902,7 +1076,6 @@ s" tree-legacy-folder" ' TREE-LEGACY-FOLDER DOT-CASE
    s" tree" RUN
    0 RC=
    s" [twin] ○ Twin file
-  └─ [pair] ○ Pair
 [twin] ○ Twin folder
   └─ [pair] ○ Pair
 " OUT=
@@ -948,6 +1121,41 @@ s" tree-twin-owners" ' TREE-TWIN-OWNERS DOT-CASE
    s" " TREE=
 ;
 s" tree-no-store" ' TREE-NO-STORE DOT-CASE
+
+\ Each legacy folder holds the other's task; the loop is cut at P, first by
+\ priority, so both show once.
+: TREE-LEGACY-LOOP ( -- )
+   s" p/x.md" s" X" s" open" 2 PUT-ISSUE
+   s" x/p.md" s" P" s" open" 1 PUT-ISSUE
+   s" tree" RUN
+   0 RC=
+   s" [p] ○ P
+  └─ [x] ○ X
+" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/x.md
+  ---
+  title: X
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/x
+f .dots/x/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" tree-legacy-loop" ' TREE-LEGACY-LOOP DOT-CASE
 
 : SHOW-DEPTH-ELEVEN ( -- )
    s" d0/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/leaf.md" s" Deep leaf" s" open" 2 PUT-ISSUE

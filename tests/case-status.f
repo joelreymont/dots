@@ -932,6 +932,86 @@ f .dots/archive/c/p/p.md
 ;
 s" on-nested-read-only" ' ON-NESTED-READ-ONLY DOT-CASE
 
+\ Reopening l reopens its closed ancestors c and g too; c's folder refuses the
+\ write, so g and l stay closed as well.
+: ON-ANCESTORS-READ-ONLY ( -- )
+   s" p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/c/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" p/c/g/g.md" s" G" s" closed" 2 PUT-ISSUE
+   s" p/c/g/l.md" s" L" s" closed" 2 PUT-ISSUE
+   s" p/c" READ-ONLY MODE
+   s" on|l" RUN
+   s" p/c" WRITABLE MODE
+   1 RC=
+   s" " OUT=
+   s\" Permission denied\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+d .dots/p/c
+f .dots/p/c/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p/c/g
+f .dots/p/c/g/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/c/g/l.md
+  ---
+  title: L
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" on-ancestors-read-only" ' ON-ANCESTORS-READ-ONLY DOT-CASE
+
+\ Reopening l reaches its owner p, whose malformed file refuses the change.
+: ON-MALFORMED-OWNER ( -- )
+   s" p/p.md" s\" not frontmatter\n" PUT
+   s" p/l.md" s" L" s" closed" 2 PUT-ISSUE
+   s" on|l" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/l.md
+  ---
+  title: L
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  not frontmatter
+.
+" TREE=
+;
+s" on-malformed-owner" ' ON-MALFORMED-OWNER DOT-CASE
+
 \ The folder moves before p.md is rewritten; the failed write moves it back
 \ and removes the `.dots/c` it made.
 : ON-WRITE-FAILURE ( -- )
