@@ -1657,7 +1657,7 @@ variable REOPEN-PARENT-KEEP-U
    [: REOPEN-RECORDS ;] catch {: code:n :}
    code 0<> if
       REOPEN-RESTORE
-      code REPORT-ISSUE-WRITE-ERROR
+      code REPORT-FAILURE
    then
    REOPEN-CLEAN-BACKUPS ;
 variable STATUS-SAVE-IDX
