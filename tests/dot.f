@@ -29,7 +29,9 @@
 \ A seed's path is relative to `.dots/`; `../<name>` reaches beside it. PUT
 \ writes a file and LINK makes a symlink to the target, each making the
 \ directories above it; PUT-FIFO makes a named pipe and PUT-ISSUE writes a task
-\ in dot's frontmatter.
+\ in dot's frontmatter. MODE sets permission bits, `.` being `.dots` itself,
+\ and RM-DIR removes a directory tree: `s" archive" RM-DIR` leaves a store
+\ without an archive.
 require src/lib/errors.f
 require src/lib/string.f
 require src/lib/byte-buffer.f
@@ -372,6 +374,14 @@ public
 \ Make `.dots/<path>` a named pipe.
 : PUT-FIFO ( ptr u8 n -- )
    DOTS$ FS-PATHZ FIFO-MODE MKFIFO-CALL 0<> if E-FS-IO throw then ;
+
+\ Set the permission bits of `.dots/<path>`; `.` is `.dots` itself.
+: MODE ( ptr u8 n n -- ) {: path:ptr pathu:n mode:n :}
+   path pathu DOTS$ mode CHMOD-MODE ;
+
+\ Remove the directory tree `.dots/<path>`.
+: RM-DIR ( ptr u8 n -- )
+   DOTS$ REMOVE-TREE ;
 
 \ Seed a task file in the frontmatter dot writes.
 : PUT-ISSUE ( ptr u8 n ptr u8 n ptr u8 n n -- )
