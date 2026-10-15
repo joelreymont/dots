@@ -197,12 +197,12 @@ f .dots/<A>.md
 ;
 s" slug-untitled" ' SLUG-UNTITLED DOT-CASE
 
-\ A first word longer than 30 bytes has no word boundary to cut at.
+\ A first word longer than 30 bytes is cut at the 30th byte.
 : SLUG-LONG-WORD ( -- )
    PREFIX-X
    s" add|Supercalifragilisticexpialidocious" RUN
    s" A" SAVE-ID
-   s" A" s" x-untitled-<hex>" ID=
+   s" A" s" x-supercalifragilisticexpialidoc-<hex>" ID=
    0 RC=
    s\" <A>\n" OUT=
    s" " ERR=
@@ -223,6 +223,58 @@ f .dots/<A>.md
 " TREE=
 ;
 s" slug-long-word" ' SLUG-LONG-WORD DOT-CASE
+
+: SLUG-WORD-AT-CAP ( -- )
+   PREFIX-X
+   s" add|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb" RUN
+   s" A" SAVE-ID
+   s" A" s" x-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-<hex>" ID=
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+f .dots/<A>.md
+  ---
+  title: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" slug-word-at-cap" ' SLUG-WORD-AT-CAP DOT-CASE
+
+: SLUG-WORD-OVER-CAP ( -- )
+   PREFIX-X
+   s" add|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb" RUN
+   s" A" SAVE-ID
+   s" A" s" x-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-<hex>" ID=
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+f .dots/<A>.md
+  ---
+  title: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" slug-word-over-cap" ' SLUG-WORD-OVER-CAP DOT-CASE
 
 : PRIORITY-HIGH ( -- )
    PREFIX-X
@@ -298,6 +350,44 @@ f .dots/<A>.md
 " TREE=
 ;
 s" priority-plus" ' PRIORITY-PLUS DOT-CASE
+
+\ A priority reads in decimal.f's grammar: `1_2` is 12, clamped to 9, and
+\ `1__2` is refused.
+: PRIORITY-SEPARATOR ( -- )
+   PREFIX-X
+   s" add|T|-p|1_2" RUN
+   s" A" SAVE-ID
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+f .dots/<A>.md
+  ---
+  title: T
+  status: open
+  priority: 9
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" priority-separator" ' PRIORITY-SEPARATOR DOT-CASE
+
+: PRIORITY-SEPARATORS ( -- )
+   s" add|-p|1__2|Title" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid priority: 1__2\n" ERR=
+   s" d .dots
+d .dots/archive
+" TREE=
+;
+s" priority-separators" ' PRIORITY-SEPARATORS DOT-CASE
 
 : PRIORITY-INVALID ( -- )
    s" add|-p|bogus|Title" RUN

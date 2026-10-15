@@ -798,8 +798,19 @@ s" show-invalid-status" ' SHOW-INVALID-STATUS DOT-CASE
 ;
 s" show-invalid-frontmatter" ' SHOW-INVALID-FRONTMATTER DOT-CASE
 
-\ A line that starts with `---` closes the frontmatter: `---\r` here, `---tail`
-\ below, whose rest of line opens the description.
+\ A priority reads in decimal.f's grammar, which takes one `_` between digits.
+: SHOW-PRIORITY-SEPARATORS ( -- )
+   s" number.md" s\" ---\ntitle: Number\nstatus: open\npriority: 1__2\ncreated-at: 2026-01-01T00:00:00Z\n---\n" PUT
+   s" show|number" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/number.md\n  ---\n  title: Number\n  status: open\n  priority: 1__2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
+;
+s" show-priority-separators" ' SHOW-PRIORITY-SEPARATORS DOT-CASE
+
+\ Only a line that is exactly `---`, or `---` and a CR as here, closes the
+\ frontmatter; `---tail` below closes nothing, so its file is malformed.
 : CLOSING-CRLF ( -- )
    s" delimiter.md" s\" ---\ntitle: Closing CRLF\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---\r\n\nBody\n" PUT
    s" show|delimiter" RUN
@@ -810,15 +821,47 @@ s" show-invalid-frontmatter" ' SHOW-INVALID-FRONTMATTER DOT-CASE
 ;
 s" closing-crlf" ' CLOSING-CRLF DOT-CASE
 
+\ A closing `---` that is the file's last line, without a final newline.
+: CLOSING-LAST-LINE ( -- )
+   s" last.md" s\" ---\ntitle: Last\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---" PUT
+   s" show|last" RUN
+   0 RC=
+   s\" ID:       last\nTitle:    Last\nStatus:   open\nPriority: 2\nCreated:  2026-01-01T00:00:00Z\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/last.md\n  ---\n  title: Last\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n\\\n.\n" TREE=
+;
+s" closing-last-line" ' CLOSING-LAST-LINE DOT-CASE
+
 : CLOSING-TAIL ( -- )
    s" delimiter.md" s\" ---\ntitle: Closing prefix\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---tail\n\nBody\n" PUT
    s" show|delimiter" RUN
-   0 RC=
-   s\" ID:       delimiter\nTitle:    Closing prefix\nStatus:   open\nPriority: 2\nDesc:     tail\n\nBody\nCreated:  2026-01-01T00:00:00Z\n" OUT=
-   s" " ERR=
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
    s\" d .dots\nd .dots/archive\nf .dots/delimiter.md\n  ---\n  title: Closing prefix\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---tail\n  \n  Body\n.\n" TREE=
 ;
 s" closing-tail" ' CLOSING-TAIL DOT-CASE
+
+: CLOSING-SPACES ( -- )
+   s" delimiter.md" s\" ---\ntitle: Closing spaces\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---  \n\nBody\n" PUT
+   s" show|delimiter" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/delimiter.md\n  ---\n  title: Closing spaces\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---  \n  \n  Body\n.\n" TREE=
+;
+s" closing-spaces" ' CLOSING-SPACES DOT-CASE
+
+: LS-SKIPS-CLOSING-TAIL ( -- )
+   s" good.md" s" Good" s" open" 2 PUT-ISSUE
+   s" delimiter.md" s\" ---\ntitle: Closing prefix\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---tail\n\nBody\n" PUT
+   s" ls" RUN
+   0 RC=
+   s\" [good] o Good\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/delimiter.md\n  ---\n  title: Closing prefix\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---tail\n  \n  Body\n.\nf .dots/good.md\n  ---\n  title: Good\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
+;
+s" ls-skips-closing-tail" ' LS-SKIPS-CLOSING-TAIL DOT-CASE
 
 \ ---- entries that are not task files -----------------------------------------
 

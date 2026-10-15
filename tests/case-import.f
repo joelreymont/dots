@@ -263,28 +263,35 @@ d .dots/archive
 ;
 s" priority-string" ' PRIORITY-STRING DOT-CASE
 
-\ A string priority takes the integer grammar's digit separators.
+\ A string priority reads in decimal.f's grammar, which takes one `_` between
+\ digits.
 : PRIORITY-STRING-SEPARATORS ( -- )
    s\" {\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":\"1__2\",\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
 " JSONL
    IMPORT
-   0 RC=
-   s\" Imported 1 issues from import.jsonl\n" OUT=
-   s" " ERR=
-   s\" d .dots
-f .dots/a.md
-  ---
-  title: A
-  status: open
-  priority: 12
-  issue-type: task
-  created-at: \"2026-01-01T00:00:00Z\"
-  ---
-.
+   1 RC=
+   s" " OUT=
+   s\" Invalid JSONL file\n" ERR=
+   s" d .dots
 d .dots/archive
 " TREE=
 ;
 s" priority-string-separators" ' PRIORITY-STRING-SEPARATORS DOT-CASE
+
+\ A byte-array element reads in decimal.f's grammar, which takes one `_`
+\ between digits.
+: BYTE-STRING-SEPARATORS ( -- )
+   s\" {\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":2,\"description\":[\"1__2\"],\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Invalid JSONL file\n" ERR=
+   s" d .dots
+d .dots/archive
+" TREE=
+;
+s" byte-string-separators" ' BYTE-STRING-SEPARATORS DOT-CASE
 
 \ A priority that is not an integer is refused.
 : PRIORITY-FRACTION ( -- )

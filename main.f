@@ -228,7 +228,7 @@ DYNAMIC-BUFFER SORT-BUF n
       val vu PARSE-STATUS dup -1 = if drop 2 VALID ! else CURRENT @ F-STATUS REC-CELL ! then exit
    then
    key ku s" priority" STR= if
-      val vu DECIMAL:INTEGER MATCH option
+      val vu DECIMAL:EXACT MATCH option
          none OF 1 VALID ! ENDOF
          some OF CURRENT @ F-PRIORITY REC-CELL ! ENDOF
       ;MATCH exit
@@ -278,14 +278,18 @@ DYNAMIC-BUFFER SORT-BUF n
       ENDOF
    ;MATCH ;
 
-: FRONT-END ( -- n )
-   FILE-U @ 3 - 4 ?do
-      FILE-BUF i + c@ 10 = if
-         FILE-BUF i 1+ + c@ 45 =
-         FILE-BUF i 2 + + c@ 45 = and
-         FILE-BUF i 3 + + c@ 45 = and if i unloop exit then
-      then
-   loop -1 ;
+\ The frontmatter closes on its first line that is exactly `---`, or `---` and
+\ a CR. Return that line's offset and the offset past it.
+: DELIMITER? ( ptr u8 n -- bool )
+   2dup s" ---" STR= if 2drop true exit then
+   s\" ---\r" STR= ;
+: FRONT-END ( n -- n n bool )
+   begin dup FILE-U @ < while
+      {: at:n :}
+      FILE-BUF FILE-U @ at NEXT-LINE drop {: line:ptr lu:n next:n :}
+      line lu DELIMITER? if at next FILE-U @ min true exit then
+      next
+   repeat 0 false ;
 
 : PARSE-RECORD ( n -- )
    {: idx:n :}
@@ -300,8 +304,8 @@ DYNAMIC-BUFFER SORT-BUF n
    FILE-BUF FILE-U @ 0 NEXT-LINE {: head:ptr hu:n off:n more:bool :}
    head hu s" ---" STR= 0= if exit then
    more 0= if exit then
-   FRONT-END dup -1 = if drop exit then {: endpos:n :}
-   FILE-BUF endpos 4 + + FILE-U @ endpos 4 + - TRIM CURRENT @ F-DESC FIELD!
+   off FRONT-END 0= if 2drop exit then {: endpos:n body:n :}
+   FILE-BUF body + FILE-U @ body - TRIM CURRENT @ F-DESC FIELD!
    off begin dup endpos < while
       {: pos:n :}
       FILE-BUF endpos pos NEXT-LINE drop {: line:ptr lu:n next:n :}
@@ -1017,6 +1021,9 @@ variable PAD-COPY
    s" prefix=" OUT-APPEND PREFIX$ OUT-APPEND 10 OUT-CHAR
    s" .dots/config" OUT$ WRITE-ATOMIC ;
 
+\ A slug ends at the last whole word within SLUG-CAP bytes, or at SLUG-CAP when
+\ its first word is longer. Its bytes are ASCII, so the cut is a UTF-8 boundary.
+30 constant SLUG-CAP
 : ALNUM? ( n -- bool )
    {: ch:n :}
    ch 48 >= ch 57 <= and
@@ -1031,7 +1038,7 @@ variable PAD-COPY
    else
       u 0 ?do
          a i + c@ ASCII-LOWER SB-APPEND-C
-         SB$ nip 30 > if unloop exit then
+         SB$ nip SLUG-CAP > if unloop exit then
       loop
    then ;
 : SLUGIFY$ ( ptr u8 n -- ptr u8 n )
@@ -1045,14 +1052,14 @@ variable PAD-COPY
          WORD-START @ -1 <> if
             a WORD-START @ + i WORD-START @ - APPEND-SLUG-WORD
             -1 WORD-START ! 1 WORD-COUNT +!
-            SB$ nip 30 >= WORD-COUNT @ 3 >= or if leave then
+            SB$ nip SLUG-CAP >= WORD-COUNT @ 3 >= or if leave then
          then
       then
    loop
    SB$ {: slug:ptr size:n :}
-   size 30 > if
-      30 begin dup 0 > if slug over 1- + c@ 45 <> else false then while 1- repeat
-      dup 0 > if 1- then
+   size SLUG-CAP > if
+      SLUG-CAP begin dup 0 > if slug over 1- + c@ 45 <> else false then while 1- repeat
+      dup 0 > if 1- else drop SLUG-CAP then
    else size then {: final:n :}
    final 0= if s" untitled" {: fallback:ptr fu:n :}
       fallback SLUG-ROW fu BYTE-COPY fu SLUG-U !
@@ -1209,7 +1216,7 @@ variable PARENT-IDX
    begin ARG-I @ script-argc < while
       ARG-I @ script-argv$ {: a:ptr u:n :}
       a u s" -p" STR= NEXT-ARG? and if
-         TAKE-ARG 2dup DECIMAL:INTEGER MATCH option
+         TAKE-ARG 2dup DECIMAL:EXACT MATCH option
             none OF s" Invalid priority: " 2swap ISSUE-ERROR ENDOF
             some OF {: value:n :} 2drop value 0 max 9 min ADD-PRIORITY ! ENDOF
          ;MATCH
@@ -2366,17 +2373,9 @@ variable JSONL-DEP-SEEN
 : JSONL-FIND ( ptr u8 n -- JR:reader bool )
    {: key:ptr ku:n :}
    JSONL-START key ku JR:FIND-KEY ;
-\ A priority is a signed i64: the integer form, which alone accepts "1__2",
-\ then an exactly integral decimal or exponent form.
-: JSONL-DECIMAL ( ptr u8 n -- option<i64> )
-   {: a:ptr u:n :}
-   a u DECIMAL:INTEGER MATCH option
-      none OF a u DECIMAL:EXACT ENDOF
-      some OF OPTION:SOME ENDOF
-   ;MATCH ;
 variable JSONL-BYTE-U
 : JSONL-BYTE-VALUE ( ptr u8 n -- n )
-   JSONL-DECIMAL MATCH option
+   DECIMAL:EXACT MATCH option
       none OF E-JR-MALFORMED throw ENDOF
       some OF ENDOF
    ;MATCH
@@ -2426,7 +2425,7 @@ variable JSONL-BYTE-U
    kind JR:T-STR = if
       JSONL-DECODE-BUF 1048576 JR:STR {: size:n :} JSONL-DECODE-BUF size
    else JR:SPAN$ then
-   JSONL-DECIMAL MATCH option
+   DECIMAL:EXACT MATCH option
       none OF JSONL-MALFORMED ENDOF
       some OF IMPORT-IDX @ F-PRIORITY REC-CELL ! ENDOF
    ;MATCH
