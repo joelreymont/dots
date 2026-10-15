@@ -343,11 +343,12 @@ d .dots/archive
 ;
 s" update-without-status" ' UPDATE-WITHOUT-STATUS DOT-CASE
 
+\ close is another name for off.
 : CLOSE-USAGE ( -- )
    s" close" RUN
    1 RC=
    s" " OUT=
-   s\" Usage: dot close <id> [--reason R]\n" ERR=
+   s\" Usage: dot off <id> [id2 ...] [-r reason]\n" ERR=
    s" d .dots
 d .dots/archive
 " TREE=

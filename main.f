@@ -1284,7 +1284,6 @@ variable REASON-U
 variable REASON-PRESENT
 variable STATUS-INDEX
 variable STATUS-MODE
-variable CLOSED-STYLE
 DYNAMIC-BUFFER STATUS-ARGS n
 create CLOSED-TIME 40 allot
 variable CLOSED-TIME-U
@@ -1341,15 +1340,6 @@ variable CLOSED-TIME-U
    ISSUE-N @ 0 ?do
       i idx STATUS-DESCENDANT? if
          i CHECK-ERROR
-      then
-   loop ;
-: ARCHIVE-CHILDREN-CHECK ( n -- )
-   {: idx:n :}
-   ISSUE-N @ 0 ?do
-      i idx STATUS-DESCENDANT? if
-         i CHECK-ERROR
-         i F-STATUS REC-CELL @ 2 <>
-         s" Cannot close: children are not all closed" ?FAIL
       then
    loop ;
 : STATUS-IN-SUBTREE? ( ptr u8 n ptr u8 n -- bool )
@@ -1422,7 +1412,7 @@ variable CLOSED-TIME-U
    {: idx:n :}
    idx F-ARCHIVED REC-CELL @ 0<> if exit then
    idx F-CHILD REC-CELL @ 0<> if exit then
-   idx ARCHIVE-CHILDREN-CHECK
+   idx VALIDATE-STATUS-DESCENDANTS
    idx ARCHIVE-STATUS-UNCHECKED ;
 : UNARCHIVE-STATUS ( n -- ) false MOVE-STATUS-PATH ;
 256 constant REOPEN-MAX
@@ -1599,12 +1589,12 @@ variable STATUS-SAVE-IDX
    then
    idx CHECK-PATH
    idx CHECK-ERROR
+   status 2 = idx F-STATUS REC-CELL @ 2 = and if exit then
    idx F-ARCHIVED REC-CELL @ 0<> if ASSERT-ARCHIVE-REAL then
    status 2 = if
       idx LOAD-STATUS-CHILDREN
       idx VALIDATE-STATUS-DESCENDANTS
       idx STATUS-CHILDREN-OPEN? if
-         CLOSED-STYLE @ 0= s" Cannot close: children are not all closed" ?FAIL
          s" Cannot close " idx F-ID FIELD$ s" : children are not all closed"
          {: prefix:ptr pu:n id:ptr iu:n suffix:ptr su:n :}
          SB-RESET prefix pu SB-APPEND id iu SB-APPEND suffix su SB-APPEND SB$ FAIL
@@ -1637,6 +1627,8 @@ variable STATUS-SAVE-IDX
       moved 1 = if idx UNARCHIVE-STATUS then
       code REPORT-ISSUE-WRITE-ERROR
    then ;
+: REASON-FLAG? ( ptr u8 n -- bool )
+   2dup s" -r" STR= -rot s" --reason" STR= or ;
 : RESOLVE-ARG ( n -- n )
    {: arg:n :}
    arg script-argv$ RESOLVE ;
@@ -1649,7 +1641,7 @@ variable STATUS-SAVE-IDX
    0 REASON-U ! 0 REASON-PRESENT ! 0 CLOSED-TIME-U !
    0 STATUS-INDEX ! 1 ARG-I !
    begin ARG-I @ script-argc < while
-      STATUS-MODE @ 2 = ARG-I @ script-argv$ s" -r" STR= and
+      STATUS-MODE @ 2 = ARG-I @ script-argv$ REASON-FLAG? and
       NEXT-ARG? and if
          TAKE-ARG REASON-U ! REASON-A ! 1 REASON-PRESENT !
       else
@@ -1671,33 +1663,20 @@ variable STATUS-SAVE-IDX
       i STATUS-ARGS @ RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
       STATUS-MODE @ STATUS-CHANGE
    loop ;
-: STATUS-SINGLE ( n -- )
-   STATUS-MODE !
-   script-argc 2 < if
-      STATUS-MODE @ 2 = s" Usage: dot close <id> [--reason R]" ?FAIL
-      s" Usage: dot update <id> [--status S]" FAIL
-   then
+: UPDATE-COMMAND ( -- )
+   script-argc 2 < s" Usage: dot update <id> [--status S]" ?FAIL
+   -1 STATUS-MODE !
    0 REASON-U ! 0 REASON-PRESENT ! 0 CLOSED-TIME-U !
-   STATUS-MODE @ -1 = if
-      2 ARG-I !
-      begin ARG-I @ script-argc < while
-         ARG-I @ script-argv$ s" --status" STR= NEXT-ARG? and if
-            TAKE-ARG 2dup PARSE-STATUS dup -1 = if
-               drop s" Invalid status: " 2swap ISSUE-ERROR
-            then STATUS-MODE ! 2drop
-         then
-         1 ARG-I +!
-      repeat
-      STATUS-MODE @ -1 = s" --status required" ?FAIL
-   else
-      2 ARG-I !
-      begin ARG-I @ script-argc < while
-         ARG-I @ script-argv$ s" --reason" STR= NEXT-ARG? and if
-            TAKE-ARG REASON-U ! REASON-A ! 1 REASON-PRESENT !
-         then
-         1 ARG-I +!
-      repeat
-   then
+   2 ARG-I !
+   begin ARG-I @ script-argc < while
+      ARG-I @ script-argv$ s" --status" STR= NEXT-ARG? and if
+         TAKE-ARG 2dup PARSE-STATUS dup -1 = if
+            drop s" Invalid status: " 2swap ISSUE-ERROR
+         then STATUS-MODE ! 2drop
+      then
+      1 ARG-I +!
+   repeat
+   STATUS-MODE @ -1 = s" --status required" ?FAIL
    1 SCAN-KEYED ! 1 SCAN-FAMILY ! 1 script-argv$ SCAN-KEY+
    true LOAD-ISSUES 1 RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
    STATUS-MODE @ STATUS-CHANGE ;
@@ -2724,18 +2703,17 @@ variable CYCLE-TAIL
 9 constant CMD-ON
 10 constant CMD-OFF
 11 constant CMD-UPDATE
-12 constant CMD-CLOSE
-13 constant CMD-INIT
-14 constant CMD-PURGE
-15 constant CMD-RM
-16 constant CMD-FIX
-17 constant CMD-SLUGIFY
+12 constant CMD-INIT
+13 constant CMD-PURGE
+14 constant CMD-RM
+15 constant CMD-FIX
+16 constant CMD-SLUGIFY
 32 constant GROUP-SEP
 124 constant ALIAS-SEP
 \ Command names grouped by dispatch code: GROUP-SEP ends a group and
 \ ALIAS-SEP separates the aliases within one.
 : COMMAND-TABLE ( -- ptr u8 n )
-   s" tree ls|list ready show find help|-h|--help --version|-v hook add|create on|it off|done update close init purge rm|delete fix slugify" ;
+   s" tree ls|list ready show find help|-h|--help --version|-v hook add|create on|it off|done|close update init purge rm|delete fix slugify" ;
 \ Whether arg is one of the aliases in group.
 : ALIAS? ( ptr u8 n ptr u8 n -- bool )
    {: arg:ptr au:n grp:ptr gu:n :}
@@ -2770,9 +2748,8 @@ variable CYCLE-TAIL
       endof
       CMD-ADD of 1 ADD-COMMAND endof
       CMD-ON of 1 STATUS-MULTI endof
-      CMD-OFF of 1 CLOSED-STYLE ! 2 STATUS-MULTI endof
-      CMD-UPDATE of 0 CLOSED-STYLE ! -1 STATUS-SINGLE endof
-      CMD-CLOSE of 0 CLOSED-STYLE ! 2 STATUS-SINGLE endof
+      CMD-OFF of 2 STATUS-MULTI endof
+      CMD-UPDATE of UPDATE-COMMAND endof
       CMD-INIT of INIT-FULL-COMMAND endof
       CMD-PURGE of PURGE-COMMAND endof
       CMD-RM of RM-COMMAND endof

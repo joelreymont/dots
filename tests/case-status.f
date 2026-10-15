@@ -182,6 +182,40 @@ f .dots/archive/b.md
 ;
 s" off-shares-time" ' OFF-SHARES-TIME DOT-CASE
 
+: CLOSE-MANY ( -- )
+   s" a.md" s" A" s" open" 2 PUT-ISSUE
+   s" b.md" s" B" s" open" 2 PUT-ISSUE
+   s" close|a|b" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/archive/a.md
+  ---
+  title: A
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+f .dots/archive/b.md
+  ---
+  title: B
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+" TREE=
+   s" archive/a.md" s" archive/b.md" s" closed-at:" SAME-LINE
+;
+s" close-many" ' CLOSE-MANY DOT-CASE
+
 : OFF-REASON-FLAG-VALUE ( -- )
    s" a.md" s" A" s" open" 2 PUT-ISSUE
    s" b.md" s" B" s" open" 2 PUT-ISSUE
@@ -217,12 +251,13 @@ f .dots/archive/b.md
 ;
 s" off-reason-flag-value" ' OFF-REASON-FLAG-VALUE DOT-CASE
 
+\ close takes off's arguments: after the reason flag's value, wow is an id.
 : CLOSE-REASON-FLAG-VALUE ( -- )
    s" a.md" s" A" s" open" 2 PUT-ISSUE
    s" close|a|--reason|--reason|wow" RUN
-   0 RC=
+   1 RC=
    s" " OUT=
-   s" " ERR=
+   s\" Issue not found: wow\n" ERR=
    s\" d .dots
 d .dots/archive
 f .dots/archive/a.md
@@ -283,6 +318,7 @@ f .dots/archive/a.md
 ;
 s" off-empty-reason" ' OFF-EMPTY-REASON DOT-CASE
 
+\ Closing a closed task changes nothing: not its time, reason or bytes.
 : CLOSE-ARCHIVED-EMPTY-REASON ( -- )
    s" archive/a.md" s" ---
 title: A
@@ -297,17 +333,16 @@ close-reason: Old fix
    0 RC=
    s" " OUT=
    s" " ERR=
-   s\" d .dots
+   s" d .dots
 d .dots/archive
 f .dots/archive/a.md
   ---
   title: A
   status: closed
   priority: 2
-  issue-type: task
-  created-at: \"2026-01-01T00:00:00Z\"
-  closed-at: \"<time>\"
-  close-reason: \"\"
+  created-at: 2026-01-01T00:00:00Z
+  closed-at: 2026-02-04T00:00:00Z
+  close-reason: Old fix
   ---
 .
 " TREE=
@@ -364,6 +399,54 @@ f .dots/c/p/leaf.md
 " TREE=
 ;
 s" off-malformed-descendant" ' OFF-MALFORMED-DESCENDANT DOT-CASE
+
+\ c's folder holds an open child, so no command closes c.
+: PUT-OPEN-CHILD ( -- )
+   s" c/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" c/x.md" s" X" s" open" 2 PUT-ISSUE ;
+
+\ c and its open child, untouched by the refused close.
+: OPEN-CHILD-TREE ( -- )
+   s" d .dots
+d .dots/archive
+d .dots/c
+f .dots/c/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/c/x.md
+  ---
+  title: X
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE= ;
+
+: CLOSE-OPEN-CHILD ( -- )
+   PUT-OPEN-CHILD
+   s" close|c" RUN
+   1 RC=
+   s" " OUT=
+   s\" Cannot close c: children are not all closed\n" ERR=
+   OPEN-CHILD-TREE
+;
+s" close-open-child" ' CLOSE-OPEN-CHILD DOT-CASE
+
+: UPDATE-CLOSED-OPEN-CHILD ( -- )
+   PUT-OPEN-CHILD
+   s" update|c|--status|closed" RUN
+   1 RC=
+   s" " OUT=
+   s\" Cannot close c: children are not all closed\n" ERR=
+   OPEN-CHILD-TREE
+;
+s" update-closed-open-child" ' UPDATE-CLOSED-OPEN-CHILD DOT-CASE
 
 : OFF-ARCHIVED-OPEN-DESCENDANT ( -- )
    s" archive/p/p.md" s" Parent" s" open" 2 PUT-ISSUE
@@ -870,75 +953,65 @@ s" on-write-failure" ' ON-WRITE-FAILURE DOT-CASE
 ;
 s" off-rewrite-mode" ' OFF-REWRITE-MODE DOT-CASE
 
-\ Closing a moves its folder into the archive; closing its child after that
-\ finds it there and closes it again with a's time.
-: OFF-PARENT-THEN-CHILD ( -- )
+\ Open a holding child, closed on 2026-02-04.
+: PUT-CLOSED-CHILD ( -- )
    s" a/a.md" s" A" s" open" 2 PUT-ISSUE
-   s" a/child.md" s" Child" s" closed" 2 PUT-ISSUE
+   s" a/child.md" s" ---
+title: Child
+status: closed
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+closed-at: 2026-02-04T00:00:00Z
+---
+" PUT ;
+
+\ The tree both orders leave: a closed with its folder, the child untouched.
+: CLOSED-FAMILY-TREE ( -- )
+   s\" d .dots
+d .dots/archive
+d .dots/archive/a
+f .dots/archive/a/a.md
+  ---
+  title: A
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+f .dots/archive/a/child.md
+  ---
+  title: Child
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  closed-at: 2026-02-04T00:00:00Z
+  ---
+.
+" TREE= ;
+
+\ Closing a moves its folder into the archive; closing its child after that
+\ finds it there, already closed, and changes nothing.
+: OFF-PARENT-THEN-CHILD ( -- )
+   PUT-CLOSED-CHILD
    s" off|a|child" RUN
    0 RC=
    s" " OUT=
    s" " ERR=
-   s\" d .dots
-d .dots/archive
-d .dots/archive/a
-f .dots/archive/a/a.md
-  ---
-  title: A
-  status: closed
-  priority: 2
-  issue-type: task
-  created-at: \"2026-01-01T00:00:00Z\"
-  closed-at: \"<time>\"
-  ---
-.
-f .dots/archive/a/child.md
-  ---
-  title: Child
-  status: closed
-  priority: 2
-  issue-type: task
-  created-at: \"2026-01-01T00:00:00Z\"
-  closed-at: \"<time>\"
-  ---
-.
-" TREE=
-   s" archive/a/a.md" s" archive/a/child.md" s" closed-at:" SAME-LINE
+   CLOSED-FAMILY-TREE
 ;
 s" off-parent-then-child" ' OFF-PARENT-THEN-CHILD DOT-CASE
 
-\ The child closes in a's folder, which then moves whole.
+\ The child, already closed, stays as it is in a's folder, which then moves
+\ whole.
 : OFF-CHILD-THEN-PARENT ( -- )
-   s" a/a.md" s" A" s" open" 2 PUT-ISSUE
-   s" a/child.md" s" Child" s" closed" 2 PUT-ISSUE
+   PUT-CLOSED-CHILD
    s" off|child|a" RUN
    0 RC=
    s" " OUT=
    s" " ERR=
-   s\" d .dots
-d .dots/archive
-d .dots/archive/a
-f .dots/archive/a/a.md
-  ---
-  title: A
-  status: closed
-  priority: 2
-  issue-type: task
-  created-at: \"2026-01-01T00:00:00Z\"
-  closed-at: \"<time>\"
-  ---
-.
-f .dots/archive/a/child.md
-  ---
-  title: Child
-  status: closed
-  priority: 2
-  issue-type: task
-  created-at: \"2026-01-01T00:00:00Z\"
-  closed-at: \"<time>\"
-  ---
-.
-" TREE=
+   CLOSED-FAMILY-TREE
 ;
 s" off-child-then-parent" ' OFF-CHILD-THEN-PARENT DOT-CASE
 

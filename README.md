@@ -58,9 +58,8 @@ repository. Running `dot` with no arguments prints ready tasks as JSON.
 | `dot show ID` | Show a task, resolving a unique ID prefix. |
 | `dot find QUERY` | Search task details, including the archive. |
 | `dot on ID [ID ...]` | Mark tasks active; `it` is an alias. |
-| `dot off ID [ID ...] [-r REASON]` | Close tasks; `done` is an alias. |
+| `dot off ID [ID ...] [-r\|--reason REASON]` | Close tasks; `done` and `close` are aliases. |
 | `dot update ID --status STATUS` | Change a task status. |
-| `dot close ID [--reason REASON]` | Close one task. |
 | `dot tree [ID]` | Show task hierarchy. |
 | `dot rm ID [ID ...]` | Delete tasks; `delete` is an alias. |
 | `dot fix` | Promote children of missing parent tasks. |
