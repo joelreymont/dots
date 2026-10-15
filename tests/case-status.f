@@ -10,6 +10,14 @@ $16D constant READ-ONLY                 \ r-xr-xr-x
 $1ED constant WRITABLE                  \ rwxr-xr-x
 $180 constant OWNER-ONLY                \ rw-------
 $1A4 constant SHARED-READ               \ rw-r--r--
+create LONG BUF:HDR-BYTES allot         \ a long path, or the tree holding it
+LONG 1024 BUF:N>BLEN BUF:INIT
+
+: L+ ( ptr u8 n -- ) BUF:N>BLEN LONG BUF:APPEND-SPAN ;
+: L$ ( -- ptr u8 n ) LONG BUF:SPAN$ BUF:BLEN>N ;
+: L-BYTES ( n n -- ) {: c:n k:n :} k 0 ?do c LONG BUF:APPEND-BYTE loop ;
+\ Append `<255 x's>/<255 y's>`, a folder 511 bytes below its root.
+: DEEP+ ( -- ) [char] x NAME-MAX L-BYTES s" /" L+ [char] y NAME-MAX L-BYTES ;
 
 s" status" SECTION
 
@@ -171,6 +179,24 @@ f .dots/p/p.md
 " TREE=
 ;
 s" reopen-folder" ' REOPEN-FOLDER DOT-CASE
+
+\ A task more than 512 bytes below `.dots/archive` reopens with its folder:
+\ only the OS path limit applies.
+: ON-LONG-ARCHIVED ( -- )
+   LONG BUF:CLEAR s" archive/" L+ DEEP+ s" /deep.md" L+
+   L$ s" Deep" s" closed" 2 PUT-ISSUE
+   s" on|deep" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   LONG BUF:CLEAR
+   s\" d .dots\nd .dots/archive\nd .dots/archive/" L+ [char] x NAME-MAX L-BYTES
+   s\" \nd .dots/" L+ [char] x NAME-MAX L-BYTES s\" \nd .dots/" L+ DEEP+
+   s\" \nf .dots/" L+ DEEP+
+   s\" /deep.md\n  ---\n  title: Deep\n  status: active\n  priority: 2\n  issue-type: task\n  created-at: \"2026-01-01T00:00:00Z\"\n  ---\n.\n" L+
+   L$ TREE=
+;
+s" on-long-archived" ' ON-LONG-ARCHIVED DOT-CASE
 
 : OFF-SHARES-TIME ( -- )
    s" a.md" s" A" s" open" 2 PUT-ISSUE

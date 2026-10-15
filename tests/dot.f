@@ -32,7 +32,8 @@
 \ in dot's frontmatter. MODE sets permission bits, `.` being `.dots` itself,
 \ and RM-DIR removes a directory tree: `s" archive" RM-DIR` leaves a store
 \ without an archive. FILE$ is a path beside `.dots` for a Habu fs word no seed
-\ covers: `s" .git" FILE$ MAKE-DIRS`.
+\ covers: `s" .git" FILE$ MAKE-DIRS`. MOVE-TOP reaches a path too deep for
+\ FILE$: a case seeds it under `.dots/a` and renames `a` to its long name.
 \
 \ SAVE-ID captures the id on stdout's first line: the whole line, as add prints
 \ it, or the first `"id"` of a JSON line, as `add --json` and `ls --json` print
@@ -570,6 +571,26 @@ public
 
 \ A path beside `.dots` for a Habu fs word no seed covers.
 EXPORT FILE$
+
+\ A deep path, such as the 1015-byte `.dots/<255 a>/<255 b>/<255 c>/<236 d>/p.md`,
+\ would pass FS-PATH-CAP joined to the store's absolute path, so FILE$ cannot
+\ form it. A case seeds it with the top folder `.dots/a`, `true MOVE-TOP`
+\ renames that to its long name, NAME-MAX `a`s, before dot runs, and
+\ `false MOVE-TOP` renames it back before the tree is read. TOP$ is the top
+\ folder, long or short; D-NAME is the 1015-byte path's last folder's length.
+255 constant NAME-MAX                   \ the longest name a folder can have
+236 constant D-NAME                     \ the deep path's last folder name
+create TOP BUF:HDR-BYTES allot          \ the deep path's top folder
+TOP 512 BUF:N>BLEN BUF:INIT
+create HELD BUF:HDR-BYTES allot         \ one store path while FILE$ forms another
+HELD 1024 BUF:N>BLEN BUF:INIT
+: TOP$ ( bool -- ptr u8 n ) {: long:bool :}
+   TOP BUF:CLEAR s" .dots/" TOP B+
+   long if NAME-MAX else 1 then 0 ?do [char] a TOP BUF:APPEND-BYTE loop
+   TOP B$ ;
+: MOVE-TOP ( bool -- ) {: long:bool :}
+   HELD BUF:CLEAR long 0= TOP$ FILE$ HELD B+
+   HELD B$ long TOP$ FILE$ RENAME-FILE ;
 
 \ Start bin/dot in the store with the |-separated arguments.
 : SPAWN ( ptr u8 n -- pid )

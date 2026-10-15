@@ -20,7 +20,7 @@ package DOT-READ
 
 create GEN-FILE BUF:HDR-BYTES allot     \ a generated task file
 create GEN-NAME BUF:HDR-BYTES allot     \ its name
-create GEN-OUT BUF:HDR-BYTES allot      \ the expected stdout
+create GEN-OUT BUF:HDR-BYTES allot      \ the expected stdout or stderr
 create GEN-TREE BUF:HDR-BYTES allot     \ the expected tree
 create DIG-BUF 20 allot
 GEN-FILE 256 BUF:N>BLEN BUF:INIT
@@ -110,6 +110,17 @@ GEN-TREE 4096 BUF:N>BLEN BUF:INIT
    s" " OUT=
    s\" Issue file too large: .dots/z.md\n" ERR=
    BIG-STORE-TREE TREE= ;
+
+\ `<255 x's>/<255 y's>/deep.md` in GEN-NAME, 519 bytes below `.dots`.
+: DEEP-NAME ( -- )
+   GEN-NAME BUF:CLEAR
+   [char] x NAME-MAX GEN-NAME GEN-BYTES  s" /" GEN-NAME GEN+
+   [char] y NAME-MAX GEN-NAME GEN-BYTES  s" /deep.md" GEN-NAME GEN+ ;
+
+\ Append `<255 b>/<255 c>/<236 d>`, the deep path's folders below the top.
+: BCD+ ( ptr a -- ) {: b:ptr :}
+   [char] b NAME-MAX b GEN-BYTES  s" /" b GEN+  [char] c NAME-MAX b GEN-BYTES
+   s" /" b GEN+  [char] d D-NAME b GEN-BYTES ;
 
 \ ---- the listing store ------------------------------------------------------
 
@@ -1212,6 +1223,30 @@ s" too-large-close" ' TOO-LARGE-CLOSE DOT-CASE
 ;
 s" too-large-child" ' TOO-LARGE-CHILD DOT-CASE
 
+\ The error names the whole path, past the 1024 bytes a string builder holds.
+\ The tree is read with the top folder renamed back to `a`.
+: TOO-LARGE-LONG-PATH ( -- )
+   GEN-NAME BUF:CLEAR  s" a/" GEN-NAME GEN+  GEN-NAME BCD+  s" /z.md" GEN-NAME GEN+
+   GEN-NAME GEN$ BIG
+   true MOVE-TOP
+   s" ls" RUN
+   1 RC=
+   s" " OUT=
+   GEN-OUT BUF:CLEAR  s" Issue file too large: .dots/" GEN-OUT GEN+
+   [char] a NAME-MAX GEN-OUT GEN-BYTES  s" /" GEN-OUT GEN+  GEN-OUT BCD+
+   s\" /z.md\n" GEN-OUT GEN+
+   GEN-OUT GEN$ ERR=
+   false MOVE-TOP
+   s\" d .dots\nd .dots/a\nd .dots/a/" TREE-FROM  [char] b NAME-MAX GEN-TREE GEN-BYTES
+   s\" \nd .dots/a/" GEN-TREE GEN+  [char] b NAME-MAX GEN-TREE GEN-BYTES
+   s" /" GEN-TREE GEN+  [char] c NAME-MAX GEN-TREE GEN-BYTES
+   s\" \nd .dots/a/" GEN-TREE GEN+  GEN-TREE BCD+  10 GEN-TREE BUF:APPEND-BYTE
+   GEN-NAME GEN$ GEN-FILE GEN$ TREE-FILE
+   s\" d .dots/archive\n" GEN-TREE GEN+
+   GEN-TREE GEN$ TREE=
+;
+s" too-large-long-path" ' TOO-LARGE-LONG-PATH DOT-CASE
+
 \ A task file of exactly the limit is read.
 : AT-LIMIT ( -- )
    GEN-FILE BUF:CLEAR
@@ -1267,6 +1302,23 @@ s" large-directory" ' LARGE-DIRECTORY DOT-CASE
    GEN-TREE GEN$ TREE=
 ;
 s" large-json" ' LARGE-JSON DOT-CASE
+
+\ A task more than 512 bytes below `.dots` is read: only the OS path limit
+\ applies.
+: LONG-PATH ( -- )
+   DEEP-NAME
+   GEN-NAME GEN$ s" Deep" s" open" 2 PUT-ISSUE
+   s" ls" RUN
+   0 RC=
+   s\" [deep] o Deep\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nd .dots/" TREE-FROM
+   [char] x NAME-MAX GEN-TREE GEN-BYTES  s\" \nd .dots/" GEN-TREE GEN+
+   GEN-NAME GEN$ 8 - GEN-TREE GEN+  10 GEN-TREE BUF:APPEND-BYTE
+   GEN-NAME GEN$ s\" ---\ntitle: Deep\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---\n" TREE-FILE
+   GEN-TREE GEN$ TREE=
+;
+s" long-path" ' LONG-PATH DOT-CASE
 
 ;package
 ;using

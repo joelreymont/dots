@@ -7,6 +7,9 @@ require dot.f
 using DOT-T
 package DOT-ADD
 
+create LONG BUF:HDR-BYTES allot         \ a long path, or the tree holding it
+LONG 1024 BUF:N>BLEN BUF:INIT
+
 : PREFIX-X ( -- ) s" config" s\" prefix=x\n" PUT ;
 
 65536 constant CONFIG-LIMIT             \ dot's config limit, inclusive
@@ -21,6 +24,17 @@ CONF-TREE 256 BUF:N>BLEN BUF:INIT
 : CONF-TREE$ ( -- ptr u8 n ) CONF-TREE BUF:SPAN$ BUF:BLEN>N ;
 : CONF-BYTES ( n n ptr a -- ) {: c:n k:n b:ptr :}
    k 0 ?do c b BUF:APPEND-BYTE loop ;
+
+: L+ ( ptr u8 n -- ) BUF:N>BLEN LONG BUF:APPEND-SPAN ;
+: L$ ( -- ptr u8 n ) LONG BUF:SPAN$ BUF:BLEN>N ;
+: L-BYTES ( n n -- ) {: c:n k:n :} k 0 ?do c LONG BUF:APPEND-BYTE loop ;
+\ Append `<255 x's>/<255 y's>`, a folder 511 bytes below `.dots`.
+: DEEP+ ( -- ) [char] x NAME-MAX L-BYTES s" /" L+ [char] y NAME-MAX L-BYTES ;
+
+\ Append `<255 b>/<255 c>/<n d>`, a deep parent's folders below the top.
+: BCD+ ( n -- ) {: du:n :}
+   [char] b NAME-MAX L-BYTES s" /" L+ [char] c NAME-MAX L-BYTES
+   s" /" L+ [char] d du L-BYTES ;
 
 s" add" SECTION
 
@@ -115,6 +129,24 @@ s" ---" ' PREFIX-FALLBACK DOT-CASE
    s\" d .dots\nd .dots/archive\n" TREE=
 ;
 s" add-invalid-store#id" ' INVALID-STORE-ID DOT-CASE
+
+\ A prefix too long for any id fails as an invalid one, however long the
+\ config lets it be, and the refusal writes nothing.
+1020 constant PREFIX-LONG               \ prefix bytes past any id
+: ADD-PREFIX-TOO-LONG ( -- )
+   CONF BUF:CLEAR
+   s" prefix=" CONF+  [char] p PREFIX-LONG CONF CONF-BYTES  s\" \n" CONF+
+   s" config" CONF$ PUT
+   s" add|T" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue id\n" ERR=
+   CONF-TREE BUF:CLEAR
+   s\" d .dots\nd .dots/archive\nf .dots/config\n  prefix=" CONF-TREE+
+   [char] p PREFIX-LONG CONF-TREE CONF-BYTES  s\" \n.\n" CONF-TREE+
+   CONF-TREE$ TREE=
+;
+s" add-prefix-too-long" ' ADD-PREFIX-TOO-LONG DOT-CASE
 
 : SLUG-ABBREVIATION ( -- )
    PREFIX-X
@@ -423,6 +455,16 @@ d .dots/archive
 " TREE=
 ;
 s" priority-invalid" ' PRIORITY-INVALID DOT-CASE
+
+\ An empty priority is refused, and the message ends where the value would.
+: ADD-EMPTY-PRIORITY ( -- )
+   s" add|T|-p|" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid priority: \n" ERR=
+   s\" d .dots\nd .dots/archive\n" TREE=
+;
+s" add-empty-priority" ' ADD-EMPTY-PRIORITY DOT-CASE
 
 : EMPTY-DESCRIPTION ( -- )
    PREFIX-X
@@ -998,11 +1040,12 @@ s" utf8-title" ' UTF8-TITLE DOT-CASE
 \ ---- id collisions ----------------------------------------------------------
 
 \ RUN-PINNED pins add's random suffix, so the new id, x-task-5eed1d00, is known
-\ before the run, and add refuses it where it is taken. The id is taken at the
-\ top and in the archive, file or folder, and in active folders other than any
-\ named archive, ten levels down, never through a symlink. An empty folder of
-\ the id's name takes the new task. Each store holds task a beside the
-\ placements.
+\ before the run, and add refuses it where it is taken: where any task the
+\ loader reads has it, in either partition at any depth, where the new file's
+\ path holds anything, and where `.dots/<id>` links to a folder. A file below a
+\ folder named archive under the top or through a symlink is no task. An empty
+\ folder of the id's name takes the new task. Each store holds task a beside
+\ the placements.
 : PINNED-STORE ( -- )
    PREFIX-X
    s" a.md" s" A" s" open" 2 PUT-ISSUE ;
@@ -1243,15 +1286,58 @@ f .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/x-task-5eed1d00.md
 ;
 s" pinned-taken-depth-10" ' PINNED-TAKEN-DEPTH-10 DOT-CASE
 
-: PINNED-FREE-ARCHIVED-CHILD ( -- )
+: PINNED-TAKEN-DEPTH-11 ( -- )
+   PINNED-STORE
+   s" d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/d1
+d .dots/d1/d2
+d .dots/d1/d2/d3
+d .dots/d1/d2/d3/d4
+d .dots/d1/d2/d3/d4/d5
+d .dots/d1/d2/d3/d4/d5/d6
+d .dots/d1/d2/d3/d4/d5/d6/d7
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10
+d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11
+f .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-taken-depth-11" ' PINNED-TAKEN-DEPTH-11 DOT-CASE
+
+: PINNED-TAKEN-ARCHIVED-CHILD ( -- )
    PINNED-STORE
    s" archive/p/p.md" s" P" s" closed" 2 PUT-ISSUE
    s" archive/p/x-task-5eed1d00.md" s" Taken" s" closed" 2 PUT-ISSUE
    s" add|Task" RUN-PINNED
-   0 RC=
-   s\" x-task-5eed1d00\n" OUT=
-   s" " ERR=
-   s\" d .dots
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
 f .dots/a.md
   ---
   title: A
@@ -1281,44 +1367,26 @@ f .dots/archive/p/x-task-5eed1d00.md
 f .dots/config
   prefix=x
 .
-f .dots/x-task-5eed1d00.md
-  ---
-  title: Task
-  status: open
-  priority: 2
-  issue-type: task
-  created-at: \"<time>\"
-  ---
-.
 " TREE=
 ;
-s" pinned-free-archived-child" ' PINNED-FREE-ARCHIVED-CHILD DOT-CASE
+s" pinned-taken-archived-child" ' PINNED-TAKEN-ARCHIVED-CHILD DOT-CASE
 
-: PINNED-FREE-ARCHIVED-CHILD-CHILD ( -- )
+\ The refusal comes before a moves into its own folder.
+: PINNED-TAKEN-ARCHIVED-CHILD-CHILD ( -- )
    PINNED-STORE
    s" archive/p/p.md" s" P" s" closed" 2 PUT-ISSUE
    s" archive/p/x-task-5eed1d00.md" s" Taken" s" closed" 2 PUT-ISSUE
    s" add|Task|-P|a" RUN-PINNED
-   0 RC=
-   s\" x-task-5eed1d00\n" OUT=
-   s" " ERR=
-   s\" d .dots
-d .dots/a
-f .dots/a/a.md
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
   ---
   title: A
   status: open
   priority: 2
   created-at: 2026-01-01T00:00:00Z
-  ---
-.
-f .dots/a/x-task-5eed1d00.md
-  ---
-  title: Task
-  status: open
-  priority: 2
-  issue-type: task
-  created-at: \"<time>\"
   ---
 .
 d .dots/archive
@@ -1344,7 +1412,86 @@ f .dots/config
 .
 " TREE=
 ;
-s" pinned-free-archived-child-child" ' PINNED-FREE-ARCHIVED-CHILD-CHILD DOT-CASE
+s" pinned-taken-archived-child-child" ' PINNED-TAKEN-ARCHIVED-CHILD-CHILD DOT-CASE
+
+\ A dangling link takes the id as any other entry does.
+: PINNED-TAKEN-FILE-SYMLINK ( -- )
+   PINNED-STORE
+   s" gone.md" s" x-task-5eed1d00.md" LINK
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+l .dots/x-task-5eed1d00.md -> gone.md
+" TREE=
+;
+s" pinned-taken-file-symlink" ' PINNED-TAKEN-FILE-SYMLINK DOT-CASE
+
+: PINNED-TAKEN-FILE-DIRECTORY ( -- )
+   PINNED-STORE
+   s" .dots/x-task-5eed1d00.md" FILE$ MAKE-DIRS
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+d .dots/x-task-5eed1d00.md
+" TREE=
+;
+s" pinned-taken-file-directory" ' PINNED-TAKEN-FILE-DIRECTORY DOT-CASE
+
+\ add writes nothing through a folder link, so the outside folder stays empty.
+: PINNED-TAKEN-FOLDER-SYMLINK ( -- )
+   PINNED-STORE
+   s" outside" FILE$ MAKE-DIRS
+   s" ../outside" s" x-task-5eed1d00" LINK
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+l .dots/x-task-5eed1d00 -> ../outside
+" TREE=
+   s" outside" s\" d outside\n" DIR=
+;
+s" pinned-taken-folder-symlink" ' PINNED-TAKEN-FOLDER-SYMLINK DOT-CASE
 
 : PINNED-FREE-NESTED-ARCHIVE ( -- )
    PINNED-STORE
@@ -1504,111 +1651,6 @@ l .dots/linked -> ../outside
 ;
 s" pinned-free-symlinked-dir-child" ' PINNED-FREE-SYMLINKED-DIR-CHILD DOT-CASE
 
-: PINNED-FREE-DEPTH-11 ( -- )
-   PINNED-STORE
-   s" d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
-   s" add|Task" RUN-PINNED
-   0 RC=
-   s\" x-task-5eed1d00\n" OUT=
-   s" " ERR=
-   s\" d .dots
-f .dots/a.md
-  ---
-  title: A
-  status: open
-  priority: 2
-  created-at: 2026-01-01T00:00:00Z
-  ---
-.
-d .dots/archive
-f .dots/config
-  prefix=x
-.
-d .dots/d1
-d .dots/d1/d2
-d .dots/d1/d2/d3
-d .dots/d1/d2/d3/d4
-d .dots/d1/d2/d3/d4/d5
-d .dots/d1/d2/d3/d4/d5/d6
-d .dots/d1/d2/d3/d4/d5/d6/d7
-d .dots/d1/d2/d3/d4/d5/d6/d7/d8
-d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9
-d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10
-d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11
-f .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md
-  ---
-  title: Taken
-  status: open
-  priority: 2
-  created-at: 2026-01-01T00:00:00Z
-  ---
-.
-f .dots/x-task-5eed1d00.md
-  ---
-  title: Task
-  status: open
-  priority: 2
-  issue-type: task
-  created-at: \"<time>\"
-  ---
-.
-" TREE=
-;
-s" pinned-free-depth-11" ' PINNED-FREE-DEPTH-11 DOT-CASE
-
-: PINNED-FREE-DEPTH-11-CHILD ( -- )
-   PINNED-STORE
-   s" d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
-   s" add|Task|-P|a" RUN-PINNED
-   0 RC=
-   s\" x-task-5eed1d00\n" OUT=
-   s" " ERR=
-   s\" d .dots
-d .dots/a
-f .dots/a/a.md
-  ---
-  title: A
-  status: open
-  priority: 2
-  created-at: 2026-01-01T00:00:00Z
-  ---
-.
-f .dots/a/x-task-5eed1d00.md
-  ---
-  title: Task
-  status: open
-  priority: 2
-  issue-type: task
-  created-at: \"<time>\"
-  ---
-.
-d .dots/archive
-f .dots/config
-  prefix=x
-.
-d .dots/d1
-d .dots/d1/d2
-d .dots/d1/d2/d3
-d .dots/d1/d2/d3/d4
-d .dots/d1/d2/d3/d4/d5
-d .dots/d1/d2/d3/d4/d5/d6
-d .dots/d1/d2/d3/d4/d5/d6/d7
-d .dots/d1/d2/d3/d4/d5/d6/d7/d8
-d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9
-d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10
-d .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11
-f .dots/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/x-task-5eed1d00.md
-  ---
-  title: Taken
-  status: open
-  priority: 2
-  created-at: 2026-01-01T00:00:00Z
-  ---
-.
-" TREE=
-;
-s" pinned-free-depth-11-child" ' PINNED-FREE-DEPTH-11-CHILD DOT-CASE
-
 : PINNED-FREE-EMPTY-FOLDER ( -- )
    PINNED-STORE
    s" .dots/x-task-5eed1d00" FILE$ MAKE-DIRS
@@ -1677,6 +1719,224 @@ d .dots/x-task-5eed1d00
 " TREE=
 ;
 s" pinned-free-empty-folder-child" ' PINNED-FREE-EMPTY-FOLDER-CHILD DOT-CASE
+
+\ A task more than 512 bytes below `.dots` is checked too: only the OS path
+\ limit applies.
+: PINNED-FREE-LONG-PATH ( -- )
+   PINNED-STORE
+   LONG BUF:CLEAR DEEP+ s" /deep.md" L+
+   L$ s" Deep" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   0 RC=
+   s\" x-task-5eed1d00\n" OUT=
+   s" " ERR=
+   LONG BUF:CLEAR
+   s\" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+f .dots/x-task-5eed1d00.md
+  ---
+  title: Task
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+d .dots/" L+
+   [char] x NAME-MAX L-BYTES s\" \nd .dots/" L+ DEEP+ s\" \nf .dots/" L+ DEEP+
+   s\" /deep.md\n  ---\n  title: Deep\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" L+
+   L$ TREE=
+;
+s" pinned-free-long-path" ' PINNED-FREE-LONG-PATH DOT-CASE
+
+\ A child whose path would pass FS-PATH-CAP is refused before p gains a
+\ folder. The tree is read with the top folder renamed back to `a`.
+: PINNED-PARENT-PATH-TOO-LONG ( -- )
+   PINNED-STORE
+   LONG BUF:CLEAR s" a/" L+ D-NAME BCD+ s" /p.md" L+
+   L$ s" P" s" open" 2 PUT-ISSUE
+   true MOVE-TOP
+   s" add|Kid|-P|p" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" I/O error\n" ERR=
+   false MOVE-TOP
+   LONG BUF:CLEAR
+   s\" d .dots\nd .dots/a\nd .dots/a/" L+ [char] b NAME-MAX L-BYTES
+   s\" \nd .dots/a/" L+ [char] b NAME-MAX L-BYTES s" /" L+ [char] c NAME-MAX L-BYTES
+   s\" \nd .dots/a/" L+ D-NAME BCD+ s\" \nf .dots/a/" L+ D-NAME BCD+
+   s\" /p.md\n  ---\n  title: P\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" L+
+   s\" f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+" L+
+   L$ TREE=
+;
+s" pinned-parent-path-too-long" ' PINNED-PARENT-PATH-TOO-LONG DOT-CASE
+
+\ With a 210-byte d folder, p's own folder for the 20-byte id is 1005 bytes:
+\ the child's file there, 1023 bytes, fits FS-PATH-CAP, but p's own file
+\ there, 1029 bytes, does not. add refuses before p gains a folder.
+210 constant OWN-D-NAME                 \ the d folder that bounds p's own path
+: PINNED-PARENT-OWN-PATH-TOO-LONG ( -- )
+   PINNED-STORE
+   LONG BUF:CLEAR s" a/" L+ OWN-D-NAME BCD+ s" /pppppppppppppppppppp.md" L+
+   L$ s" P" s" open" 2 PUT-ISSUE
+   true MOVE-TOP
+   s" add|Kid|-P|pppppppppppppppppppp" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" I/O error\n" ERR=
+   false MOVE-TOP
+   LONG BUF:CLEAR
+   s\" d .dots\nd .dots/a\nd .dots/a/" L+ [char] b NAME-MAX L-BYTES
+   s\" \nd .dots/a/" L+ [char] b NAME-MAX L-BYTES s" /" L+ [char] c NAME-MAX L-BYTES
+   s\" \nd .dots/a/" L+ OWN-D-NAME BCD+ s\" \nf .dots/a/" L+ OWN-D-NAME BCD+
+   s\" /pppppppppppppppppppp.md\n  ---\n  title: P\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" L+
+   s\" f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+" L+
+   L$ TREE=
+;
+s" pinned-parent-own-path-too-long" ' PINNED-PARENT-OWN-PATH-TOO-LONG DOT-CASE
+
+\ A link where p's own folder goes is no folder: add moves nothing and writes
+\ nothing through it, so the outside folder stays empty.
+: PINNED-PARENT-FOLDER-SYMLINK ( -- )
+   PINNED-STORE
+   s" p.md" s" P" s" open" 2 PUT-ISSUE
+   s" outside" FILE$ MAKE-DIRS
+   s" ../outside" s" p" LINK
+   s" add|Kid|-P|p" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Not a directory: .dots/p\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+l .dots/p -> ../outside
+f .dots/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+   s" outside" s\" d outside\n" DIR=
+;
+s" pinned-parent-folder-symlink" ' PINNED-PARENT-FOLDER-SYMLINK DOT-CASE
+
+\ Without a config the same refusal writes none.
+: PARENT-FOLDER-SYMLINK-NO-CONFIG ( -- )
+   s" a.md" s" A" s" open" 2 PUT-ISSUE
+   s" p.md" s" P" s" open" 2 PUT-ISSUE
+   s" outside" FILE$ MAKE-DIRS
+   s" ../outside" s" p" LINK
+   s" add|Kid|-P|p" RUN
+   1 RC=
+   s" " OUT=
+   s\" Not a directory: .dots/p\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+l .dots/p -> ../outside
+f .dots/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+   s" outside" s\" d outside\n" DIR=
+;
+s" parent-folder-symlink-no-config" ' PARENT-FOLDER-SYMLINK-NO-CONFIG DOT-CASE
+
+: PINNED-PARENT-FOLDER-FILE ( -- )
+   PINNED-STORE
+   s" p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p" s\" text\n" PUT
+   s" add|Kid|-P|p" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Not a directory: .dots/p\n" ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/config
+  prefix=x
+.
+f .dots/p
+  text
+.
+f .dots/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-parent-folder-file" ' PINNED-PARENT-FOLDER-FILE DOT-CASE
 
 ;package
 ;using

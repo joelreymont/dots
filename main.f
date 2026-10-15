@@ -84,9 +84,18 @@ DYNAMIC-BUFFER SORT-BUF n
 : FAIL ( ptr u8 n -- ) 1 die ;
 : ?FAIL ( bool ptr u8 n -- ) rot if FAIL then 2drop ;
 : ?CAP-FAIL ( bool -- ) s" Capacity exceeded" ?FAIL ;
+\ The prefix goes to fd 2 as written, partial writes continued, and die ends
+\ the line with the id, so no buffer bounds a path the message names. die
+\ writes nothing for an empty span: an empty id leaves the prefix the message.
 : ISSUE-ERROR ( ptr u8 n ptr u8 n -- )
    {: prefix:ptr pu:n id:ptr iu:n :}
-   SB-RESET prefix pu SB-APPEND id iu SB-APPEND SB$ FAIL ;
+   iu 0= if prefix pu FAIL then
+   0 begin dup pu < while
+      {: at:n :}
+      2 prefix at + pu at - write {: written:n :}
+      written 0 <= if pu else at written + then
+   repeat drop
+   id iu FAIL ;
 : ?ISSUE-ERROR ( bool ptr u8 n ptr u8 n -- )
    {: c:bool prefix:ptr pu:n id:ptr iu:n :}
    c if prefix pu id iu ISSUE-ERROR then ;
@@ -197,9 +206,10 @@ DYNAMIC-BUFFER SORT-BUF n
    a BLOCK-U @ BLOCK-BUF u BYTE-COPY
    10 BLOCK-U @ u + BLOCK-BUF c!
    BLOCK-U @ u 1+ + BLOCK-U ! ;
+128 constant ID-MAX
 : VALID-ID? ( ptr u8 n -- bool )
    {: a:ptr u:n :}
-   u 0= u 128 > or if false exit then
+   u 0= u ID-MAX > or if false exit then
    a u s" ." STR= if false exit then
    u 0 ?do
       a i + c@ {: ch:n :}
@@ -402,10 +412,9 @@ DYNAMIC-BUFFER SORT-BUF n
       name nu s" archive" STR= if
          next
       else
+         \ A path is bounded only by the fs library's FS-PATH-CAP.
+         plen nu + 1+ FS-PATH-CAP > s" I/O error" ?FAIL
          path plen name nu depth 1+ PATH-AT PATH-JOIN {: child-u:n :}
-         \ Upstream's scan path is relative to the active/archive directory
-         \ and is formatted into a 512-byte array.
-         child-u archived if 14 else 6 then - 512 >= s" I/O error" ?FAIL
          depth 1+ PATH-AT {: child:ptr :}
          \ One lstat types the entry: symlinks, other types and unstatable
          \ entries match neither branch and are skipped.
@@ -1107,17 +1116,19 @@ variable PAD-COPY
       slug SLUG-ROW final BYTE-COPY final SLUG-U !
    then
    SLUG-ROW SLUG-U @ ;
-\ A new id is the prefix, the title's slug and a random suffix.
+\ A new id is the prefix, the title's slug and a random suffix. One longer
+\ than ID-MAX fails as invalid before SB holds it, whatever the prefix's length.
 : NEW-ID$ ( ptr u8 n -- ptr u8 n )
    SLUGIFY$ 2drop
+   PREFIX-U @ 1+ SLUG-U @ + 1+ 8 + ID-MAX > s" Invalid issue id" ?FAIL
    RANDOM-SUFFIX drop HEX-ROW 8 BYTE-COPY
    SB-RESET PREFIX$ SB-APPEND 45 SB-APPEND-C
    SLUG-ROW SLUG-U @ SB-APPEND 45 SB-APPEND-C
    HEX-ROW 8 SB-APPEND SB$ ;
 
-create PATH-ONE 512 allot
+create PATH-ONE FS-PATH-CAP allot
 variable PATH-ONE-U
-create PATH-TWO 512 allot
+create PATH-TWO FS-PATH-CAP allot
 variable PATH-TWO-U
 PTR-VARIABLE TITLE-A
 variable TITLE-U
@@ -1136,11 +1147,11 @@ variable PARENT-IDX
 
 : PATH-ONE! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 512 >= s" I/O error" ?FAIL
+   u FS-PATH-CAP > s" I/O error" ?FAIL
    a PATH-ONE u BYTE-COPY u PATH-ONE-U ! ;
 : PATH-TWO! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 512 >= s" I/O error" ?FAIL
+   u FS-PATH-CAP > s" I/O error" ?FAIL
    a PATH-TWO u BYTE-COPY u PATH-TWO-U ! ;
 : PATH-ONE$ ( -- ptr u8 n ) PATH-ONE PATH-ONE-U @ ;
 : PATH-TWO$ ( -- ptr u8 n ) PATH-TWO PATH-TWO-U @ ;
@@ -1192,65 +1203,25 @@ variable PARENT-IDX
    0 idx F-ERROR REC-CELL !
    0 idx F-CHILD REC-CELL !
    idx ;
-\ Add's duplicate check probes the id's file and its folder's own file at the
-\ top of .dots and in the archive, then searches: every entry down to ten
-\ levels below .dots that lstat types a directory, so never a symlink, and that
-\ is not named archive is probed for the id's file.
-10 constant SEARCH-DEPTH
-: ID-AT? ( ptr u8 n ptr u8 n bool -- bool )
-   {: dir:ptr du:n id:ptr iu:n folder:bool :}
-   SB-RESET dir du SB-APPEND id iu SB-APPEND
-   folder if 47 SB-APPEND-C id iu SB-APPEND then
-   s" .md" SB-APPEND SB$ FS-TRY-STAT ;
-\ True when a directory below the depth's path, depth levels under .dots,
-\ holds the id's file.
-: SEARCH-DIR ( n n ptr u8 n -- bool )
-   {: depth:n plen:n id:ptr iu:n :}
-   depth SEARCH-DEPTH >= if false exit then
-   depth PATH-AT {: path:ptr :}
-   SCAN-NAMES-U @ {: begin-at:n :}
-   path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
-   SCAN-NAMES-U @ {: end-at:n :}
-   begin-at begin dup end-at < while
-      {: at:n :}
-      at SCAN-NAMES c@ at 1+ SCAN-NAMES c@ 256 * + {: nu:n :}
-      at 2 + SCAN-NAMES {: name:ptr :}
-      name nu s" archive" STR= 0= if
-         path plen name nu depth 1+ PATH-AT PATH-JOIN {: child-u:n :}
-         depth 1+ PATH-AT {: child:ptr :}
-         child child-u FS-TRY-LSTAT-MODE MATCH option
-            none OF false ENDOF
-            some OF S-IFMT and S-IFDIR = ENDOF
-         ;MATCH if
-            SB-RESET child child-u SB-APPEND 47 SB-APPEND-C id iu SB-APPEND
-            s" .md" SB-APPEND SB$ FS-TRY-STAT if true exit then
-            depth 1+ child-u id iu RECURSE if true exit then
-         then
-      then
-      at nu 2 + +
-   repeat drop false ;
-: ID-TAKEN? ( ptr u8 n -- bool )
-   {: id:ptr iu:n :}
-   STORE? 0= if false exit then
-   s" .dots/" id iu false ID-AT? if true exit then
-   s" .dots/" id iu true ID-AT? if true exit then
-   s" .dots/archive/" id iu false ID-AT? if true exit then
-   s" .dots/archive/" id iu true ID-AT? if true exit then
-   0 SCAN-NAMES-U !
-   s" .dots" 0 PATH-AT swap BYTE-COPY
-   0 s" .dots" nip id iu SEARCH-DIR ;
-\ A parent without its own folder gets one where its file lives: D/p.md moves
-\ to D/p/p.md, D being a partition root or the own folder of p's parent.
+\ A parent's own folder, built in SB: the one it has, else D/p beside its file
+\ D/p.md, D being a partition root or the own folder of p's parent.
+: OWN-FOLDER$ ( n -- ptr u8 n )
+   {: idx:n :}
+   idx F-PATH FIELD$ {: path:ptr pu:n :}
+   idx OWN-FOLDER-U {: own-u:n :}
+   SB-RESET
+   own-u 0 > if path own-u SB-APPEND SB$ exit then
+   path pu path pu BASENAME nip - SB-APPEND idx F-ID FIELD$ SB-APPEND SB$ ;
+\ A parent without its own folder gets one: D/p.md moves to D/p/p.md. add
+\ bounds both paths by FS-PATH-CAP before it writes anything.
 : ENSURE-OWN-FOLDER ( n -- )
    {: parent:n :}
    parent OWN-FOLDER? if exit then
-   parent F-PATH FIELD$ {: path:ptr pu:n :}
-   pu path pu BASENAME nip - {: dir-u:n :}
-   SB-RESET path dir-u SB-APPEND parent F-ID FIELD$ SB-APPEND SB$ PATH-ONE!
-   PATH-ONE$ MAKE-DIRS
+   parent OWN-FOLDER$ PATH-ONE!
    SB-RESET PATH-ONE$ SB-APPEND 47 SB-APPEND-C
    parent F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
-   path pu PATH-TWO$ RENAME-ISSUE-NOREPLACE
+   PATH-ONE$ MAKE-DIRS
+   parent F-PATH FIELD$ PATH-TWO$ RENAME-ISSUE-NOREPLACE
    PATH-TWO$ parent F-PATH FIELD! ;
 : PARSE-ADD ( n -- )
    ARG-I !
@@ -1281,14 +1252,15 @@ variable PARENT-IDX
       PARENT-A @ PARENT-U @ AFTER-A @ AFTER-U @ STR=
       s" Error: parent and after cannot be the same issue" ?FAIL
    then
-   \ Only -a and -P name tasks to load; ID-TAKEN? looks for the new id itself.
-   AFTER-SET @ 0<> PARENT-SET @ 0<> or if
-      1 SCAN-KEYED !
-      AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ SCAN-KEY+ then
-      PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ SCAN-KEY+ then
-      true LOAD-ISSUES
-   then
+   \ The new id needs the prefix. One keyed walk then loads what add checks:
+   \ under the first key, the new id, every task that has it in either
+   \ partition at any depth; then the -a and -P tasks.
    LOAD-PREFIX
+   1 SCAN-KEYED !
+   TITLE-A @ TITLE-U @ NEW-ID$ SCAN-KEY+
+   AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ SCAN-KEY+ then
+   PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ SCAN-KEY+ then
+   true LOAD-ISSUES
    -1 AFTER-IDX !
    AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ s" After issue not found: " RESOLVE-LABELED AFTER-IDX ! then
    -1 PARENT-IDX !
@@ -1302,10 +1274,10 @@ variable PARENT-IDX
       PARENT-IDX @ F-STATUS REC-CELL @ 2 =
       s" Parent issue is closed: " PARENT-A @ PARENT-U @ ?ISSUE-ERROR
    then
-   TITLE-A @ TITLE-U @ NEW-ID$ 2dup CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
+   \ The first key is the new id.
+   0 SCAN-KEY-BYTES 0 SCAN-KEY-ENDS @ 2dup CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
+   2dup FIND-EXACT -1 <> s" Issue already exists" ?FAIL
    NEW-RECORD {: idx:n :}
-   idx F-ID FIELD$ ID-TAKEN? s" Issue already exists" ?FAIL
-   s" .dots" MAKE-DIRS SAVE-CONFIG
    TITLE-A @ TITLE-U @ idx F-TITLE FIELD!
    DESC-U @ 0 > if DESC-A @ DESC-U @ idx F-DESC FIELD! then
    ADD-PRIORITY @ idx F-PRIORITY REC-CELL !
@@ -1314,23 +1286,36 @@ variable PARENT-IDX
       0 BLOCK-U ! AFTER-IDX @ F-ID FIELD$ BLOCK-ADD
       0 BLOCK-BUF BLOCK-U @ idx F-BLOCKS FIELD!
    then
+   \ A child goes in its parent's own folder, which is missing or a directory.
+   \ With no parent, a folder already named after the task holds it, unless a
+   \ link names that folder. The new file's path and the path the parent's
+   \ file moves to fit FS-PATH-CAP, and the new path holds nothing. So add
+   \ neither replaces an entry nor writes through a link, and it refuses before
+   \ any write. SB holds the folder; nest says whether the file goes in it.
+   PARENT-IDX @ -1 <> if
+      PARENT-IDX @ OWN-FOLDER$ {: own:ptr ou:n :}
+      own ou FS-TRY-LSTAT-MODE MATCH option
+         none OF false ENDOF
+         some OF S-IFMT and S-IFDIR <> ENDOF
+      ;MATCH s" Not a directory: " own ou ?ISSUE-ERROR
+      ou 1+ PARENT-IDX @ F-ID FIELD$ nip + 3 + FS-PATH-CAP >
+      s" I/O error" ?FAIL
+      true
+   else
+      SB-RESET s" .dots/" SB-APPEND idx F-ID FIELD$ SB-APPEND
+      SB$ DIR? dup if SB$ SYMLINK? s" Issue already exists" ?FAIL then
+   then {: nest:bool :}
+   SB$ nip nest if 1+ idx F-ID FIELD$ nip + then 3 + FS-PATH-CAP >
+   s" I/O error" ?FAIL
+   nest if 47 SB-APPEND-C idx F-ID FIELD$ SB-APPEND then
+   s" .md" SB-APPEND SB$ FS-TRY-LSTAT s" Issue already exists" ?FAIL
+   SB$ idx F-PATH FIELD!
+   s" .dots" MAKE-DIRS SAVE-CONFIG
    PARENT-IDX @ -1 <> if
       PARENT-IDX @ ENSURE-OWN-FOLDER
       PARENT-IDX @ F-ID FIELD$ idx F-PARENT FIELD!
       1 idx F-CHILD REC-CELL !
    then
-   \ A child goes in its parent's own folder. With no parent, a folder already
-   \ named after the task holds it.
-   SB-RESET
-   PARENT-IDX @ -1 <> if
-      PARENT-IDX @ F-PATH FIELD$ drop PARENT-IDX @ OWN-FOLDER-U SB-APPEND
-      47 SB-APPEND-C idx F-ID FIELD$ SB-APPEND
-   else
-      s" .dots/" SB-APPEND idx F-ID FIELD$ SB-APPEND
-      SB$ DIR? if 47 SB-APPEND-C idx F-ID FIELD$ SB-APPEND then
-   then
-   s" .md" SB-APPEND SB$
-   idx F-PATH FIELD!
    idx SAVE-RECORD
    s" --json" ARG-AT? if
       JSON-OUT-BUF 1024 BUF:N>BLEN BUF:INIT
@@ -1486,9 +1471,9 @@ variable CLOSED-TIME-U
 create REOPEN-INDICES REOPEN-MAX cells allot
 create REOPEN-BACKUP-PATHS REOPEN-MAX 1024 * allot
 create REOPEN-BACKUP-US REOPEN-MAX cells allot
-create REOPEN-SOURCE 512 allot
+create REOPEN-SOURCE FS-PATH-CAP allot
 variable REOPEN-SOURCE-U
-create REOPEN-DEST 512 allot
+create REOPEN-DEST FS-PATH-CAP allot
 variable REOPEN-DEST-U
 variable REOPEN-N
 variable REOPEN-BACKUPS
@@ -1531,7 +1516,7 @@ variable REOPEN-PARENT-KEEP-U
    s" .dots/archive/" nip {: base-u:n :}
    path pu STATUS-DIR-U {: dir-u:n :}
    dir-u base-u >= if dir-u else pu then {: root-u:n :}
-   root-u 512 >= ?CAP-FAIL
+   root-u FS-PATH-CAP > s" I/O error" ?FAIL
    path REOPEN-SOURCE root-u BYTE-COPY root-u REOPEN-SOURCE-U !
    ISSUE-N @ 0 ?do
       i F-ARCHIVED REC-CELL @ 0<> i OWN-FOLDER? and if
@@ -1547,7 +1532,7 @@ variable REOPEN-PARENT-KEEP-U
    SB-RESET s" .dots/" SB-APPEND
    REOPEN-SOURCE base-u + REOPEN-SOURCE-U @ base-u - SB-APPEND
    SB$ {: dst:ptr du:n :}
-   du 512 >= ?CAP-FAIL
+   du FS-PATH-CAP > s" I/O error" ?FAIL
    dst REOPEN-DEST du BYTE-COPY
    du REOPEN-DEST-U ! ;
 : REOPEN-ENSURE-DEST-PARENT ( -- )
@@ -2138,7 +2123,7 @@ variable SLUG-RENAMED
 variable SLUG-CHANGED
 : OLD-ID! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 128 > s" Invalid issue id" ?FAIL
+   u ID-MAX > s" Invalid issue id" ?FAIL
    a OLD-ID-ROW u BYTE-COPY u OLD-ID-U ! ;
 : OLD-ID$ ( -- ptr u8 n ) OLD-ID-ROW OLD-ID-U @ ;
 : NEW-ID! ( ptr u8 n -- )
@@ -2176,9 +2161,9 @@ variable SLUG-FOLDER
 variable SLUG-FOLDER-MOVED
 variable SLUG-CHILD-FOLDER
 variable SLUG-CHILD-MOVED
-create SLUG-CHILD-FROM 512 allot
+create SLUG-CHILD-FROM FS-PATH-CAP allot
 variable SLUG-CHILD-FROM-U
-create SLUG-CHILD-TO 512 allot
+create SLUG-CHILD-TO FS-PATH-CAP allot
 variable SLUG-CHILD-TO-U
 variable SLUG-IDX
 variable SLUG-KEEP-OLD
@@ -2256,7 +2241,7 @@ variable SLUG-PATH-U
 : SLUG-CHILD-PATH ( ptr u8 n ptr u8 -- n )
    {: id:ptr iu:n row:ptr :}
    SB-RESET s" .dots/" SB-APPEND id iu SB-APPEND SB$ {: path:ptr pu:n :}
-   pu 512 >= s" I/O error" ?FAIL
+   pu FS-PATH-CAP > s" I/O error" ?FAIL
    path row pu BYTE-COPY pu ;
 \ A task with the old ID inside the folder owns it: SLUG-PLAN-PATH moves a
 \ task's own folder, and a duplicate ID keeps its folder.
