@@ -13,4 +13,5 @@ require case-status.f
 require case-add.f
 require case-slug.f
 require case-import.f
+require case-io.f
 DOT-T:FINISH

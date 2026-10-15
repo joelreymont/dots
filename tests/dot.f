@@ -35,17 +35,23 @@
 \ covers: `s" .git" FILE$ MAKE-DIRS`.
 \
 \ SAVE-ID captures the id on stdout's first line: the whole line, as add prints
-\ it, or the `id` of the JSON object `add --json` prints. ID= states a captured
-\ id's text, its eight random hex digits read as `<hex>`:
-\ `s" A" s" proj-fix-the-bug-<hex>" ID=`. SAVE-AFTER captures the rest of
-\ stdout's first line after a marker, the new id in slugify's `old -> new`
+\ it, or the first `"id"` of a JSON line, as `add --json` and `ls --json` print
+\ it. ID= states a captured id's text, its eight random hex digits read as
+\ `<hex>`: `s" A" s" proj-fix-the-bug-<hex>" ID=`. SAVE-AFTER captures the rest
+\ of stdout's first line after a marker, the new id in slugify's `old -> new`
 \ line: `s" archive -> " s" A" SAVE-AFTER`.
 \
 \ RUN-LIMITED runs dot as RUN does under tests/limit.f, which lets it write no
 \ byte to any file. GIT runs git in the store as RUN runs dot, so RC=, OUT= and
 \ ERR= check git's rc and output. RUN-HB runs `hb --load <script> -- <main.f>`
 \ as RUN runs bin/dot, for a probe script that loads dot's source to reach a
-\ path no command can.
+\ path no command can. RUN's other variants give dot another stdout:
+\ RUN-CLOSED none, fd 1 closed; RUN-BROKEN a pipe with no reader; RUN-READONLY
+\ /dev/null opened read-only; `n RUN-PIPE` a pipe the harness reads n bytes at
+\ a time to EOF, and `n RUN-HANGUP` one it closes after the first n bytes, both
+\ keeping what they read in `out`. SPAWN starts dot and WAIT reaps it, for
+\ concurrent writers; after `n CHILD` both and the checks use `out-<n>` and
+\ `err-<n>`.
 \
 \ Beside RC=, OUT=, ERR= and TREE=, MODE= checks a path's permission bits,
 \ SAME-LINE that two files hold the same line under a prefix, unmasked, and
@@ -105,8 +111,11 @@ variable RC                             \ the last command's rc; RUN-MS passing 
 variable EARLY                          \ 1: WAITING already reaped the child
 variable EARLY-RC
 variable LOCK-FD
+variable CHILD-K                        \ -1: `out` and `err`; else `out-<n>` and `err-<n>`
+128 constant CHUNK-CAP                  \ the most one read of a pipe asks for
+create CHUNK CHUNK-CAP allot
 
-create TEXT BUF:HDR-BYTES allot         \ a seeded file's bytes
+create TEXT BUF:HDR-BYTES allot         \ a seeded file's bytes, or what a pipe gave
 create SNAP BUF:HDR-BYTES allot         \ TREE$
 create MASKED BUF:HDR-BYTES allot       \ the text a check compares
 DYNAMIC-BUFFER RAW u8                   \ a file read back
@@ -197,11 +206,13 @@ variable NAMES-U
 
 : JSON-ID-KEY ( -- ptr u8 n ) s\" {\"id\":\"" ;
 
-\ The id a line of add's output names: the `id` a JSON object starts with, empty
-\ when unterminated, else the whole line.
+\ The id a line of dot's output names: the first `id` of a JSON line, as in
+\ `{"id":"…"` and `[{"id":"…"`, empty when unterminated, else the whole line.
+\ The ids dot makes need no JSON escape.
 : LINE-ID ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
-   a u JSON-ID-KEY STARTS-WITH? 0= if a u exit then
-   JSON-ID-KEY nip {: at:n :}
+   a u s" [" STARTS-WITH? if 1 else 0 then {: list:n :}
+   a list + u list - JSON-ID-KEY STARTS-WITH? 0= if a u exit then
+   list JSON-ID-KEY nip + {: at:n :}
    a at + u at - [char] " INDEX-OF MATCH option
       none OF a 0 ENDOF
       some OF IDX>N {: end:n :} a at + end ENDOF
@@ -380,26 +391,44 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
       a u ARG-SEP next
    repeat drop 2drop ;
 
+\ The stream's file, `out` or `err`, suffixed with CHILD's number.
+: STREAM$ ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
+   SB-RESET a u SB-APPEND
+   CHILD-K @ 0 >= if [char] - SB-APPEND-C CHILD-K @ FMT:SB-INT then
+   SB$ FILE$ ;
+
 : OPEN-OUT ( ptr u8 n -- n ) {: a:ptr u:n :}
-   a u FILE$ s" " WRITE-ALL
-   a u FILE$ OPEN-APPEND-FD ;
+   a u STREAM$ s" " WRITE-ALL
+   a u STREAM$ OPEN-APPEND-FD ;
+
+: OPEN-NULL ( -- n )
+   s" /dev/null" FS-PATHZ open-rd {: fd:n :}
+   fd 0 < if E-FS-OPEN throw then
+   fd ;
 
 : CLOSE ( n -- )
    FS-ATOMIC:CLOSE-FD 0<> if E-FS-IO throw then ;
 
-\ Start the program in the store with the argv PROC-ARGV+ built.
-: LAUNCH ( ptr u8 n -- pid ) {: prog:ptr progu:n :}
+\ Start the program in the store with the argv PROC-ARGV+ built and the fd as
+\ its stdout, which LAUNCH closes once the child holds it; -1 gives the child
+\ the harness's own. stdin is /dev/null and stderr the `err` file.
+: LAUNCH ( ptr u8 n n -- pid ) {: prog:ptr progu:n out:n :}
    s" PATH" ENV-COPY
    s" HOME" ENV-COPY
    s" TZ" >LEN s" UTC" >LEN PROC-ENV+
-   s" /dev/null" FS-PATHZ open-rd {: in:n :}
-   in 0 < if E-FS-OPEN throw then
-   s" out" OPEN-OUT {: out:n :}
+   OPEN-NULL {: in:n :}
    s" err" OPEN-OUT {: err:n :}
    prog progu >LEN STORE$ >LEN in >FD out >FD err >FD
    PROC-CWD:SPAWN-ARGV-ENV-CWD-IO {: pid:pid :}
-   in CLOSE out CLOSE err CLOSE
+   in CLOSE err CLOSE
+   out 0 >= if out CLOSE then
    pid ;
+
+\ Make dot's argv the |-separated arguments; answers bin/dot for LAUNCH.
+: DOT-ARGV ( ptr u8 n -- ptr u8 n )
+   PROC-ARGV-ENV-RESET
+   ARGV+
+   DOT-BUF DOT-U @ ;
 
 \ `<section>/<case>`, the name PASS and FAIL lines give.
 : CASE$ ( -- ptr u8 n )
@@ -416,7 +445,7 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
    LABEL-BUF LABEL-U @ ;
 
 : FIRST-LINE$ ( -- ptr u8 n )
-   s" out" FILE$ READ-FILE 10 0 SPLIT-NEXT 2drop ;
+   s" out" STREAM$ READ-FILE 10 0 SPLIT-NEXT 2drop ;
 
 \ Keep the text as the letter's id; an empty or oversized one fails the case.
 : KEEP-ID ( ptr u8 n ptr u8 n -- ) {: id:ptr idu:n la:ptr lu:n :}
@@ -498,9 +527,7 @@ EXPORT FILE$
 
 \ Start bin/dot in the store with the |-separated arguments.
 : SPAWN ( ptr u8 n -- pid )
-   PROC-ARGV-ENV-RESET
-   ARGV+
-   DOT-BUF DOT-U @ LAUNCH ;
+   DOT-ARGV s" out" OPEN-OUT LAUNCH ;
 
 \ Wait for the child, at most RUN-MS, and keep its rc.
 : WAIT ( pid -- ) {: pid:pid :}
@@ -531,14 +558,14 @@ EXPORT FILE$
    s" --" >LEN PROC-ARGV+
    DOT-BUF DOT-U @ >LEN PROC-ARGV+
    ARGV+
-   ENGINE-ID:PATH$ LAUNCH WAIT ;
+   ENGINE-ID:PATH$ s" out" OPEN-OUT LAUNCH WAIT ;
 
 \ Run git in the store with the |-separated arguments as RUN runs dot.
 : GIT ( ptr u8 n -- ) {: a:ptr u:n :}
    s" git" >LEN GIT-BUF RESOLVE-EXECUTABLE LEN>N {: gu:n :}
    PROC-ARGV-ENV-RESET
    a u ARGV+
-   GIT-BUF gu LAUNCH WAIT ;
+   GIT-BUF gu s" out" OPEN-OUT LAUNCH WAIT ;
 
 \ Run `hb --load <script> -- <main.f>` in the store as RUN runs bin/dot, the
 \ script a path from the repository root: a probe that loads dot's source.
@@ -549,7 +576,63 @@ EXPORT FILE$
    s" --" >LEN PROC-ARGV+
    s" main.f" REPO$ >LEN PROC-ARGV+
    s" hb" >LEN HB-BUF RESOLVE-EXECUTABLE LEN>N {: hbu:n :}
-   HB-BUF hbu LAUNCH WAIT ;
+   HB-BUF hbu s" out" OPEN-OUT LAUNCH WAIT ;
+
+private
+
+\ Run bin/dot with its stdout a pipe the harness reads at most chunk bytes at a
+\ time into `out`, closing its end after max bytes, or at EOF when max is -1.
+: READ-PIPE ( ptr u8 n n n -- ) {: a:ptr u:n chunk:n max:n :}
+   chunk 1 < chunk CHUNK-CAP > or if E-STR-CAPACITY throw then
+   PIPE-PAIR {: rd:fd wr:fd :}
+   rd FD-CLOEXEC!
+   a u DOT-ARGV wr FD>N LAUNCH {: pid:pid :}
+   TEXT BUF:CLEAR
+   0 begin {: total:n :}
+      max 0 < if chunk else max total - chunk min then {: want:n :}
+      want 0 > if rd FD>N CHUNK want read else 0 then {: got:n :}
+      got 0 < if E-FS-IO throw then
+      CHUNK got TEXT B+
+      total got +  got 0=
+   until drop
+   rd FD>N CLOSE
+   pid WAIT
+   s" out" STREAM$ TEXT B$ WRITE-ALL ;
+
+public
+
+\ Run bin/dot with fd 1 closed: the harness's own stdout, close-on-exec while
+\ dot starts.
+: RUN-CLOSED ( ptr u8 n -- )
+   1 >FD FD-CLOEXEC!
+   DOT-ARGV -1 LAUNCH {: pid:pid :}
+   1 F-SETFD 0 fcntl 0<> if E-FS-IO throw then
+   pid WAIT ;
+
+\ Run bin/dot with its stdout a pipe whose read end is already closed.
+: RUN-BROKEN ( ptr u8 n -- ) {: a:ptr u:n :}
+   PIPE-PAIR {: rd:fd wr:fd :}
+   rd FD>N CLOSE
+   a u DOT-ARGV wr FD>N LAUNCH WAIT ;
+
+\ Run bin/dot with its stdout /dev/null opened read-only.
+: RUN-READONLY ( ptr u8 n -- )
+   DOT-ARGV OPEN-NULL LAUNCH WAIT ;
+
+\ Run bin/dot with its stdout a pipe the harness reads chunk bytes at a time
+\ to EOF, keeping the bytes in `out`.
+: RUN-PIPE ( ptr u8 n n -- )
+   -1 READ-PIPE ;
+
+\ Run bin/dot with its stdout a pipe the harness closes after reading n bytes,
+\ which `out` keeps.
+: RUN-HANGUP ( ptr u8 n n -- ) {: a:ptr u:n max:n :}
+   a u CHUNK-CAP max READ-PIPE ;
+
+\ Later SPAWNs, RUNs and checks use `out-<n>` and `err-<n>`; -1 restores `out`
+\ and `err`, as each case starts.
+: CHILD ( n -- )
+   CHILD-K ! ;
 
 \ The child is still running after ms: it waits on something the case holds.
 : WAITING ( pid n -- pid ) {: pid:pid ms:n :}
@@ -590,6 +673,7 @@ EXPORT FILE$
    STORE$ EXISTS? if s" tests: two cases are named " type CASE$ type cr s" tests: duplicate case" 2 die then
    s" .dots/archive" FILE$ MAKE-DIRS
    IDS-RESET
+   -1 CHILD-K !
    0 EARLY !
    -1 LOCK-FD !
    GT-FAILURES {: before:n :}
@@ -605,10 +689,10 @@ EXPORT FILE$
    RC @ swap s" rc" LABEL GT-CHECK-N ;
 
 : OUT= ( ptr u8 n -- ) {: want:ptr wantu:n :}
-   s" out" FILE$ READ-FILE MASK want wantu s" stdout" LABEL GT-CHECK$ ;
+   s" out" STREAM$ READ-FILE MASK want wantu s" stdout" LABEL GT-CHECK$ ;
 
 : ERR= ( ptr u8 n -- ) {: want:ptr wantu:n :}
-   s" err" FILE$ READ-FILE MASK want wantu s" stderr" LABEL GT-CHECK$ ;
+   s" err" STREAM$ READ-FILE MASK want wantu s" stderr" LABEL GT-CHECK$ ;
 
 : TREE= ( ptr u8 n -- ) {: want:ptr wantu:n :}
    TREE$ MASK want wantu s" tree" LABEL GT-CHECK$ ;
