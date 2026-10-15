@@ -88,6 +88,19 @@ def seed(root, case):
     elif case == 'close-malformed-child':
         put(root, 'p/p.md', issue('Parent'))
         put(root, 'p/bad.md', 'not frontmatter\n')
+    elif case == 'import-archive-id':
+        base = {'status': 'open', 'priority': 1, 'issue_type': 'task',
+                'created_at': '2026-01-01T00:00:00Z'}
+        rows = [dict(base, id='a', title='A'),
+                dict(base, id='archive', title='Archive'),
+                dict(base, id='kid', title='Kid',
+                     dependencies=[{'depends_on_id': 'archive', 'type': 'parent-child'}])]
+        (root / 'import.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    elif case == 'add-parent-archive-id':
+        # add writes config and the archive folder before it resolves -P.
+        put(root, 'config', 'prefix=p\n')
+        put(root, 'archive.md', issue('Archive'))
+        (root / '.dots' / 'archive').mkdir()
     elif case == 'slugify-archived-parent':
         put(root, 'config', 'prefix=p\n')
         put(root, 'archive/a-12345678/a-12345678.md', issue('Archived parent', 'closed'))
@@ -352,6 +365,8 @@ def main():
         ('rm-deep-own-folder', ['rm', 'x']),
         ('tree-empty-id', ['tree']),
         ('close-malformed-child', ['close', 'p']),
+        ('import-archive-id', ['init', '--from-jsonl', 'import.jsonl']),
+        ('add-parent-archive-id', ['add', 'Kid', '-P', 'archive']),
         ('slugify-archived-parent', ['slugify']),
         ('slugify-deep', ['slugify']),
         ('utf8-long-name', ['ls', '--json']),
@@ -419,6 +434,30 @@ def main():
             same = same and (roots[1] / '.dots/p/p.md').read_text() == issue('Parent')
             same = same and (roots[1] / '.dots/p/bad.md').read_text() == 'not frontmatter\n'
             same = same and not any((roots[1] / '.dots/archive').iterdir())
+        if case in ('import-archive-id', 'add-parent-archive-id'):
+            # `archive` names the archive partition, so Habu creates no record
+            # with that id or under it; Zig files both into the partition.
+            zig, habu = observed
+            files = [sorted(str(p.relative_to(r / '.dots')) for p in (r / '.dots').rglob('*'))
+                     for r in roots]
+        if case == 'import-archive-id':
+            same = (zig['rc'] == 0 and zig['stderr'] == '' and
+                    zig['stdout_start'] == 'Imported 3 issues from import.jsonl\n' and
+                    files[0] == ['a.md', 'archive', 'archive/archive.md', 'archive/kid.md'])
+            same = same and (habu['rc'] == 0 and
+                             habu['stdout_start'] == 'Imported 1 issues from import.jsonl\n' and
+                             habu['stderr'] == 'Warning: skipped 2 issues due to errors\n' and
+                             files[1] == ['a.md', 'archive'])
+        if case == 'add-parent-archive-id':
+            same = (zig['rc'] == 0 and zig['stderr'] == '' and
+                    len(files[0]) == 4 and files[0][:2] == ['archive', 'archive/archive.md'] and
+                    re.fullmatch(r'archive/p-kid-[0-9a-f]{8}\.md', files[0][2]) is not None and
+                    files[0][3] == 'config')
+            same = same and (habu['rc'] == 1 and habu['stdout_bytes'] == 0 and
+                             habu['stderr'] == 'Invalid issue id\n' and
+                             files[1] == ['archive', 'archive.md', 'config'] and
+                             (roots[1] / '.dots/archive.md').read_text() == issue('Archive') and
+                             (roots[1] / '.dots/config').read_text() == 'prefix=p\n')
         if case == 'multi-off-time':
             same = same and all(side['same_closed_at'] for side in observed)
         if case == 'rewrite-mode':

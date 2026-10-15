@@ -203,6 +203,10 @@ DYNAMIC-BUFFER SORT-BUF n
          a i 1+ + c@ 46 = if false unloop exit then
       then
    loop true ;
+\ `archive` names the archive partition; existing records still read under VALID-ID?.
+: CREATABLE-ID? ( ptr u8 n -- bool )
+   2dup VALID-ID? 0= if 2drop false exit then
+   s" archive" STR= 0= ;
 : SET-SCALAR ( ptr u8 n ptr u8 n -- )
    {: key:ptr ku:n raw:ptr ru:n :}
    key ku s" created-at" STR= if raw ru TIMESTAMP-DECODE CURRENT @ F-CREATED FIELD! exit then
@@ -1225,7 +1229,8 @@ variable PARENT-IDX
    AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ s" After issue not found: " RESOLVE-LABELED AFTER-IDX ! then
    -1 PARENT-IDX !
    PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ s" Parent issue not found: " RESOLVE-LABELED PARENT-IDX ! then
-   TITLE-A @ TITLE-U @ NEW-ID$ 2dup VALID-ID? 0= s" Invalid issue id" ?FAIL
+   PARENT-IDX @ -1 <> if PARENT-IDX @ F-ID FIELD$ CREATABLE-ID? 0= s" Invalid issue id" ?FAIL then
+   TITLE-A @ TITLE-U @ NEW-ID$ 2dup CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
    NEW-RECORD {: idx:n :}
    idx F-ID FIELD$ ID-TAKEN? s" Issue already exists" ?FAIL
    TITLE-A @ TITLE-U @ idx F-TITLE FIELD!
@@ -2261,7 +2266,7 @@ variable SLUG-PATH-U
    idx F-ID FIELD$ OLD-ID!
    idx SLUG-NEW-ID
    OLD-ID$ RENAMED-ID$ STR= if exit then
-   RENAMED-ID$ VALID-ID? 0= s" Invalid issue id" ?FAIL
+   RENAMED-ID$ CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
    RENAMED-ID$ FIND-EXACT -1 <> if SLUG-SKIP exit then
    idx F-PATH FIELD$ FILE? 0= s" Issue not found" ?FAIL
    idx SLUG-PLAN-PATH SLUG-PLAN-CHILD
@@ -2596,12 +2601,12 @@ variable CYCLE-TAIL
       i F-ID FIELD$ IMPORT-IDX @ F-ID FIELD$ STR= if true unloop exit then
    loop false ;
 : IMPORT-CREATE ( -- )
-   IMPORT-IDX @ F-ID FIELD$ VALID-ID? 0= if
+   IMPORT-IDX @ F-ID FIELD$ CREATABLE-ID? 0= if
       1 IMPORT-SKIPPED-N +! ISSUE-N @ 1- ISSUE-N ! exit
    then
    IMPORT-IDX @ F-PARENT-PRESENT REC-CELL @ 0<> if
       IMPORT-IDX @ F-PARENT FIELD$
-      VALID-ID? 0= if
+      CREATABLE-ID? 0= if
          1 IMPORT-SKIPPED-N +! ISSUE-N @ 1- ISSUE-N ! exit
       then
    then
