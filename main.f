@@ -2461,7 +2461,8 @@ create GIT-EXEC-ROW PATH-CAP allot
    GIT-ADD-DOTS ;
 
 \ JSONL migration reads each line through a JSONL cursor, which keeps the line
-\ live until every typed field and dependency has been decoded.
+\ live until every typed field and dependency has been decoded; the cursor
+\ closes itself at end of input.
 TYPED-VARIABLE JSONL-CURSOR JSONL:cursor
 create JSONL-DECODE-BUF 1048576 allot
 DYNAMIC-BUFFER IMPORT-DEP-BUF u8
@@ -2799,11 +2800,7 @@ variable CYCLE-TAIL
 : IMPORT-LINES ( ptr u8 n -- )
    {: path:ptr pu:n :}
    JSONL-CURSOR path pu 1048575 BUF:N>BLEN JSONL:OPEN
-   begin JSONL-CURSOR JSONL:NEXT MATCH option
-      none OF true ENDOF
-      some OF JSONL-LINE:UNMAKE 2drop drop IMPORT-PROCESS-LINE false ENDOF
-   ;MATCH until
-   JSONL-CURSOR JSONL:CLOSE ;
+   begin JSONL-CURSOR JSONL:NEXT while IMPORT-PROCESS-LINE repeat ;
 \ Imports the JSONL at a path: a failed open or read is an I/O error, not EOF.
 : IMPORT-JSONL ( ptr u8 n -- )
    {: path:ptr pu:n :}
