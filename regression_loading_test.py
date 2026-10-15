@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-from test import issue, normalize_full, put
+from test import issue, local_offset, normalize_full, put
 
 FILE_CAP = 1048576
 BIG = b'x' * (FILE_CAP + 1)
@@ -75,7 +75,26 @@ def snapshot(root, ids):
     return rows
 
 
+def check_outcome(label, want, rc, out, err):
+    if want == 'ok' and rc != 0:
+        raise AssertionError(f'{label}: {err}')
+    if want == 'silent' and (rc, out, err) != (0, '', ''):
+        raise AssertionError(f'{label}: expected no output, got {rc} {out!r} {err!r}')
+    if want == 'pinned' and (rc != 0 or out != PINNED_ID + '\n'):
+        raise AssertionError(f'{label}: expected {PINNED_ID}, got {rc} {out!r} {err!r}')
+    if want == 'exists' and (rc == 0 or err != 'Issue already exists\n'):
+        raise AssertionError(f'{label}: expected a duplicate, got {rc} {out!r} {err!r}')
+    if want == 'too-long' and (rc == 0 or 'StreamTooLong' not in err):
+        raise AssertionError(f'{label}: expected StreamTooLong, got {err}')
+    if want == 'not-found' and (rc == 0 or err != 'Issue not found\n'):
+        raise AssertionError(f'{label}: expected missing moved child, got {err}')
+
+
 def run_case(zig, habu, name, setup, commands, expect, env=None):
+    """Each expect entry is one keyword both sides meet with equal outcomes,
+    or a (zig, habu, rewritten) step Habu corrects: each side meets its own
+    keyword, rewritten maps a path to each side's entry there, and the stores
+    agree elsewhere."""
     with tempfile.TemporaryDirectory(prefix='dots-loading-') as tmp:
         roots = [Path(tmp) / side / 'store' for side in ('zig', 'habu')]
         for root in roots:
@@ -96,22 +115,23 @@ def run_case(zig, habu, name, setup, commands, expect, env=None):
                                  normalize_full(out, ids[side]),
                                  normalize_full(err, ids[side]),
                                  snapshot(root, ids[side])))
-            if observed[0] != observed[1]:
-                raise AssertionError(f'{name} step {step} {argv}: Zig/Habu differ\n'
-                                     f'Zig: {observed[0][:3]}\nHabu: {observed[1][:3]}')
-            rc, out, err, _ = observed[1]
-            if expect[step] == 'ok' and rc != 0:
-                raise AssertionError(f'{name} step {step} {argv}: {err}')
-            if expect[step] == 'pinned' and (rc != 0 or out != PINNED_ID + '\n'):
-                raise AssertionError(f'{name} step {step} {argv}: expected {PINNED_ID}, '
-                                     f'got {rc} {out!r} {err!r}')
-            if expect[step] == 'exists' and (rc == 0 or err != 'Issue already exists\n'):
-                raise AssertionError(f'{name} step {step} {argv}: expected a duplicate, '
-                                     f'got {rc} {out!r} {err!r}')
-            if expect[step] == 'too-long' and (rc == 0 or 'StreamTooLong' not in err):
-                raise AssertionError(f'{name} step {step} {argv}: expected StreamTooLong, got {err}')
-            if expect[step] == 'not-found' and (rc == 0 or err != 'Issue not found\n'):
-                raise AssertionError(f'{name} step {step} {argv}: expected missing moved child, got {err}')
+            label = f'{name} step {step} {argv}'
+            if isinstance(expect[step], tuple):
+                *keywords, rewritten = expect[step]
+                stores = [dict(side[3]) for side in observed]
+                for path, entries in rewritten.items():
+                    for store, entry in zip(stores, entries):
+                        if store.pop(path, None) != entry:
+                            raise AssertionError(f'{label}: {path} is not {entry!r}')
+                if stores[0] != stores[1]:
+                    raise AssertionError(f'{label}: Zig/Habu stores differ')
+                for keyword, side in zip(keywords, observed):
+                    check_outcome(label, keyword, *side[:3])
+            else:
+                if observed[0] != observed[1]:
+                    raise AssertionError(f'{label}: Zig/Habu differ\n'
+                                         f'Zig: {observed[0][:3]}\nHabu: {observed[1][:3]}')
+                check_outcome(label, expect[step], *observed[1][:3])
     print(f'PASS {name}', flush=True)
 
 
@@ -210,10 +230,18 @@ def main():
     cases.append(('whole-store-still-reads',
                   lambda root: seed(root, [], 'active'),
                   [(['ls', '--json'], None)], ['too-long']))
+    # Closing a moves its folder, child included, into the archive. The
+    # reference then cannot find the child; Habu closes it there again, with
+    # a's closing time.
+    closed_child = ('---\ntitle: Child\nstatus: closed\npriority: 2\nissue-type: task\n'
+                    'created-at: "2026-01-01T00:00:00Z"\n'
+                    f'closed-at: "<generated-time>{local_offset()}"\n---\n')
     cases.append(('status-after-parent-move',
                   lambda root: seed(root, [('a/a.md', issue('A')),
                                            ('a/child.md', issue('Child', 'closed'))], 'archive'),
-                  [(['off', 'a', 'child'], None)], ['not-found']))
+                  [(['off', 'a', 'child'], None)],
+                  [('not-found', 'silent', {'.dots/archive/a/child.md': (
+                      ['file', issue('Child', 'closed')], ['file', closed_child])})]))
     cases.append(('status-child-before-parent',
                   lambda root: seed(root, [('a/a.md', issue('A')),
                                            ('a/child.md', issue('Child', 'closed'))], 'archive'),

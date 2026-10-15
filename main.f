@@ -127,9 +127,17 @@ DYNAMIC-BUFFER SORT-BUF n
    0 idx field 2 * 1+ REC-CELL ! ;
 : PATH-AT ( n -- ptr u8 ) FS-PATH-CAP * PATHS + ;
 : PATH-JOIN ( ptr u8 n ptr u8 n ptr u8 -- n ) JOIN-PATH ;
-: PATH-SLASHES ( n -- n )
-   F-PATH FIELD$ {: path:ptr pu:n :}
-   0 pu 0 ?do path i + c@ 47 = if 1+ then loop ;
+\ A record's own folder is the directory of its path when that directory lies
+\ below the record's partition root and is named after it. The length of that
+\ directory in the path, or 0 without one.
+: OWN-FOLDER-U ( n -- n )
+   {: idx:n :}
+   idx F-PATH FIELD$ {: path:ptr pu:n :}
+   pu path pu BASENAME nip - 1- {: dir-u:n :}
+   idx F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive" else s" .dots" then nip
+   dir-u >= if 0 exit then
+   path dir-u BASENAME idx F-ID FIELD$ STR= if dir-u else 0 then ;
+: OWN-FOLDER? ( n -- bool ) OWN-FOLDER-U 0 > ;
 : NEXT-LINE ( ptr u8 n n -- ptr u8 n n bool ) 10 swap SPLIT-NEXT ;
 
 : STATUS>DISPLAY ( n -- ptr u8 n )
@@ -378,8 +386,9 @@ DYNAMIC-BUFFER SORT-BUF n
    {: depth:n plen:n archived:bool below:bool :}
    depth MAX-DEPTH 1- >= ?CAP-FAIL
    depth PATH-AT {: path:ptr :}
-   \ A nested file named after its directory is that folder's own task; any
-   \ other nested file is a child of it.
+   \ A nested file named after its directory is that folder's own task, a child
+   \ of the folder enclosing it below the top level; any other nested file is a
+   \ child of its directory.
    path plen BASENAME {: dir:ptr du:n :}
    SCAN-NAMES-U @ {: begin-at:n :}
    path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
@@ -405,10 +414,14 @@ DYNAMIC-BUFFER SORT-BUF n
          ;MATCH {: kind:n :}
          kind S-IFREG = name nu FILE-ENTRY? and if
             name nu 3 - {: id:ptr iu:n :}
-            depth 0 > if dir du id iu STR= 0= else false then {: is-child:bool :}
-            id iu below archived depth 0 > and is-child 0= and SCAN-KEEP? if
-               child child-u id iu archived is-child PARSE-FILE
-               is-child if dir du CURRENT @ F-PARENT FIELD! then
+            depth 0 > if dir du id iu STR= else false then {: owner:bool :}
+            depth 0 > owner 0= and owner depth 1 > and or {: has-parent:bool :}
+            id iu below archived owner and SCAN-KEEP? if
+               child child-u id iu archived has-parent PARSE-FILE
+               has-parent if
+                  owner if path plen du - 1- BASENAME else dir du then
+                  CURRENT @ F-PARENT FIELD!
+               then
             then
          else
             kind S-IFDIR = if
@@ -433,14 +446,9 @@ DYNAMIC-BUFFER SORT-BUF n
          0 s" .dots/archive" nip true false SCAN-DIR
       then
    then ;
-: ARCHIVED-CHILD? ( n -- bool )
-   {: idx:n :}
-   idx F-ARCHIVED REC-CELL @ 0<> idx F-CHILD REC-CELL @ 0<> and ;
 : LOAD-TARGET ( n -- n )
    {: idx:n :}
    idx F-ID FIELD$ VALID-ID? 0= s" Invalid issue id" ?FAIL
-   idx ARCHIVED-CHILD? ?ARG-NOT-FOUND
-   idx PATH-SLASHES 11 > ?ARG-NOT-FOUND
    idx PARSE-RECORD
    idx ;
 
@@ -625,7 +633,6 @@ DYNAMIC-BUFFER SORT-BUF n
    0<> s" Invalid issue frontmatter" ?FAIL ;
 : SHOW ( n -- )
    {: idx:n :}
-   idx ARCHIVED-CHILD? ?ARG-NOT-FOUND
    idx CHECK-ERROR
    s" ID:       " DOT-IO:PRINT idx F-ID FIELD$ DOT-IO:PRINTLN
    s" Title:    " DOT-IO:PRINT idx F-TITLE FIELD$ DOT-IO:PRINTLN
@@ -1273,10 +1280,7 @@ DYNAMIC-BUFFER STATUS-ARGS n
 create CLOSED-TIME 40 allot
 variable CLOSED-TIME-U
 
-: RECORD-PATH? ( n -- bool )
-   {: idx:n :}
-   idx ARCHIVED-CHILD? if false exit then
-   idx F-PATH FIELD$ FILE? ;
+: RECORD-PATH? ( n -- bool ) F-PATH FIELD$ FILE? ;
 : CHECK-PATH ( n -- ) RECORD-PATH? 0= s" Issue not found" ?FAIL ;
 : STATUS-DIR-U ( ptr u8 n -- n )
    {: path:ptr pu:n :}
@@ -1289,27 +1293,26 @@ variable CLOSED-TIME-U
    pu du <= if false exit then
    path du dir du STR= 0= if false exit then
    path du + c@ 47 = ;
-\ A task's descendants are the records of its partition under a folder named
-\ after it: the top-level one add -P creates, or the one holding its own file,
-\ which moves with it into the archive. An archived task also has the children
-\ add -P still puts directly in the active .dots/<id>/.
+\ A task's descendants are the records, at any depth, under its own folder and
+\ under the folder named after it at the top of its partition, where add -P
+\ puts its children. An archived task also has those under the active
+\ .dots/<id>/.
 : STATUS-DESCENDANT? ( n n -- bool )
    {: child:n parent:n :}
-   child F-ARCHIVED REC-CELL @ parent F-ARCHIVED REC-CELL @ <> if
-      child F-ARCHIVED REC-CELL @ 0<> if false exit then
-      child PATH-SLASHES 2 <> if false exit then
-      child F-PARENT FIELD$ parent F-ID FIELD$ STR= exit
-   then
    child parent = if false exit then
-   parent F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" else s" .dots/" then
-   nip {: base-u:n :}
    child F-PATH FIELD$ {: cp:ptr cpu:n :}
-   cp base-u + cpu base-u - parent F-ID FIELD$ STATUS-UNDER? if true exit then
-   parent F-CHILD REC-CELL @ 0<> if false exit then
-   parent F-PATH FIELD$ {: pp:ptr ppu:n :}
-   pp ppu STATUS-DIR-U {: pdir:n :}
-   pdir base-u < if false exit then
-   cp cpu pp pdir STATUS-UNDER? ;
+   parent F-ARCHIVED REC-CELL @ 0<> {: archived:bool :}
+   child F-ARCHIVED REC-CELL @ parent F-ARCHIVED REC-CELL @ = if
+      parent OWN-FOLDER-U {: own-u:n :}
+      own-u 0 > if
+         cp cpu parent F-PATH FIELD$ drop own-u STATUS-UNDER? if true exit then
+      then
+      archived if s" .dots/archive/" else s" .dots/" then nip {: base-u:n :}
+      cp base-u + cpu base-u - parent F-ID FIELD$ STATUS-UNDER? exit
+   then
+   archived 0= if false exit then
+   s" .dots/" nip {: active-u:n :}
+   cp active-u + cpu active-u - parent F-ID FIELD$ STATUS-UNDER? ;
 : STATUS-CHILDREN-OPEN? ( n -- bool )
    {: idx:n :}
    ISSUE-N @ 0 ?do
@@ -1442,12 +1445,10 @@ variable REOPEN-PARENT-KEEP-U
    {: idx:n :}
    0 REOPEN-N !
    ISSUE-N @ 0 ?do
-      i idx <> i F-ARCHIVED REC-CELL @ 0<> and
-      i F-CHILD REC-CELL @ 0= and if
+      i idx <> i F-ARCHIVED REC-CELL @ 0<> and i OWN-FOLDER? and if
          i F-PATH FIELD$ {: path:ptr pu:n :}
          path pu STATUS-DIR-U {: dir-u:n :}
-         idx F-PATH FIELD$ path dir-u STATUS-IN-SUBTREE?
-         dir-u s" .dots/archive" nip > and if
+         idx F-PATH FIELD$ path dir-u STATUS-IN-SUBTREE? if
             path pu ASSERT-ARCHIVE-PATH-REAL
             i PARSE-RECORD
             i CHECK-ERROR
@@ -1464,11 +1465,10 @@ variable REOPEN-PARENT-KEEP-U
    root-u 512 >= ?CAP-FAIL
    path REOPEN-SOURCE root-u BYTE-COPY root-u REOPEN-SOURCE-U !
    ISSUE-N @ 0 ?do
-      i F-ARCHIVED REC-CELL @ 0<> i F-CHILD REC-CELL @ 0= and if
+      i F-ARCHIVED REC-CELL @ 0<> i OWN-FOLDER? and if
          i F-PATH FIELD$ {: ancestor:ptr au:n :}
          ancestor au STATUS-DIR-U {: ancestor-dir:n :}
-         ancestor-dir base-u >=
-         ancestor-dir REOPEN-SOURCE-U @ < and
+         ancestor-dir REOPEN-SOURCE-U @ <
          path pu ancestor ancestor-dir STATUS-IN-SUBTREE? and if
             ancestor REOPEN-SOURCE ancestor-dir BYTE-COPY
             ancestor-dir REOPEN-SOURCE-U !
@@ -1785,13 +1785,12 @@ variable STATUS-SAVE-IDX
    dup 0 = if drop s" ○" exit then
    dup 1 = if drop s" >" exit then
    drop s" ✓" ;
-\ The tree index, built once after SORT-ISSUES. Per record: its path's slash
-\ count, the first of its children and its next sibling, -1 ending a list.
+\ The tree index, built once after SORT-ISSUES. Per record: the first of its
+\ children and its next sibling, -1 ending a list.
 \ TREE-SLOT interleaves two open-addressed tables of TREE-CAP slots, each
 \ holding a record index + 1 (0 empty): PATH-KEYS by F-PATH among non-error
 \ records and ID-KEYS by F-ID among all records. The first record per key
 \ owns the slot, so records sharing an ID share one child list.
-DYNAMIC-BUFFER TREE-SLASH n
 DYNAMIC-BUFFER TREE-HEAD n
 DYNAMIC-BUFFER TREE-NEXT n
 DYNAMIC-BUFFER TREE-SLOT n
@@ -1827,16 +1826,15 @@ variable TREE-CAP
 : TREE-CHILD? ( n -- bool )
    {: idx:n :}
    idx F-ERROR REC-CELL @ 0= idx F-ARCHIVED REC-CELL @ 0= and
-   idx F-CHILD REC-CELL @ 0<> and idx TREE-SLASH @ 2 = and ;
+   idx F-CHILD REC-CELL @ 0<> and ;
 : TREE-INDEX ( -- )
    ISSUE-N @ {: count:n :}
    2 begin dup count 2 * < while 2 * repeat {: cap:n :}
    cap TREE-CAP !
-   count TREE-SLASH-RESERVE count TREE-HEAD-RESERVE count TREE-NEXT-RESERVE
+   count TREE-HEAD-RESERVE count TREE-NEXT-RESERVE
    cap 2 * TREE-SLOT-RESERVE
    cap 2 * 0 ?do 0 i TREE-SLOT ! loop
    count 0 ?do
-      i PATH-SLASHES i TREE-SLASH !
       -1 i TREE-HEAD !
       i ID-KEYS TREE-ADD
       i F-ERROR REC-CELL @ 0= if i PATH-KEYS TREE-ADD then
@@ -1852,16 +1850,23 @@ variable TREE-CAP
          then
       then
    loop ;
+\ A child's parent file lies in the directory named after the parent that
+\ encloses it: the child's own directory, or the one above a folder's own task.
+: ATTACH-FILE$ ( n -- ptr u8 n )
+   {: idx:n :}
+   idx F-PATH FIELD$ {: path:ptr pu:n :}
+   path pu STATUS-DIR-U {: dir-u:n :}
+   idx OWN-FOLDER? if path dir-u STATUS-DIR-U else dir-u then {: at-u:n :}
+   SB-RESET path at-u SB-APPEND 47 SB-APPEND-C
+   idx F-PARENT FIELD$ SB-APPEND s" .md" SB-APPEND SB$ ;
+\ A child is attached when a valid record holds its parent file; any other
+\ open child is an orphan root, as is every open task without a parent.
 : TREE-ROOT? ( n -- bool )
    {: idx:n :}
    idx F-ARCHIVED REC-CELL @ 0<> idx F-ERROR REC-CELL @ 0<> or if false exit then
    idx F-STATUS REC-CELL @ 2 = if false exit then
-   idx TREE-SLASH @ 2 > if false exit then
-   idx F-PARENT FIELD$ dup 0= if 2drop true exit then
-   {: parent:ptr pu:n :}
-   SB-RESET s" .dots/" SB-APPEND parent pu SB-APPEND
-   47 SB-APPEND-C parent pu SB-APPEND s" .md" SB-APPEND SB$
-   PATH-KEYS TREE-GET 0< ;
+   idx F-PARENT FIELD$ nip 0= if true exit then
+   idx ATTACH-FILE$ PATH-KEYS TREE-GET 0< ;
 : PRINT-TREE-ROOT ( n -- )
    {: idx:n :}
    91 DOT-IO:PRINT-BYTE idx F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
@@ -2078,7 +2083,7 @@ variable SLUG-PATH-U
    \ The task's own folder lies inside its partition, never .dots/archive.
    idx F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive/" else s" .dots/" then
    nip {: base-u:n :}
-   idx F-CHILD REC-CELL @ 0= SLUG-PARENT-SLASH @ 1+ base-u >= and if
+   SLUG-PARENT-SLASH @ 1+ base-u >= if
       PATH-ONE SLUG-PARENT-SLASH @ 1+ +
       SLUG-LAST-SLASH @ SLUG-PARENT-SLASH @ - 1-
       OLD-ID$ STR= if

@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 def put(root, name, content):
     p = root / '.dots' / name
@@ -400,9 +401,9 @@ def seed_full(root, kind):
             put(root, f'tie-{name}.md', issue('Tie ' + name))
         put(root, 'first.md', issue('First', priority=1))
     elif kind == 'tree-shapes':
-        # Children in ORDER, closed and malformed children, a too-deep leaf,
-        # two roots sharing ID twin and so one child list, and roots whose
-        # parent file is missing or malformed.
+        # Children in ORDER, closed and malformed children, a deep leaf whose
+        # parent file is missing, two roots sharing ID twin and so one child
+        # list, and roots whose parent file is missing or malformed.
         put(root, 'lead/lead.md', issue('Lead parent', priority=1))
         put(root, 'lead/kid.md', issue('Open kid', priority=3))
         put(root, 'lead/shut.md', issue('Closed kid', 'done', 0))
@@ -424,6 +425,35 @@ def normalize_full(value, ids):
         if re.search(r'-[0-9a-f]{8}$', actual):
             value = value.replace(actual, actual[:-8] + '<random:' + symbol + '>')
     return GENERATED_TIME.sub(lambda m: '<generated-time>' + m['offset'], value)
+
+
+def local_offset():
+    """The local UTC offset as a generated timestamp prints it, as +03:00."""
+    offset = time.strftime('%z')
+    return offset[:3] + ':' + offset[3:]
+
+
+def corrected_steps():
+    """Steps where Habu reads the nested layout and the Zig reference does not.
+    Each maps (sequence, step) to Zig's observed and Habu's (exit, stdout,
+    stderr); the stores must still match. An archived child is a task, and a
+    deep child whose parent file is missing is an orphan root."""
+    child = 'hierarchy-child-task-<random:C>'
+    stamp = '<generated-time>' + local_offset()
+    lead = '[lead] ○ Lead parent\n  └─ [shut] ✓ Closed kid\n  └─ [kid] ○ Open kid\n'
+    rest = ('[twin] ○ Twin file\n  └─ [pair] ○ Pair under twin\n'
+            '[waif] ○ Waif without parent file\n'
+            '[twin] ○ Twin folder\n  └─ [pair] ○ Pair under twin\n'
+            '[sprout] ○ Sprout under malformed parent\n')
+    return {
+        ('hierarchy', 11): (
+            (1, '', f'Issue not found: {child}\n'),
+            (0, f'ID:       {child}\nTitle:    Child task\nStatus:   done\nPriority: 2\n'
+                f'Created:  {stamp}\nClosed:   {stamp}\nReason:   child done\n', '')),
+        ('tree-shapes', 0): (
+            (0, lead + rest, ''),
+            (0, lead + '[leaf] ○ Deep leaf\n' + rest, '')),
+    }
 
 
 def tree_snapshot(root, ids):
@@ -449,6 +479,7 @@ def full_main():
     binaries = [str(Path(s).resolve()) for s in sys.argv[2:]]
     run = Path(tempfile.mkdtemp(prefix='full-parity-'))
     env = dict(os.environ, NO_COLOR='1')
+    corrected = corrected_steps()
     report = []
     for name, kind, commands in FULL_SEQUENCES:
         roots = [run / label / name for label in ('zig', 'habu')]
@@ -489,7 +520,12 @@ def full_main():
                         if old.exists() and new.exists() and not target.exists():
                             old.rename(target)
                 observations[0]['tree'] = tree_snapshot(roots[0], ids[0])
-            equal = observations[0] == observations[1]
+            if (name, step) in corrected:
+                equal = (observations[0]['tree'] == observations[1]['tree'] and
+                         all((side['exit'], side['stdout'], side['stderr']) == want
+                             for side, want in zip(observations, corrected[name, step])))
+            else:
+                equal = observations[0] == observations[1]
             report.append({'sequence':name, 'step':step, 'argv':argv,
                            'passed':equal, 'observations':observations})
             print(('PASS ' if equal else 'FAIL ') + name + ':' + str(step) + ' ' + repr(argv), flush=True)

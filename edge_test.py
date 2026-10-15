@@ -119,6 +119,26 @@ def seed(root, case):
     elif case == 'show-unrelated-large':
         put(root, 'a.md', issue('A'))
         put(root, 'z.md', 'x' * (1048576 + 1))
+    elif case in ('show-archived-child', 'rm-archived-child-referencer'):
+        # C, a closed child of archived P, blocks on Q.
+        put(root, 'archive/p/p.md', issue('P', 'closed'))
+        put(root, 'archive/p/c.md', issue('C', 'closed', blocks=['q']))
+        put(root, 'q.md', issue('Q'))
+    elif case in ('tree-nested-owner', 'tree-nested-owner-id'):
+        # C owns the nested folder p/c, so it is P's child and G is C's.
+        put(root, 'p/p.md', issue('P'))
+        put(root, 'p/c/c.md', issue('C'))
+        put(root, 'p/c/g.md', issue('G'))
+    elif case in ('rm-archived-child', 'import-block-archived-child'):
+        # C is a closed child of archived P.
+        put(root, 'archive/p/p.md', issue('P', 'closed'))
+        put(root, 'archive/p/c.md', issue('C', 'closed'))
+        put(root, 'q.md', issue('Q'))
+        if case == 'import-block-archived-child':
+            row = {'id': 'x', 'title': 'X', 'status': 'open', 'priority': 1,
+                   'issue_type': 'task', 'created_at': '2026-01-01T00:00:00Z',
+                   'dependencies': [{'depends_on_id': 'c', 'type': 'blocks'}]}
+            (root / 'import.jsonl').write_text(json.dumps(row) + '\n')
     elif case in ('show-depth-ten', 'show-depth-eleven'):
         depth = 10 if case == 'show-depth-ten' else 11
         put(root, '/'.join('d' + str(i) for i in range(depth)) + '/leaf.md', issue('Deep leaf'))
@@ -281,16 +301,77 @@ def run(binary, root, command, case):
     return result
 
 
+def md_files(root):
+    return {str(path.relative_to(root / '.dots')): path.read_text()
+            for path in (root / '.dots').rglob('*.md')}
+
+
+# Cases where Habu reads the nested layout and the Zig reference does not:
+# Zig's observed and Habu's (rc, stdout, stderr). Every task at any depth,
+# archived children included, is found, a nested folder's owner is a child of
+# the task enclosing it, and a deep child whose parent file is missing is an
+# orphan root. A read leaves both stores alike; CORRECTED_FILES
+# holds each side's task files after a write.
+CORRECTED = {
+    'show-depth-eleven': (
+        (1, '', 'Issue not found: leaf\n'),
+        (0, 'ID:       leaf\nTitle:    Deep leaf\nStatus:   open\nPriority: 2\n'
+            'Created:  2026-01-01T00:00:00Z\n', '')),
+    'tree-deep-root': ((0, '', ''), (0, '[leaf] ○ Deep leaf\n', '')),
+    'show-archived-child': (
+        (1, '', 'Issue not found: c\n'),
+        (0, 'ID:       c\nTitle:    C\nStatus:   done\nPriority: 2\n'
+            'Created:  2026-01-01T00:00:00Z\n', '')),
+    'rm-archived-child-referencer': ((1, '', 'Issue not found\n'), (0, '', '')),
+    'tree-nested-owner': ((0, '[p] ○ P\n', ''), (0, '[p] ○ P\n  └─ [c] ○ C\n', '')),
+    'tree-nested-owner-id': ((0, '[c] ○ C\n', ''), (0, '[c] ○ C\n  └─ [g] ○ G\n', '')),
+    'rm-archived-child': ((1, '', 'Issue not found\n'), (0, '', '')),
+    'import-block-archived-child': (
+        (0, 'Imported 1 issues from import.jsonl\n',
+         'Warning: skipped 1 dependencies due to errors\n'),
+        (0, 'Imported 1 issues from import.jsonl\n', '')),
+}
+ARCHIVED_CHILD = {'archive/p/p.md': issue('P', 'closed'),
+                  'archive/p/c.md': issue('C', 'closed'), 'q.md': issue('Q')}
+IMPORTED_X = ('---\ntitle: X\nstatus: open\npriority: 1\nissue-type: task\n'
+              'created-at: "2026-01-01T00:00:00Z"\n')
+CORRECTED_FILES = {
+    # Zig refuses before any write; Habu removes Q and its reference in C.
+    'rm-archived-child-referencer': (
+        {'archive/p/p.md': issue('P', 'closed'),
+         'archive/p/c.md': issue('C', 'closed', blocks=['q']), 'q.md': issue('Q')},
+        {'archive/p/p.md': issue('P', 'closed'),
+         'archive/p/c.md': '---\ntitle: C\nstatus: closed\npriority: 2\n'
+                           'issue-type: task\ncreated-at: "2026-01-01T00:00:00Z"\n---\n'}),
+    # Zig refuses before any write; Habu removes archived C alone.
+    'rm-archived-child': (
+        ARCHIVED_CHILD,
+        {'archive/p/p.md': issue('P', 'closed'), 'q.md': issue('Q')}),
+    # Zig drops X's block on archived C; Habu keeps it.
+    'import-block-archived-child': (
+        dict(ARCHIVED_CHILD, **{'x.md': IMPORTED_X + '---\n'}),
+        dict(ARCHIVED_CHILD, **{'x.md': IMPORTED_X + 'blocks:\n  - c\n---\n'})),
+}
+
+
+def corrected_case(case, roots, observed):
+    for side, want in zip(observed, CORRECTED[case]):
+        if (side['rc'], side['stdout_start'], side['stderr']) != want:
+            return False
+        if side['stdout_bytes'] != len(want[1].encode()):
+            return False
+    if case in CORRECTED_FILES:
+        return all(md_files(root) == want for root, want in zip(roots, CORRECTED_FILES[case]))
+    return observed[0]['tree_sha256'] == observed[1]['tree_sha256']
+
+
 def corrected_slugify_case(case, roots, observed):
     # The Zig reference cannot rename archived children and flattens nested
     # parent folders. Keep those outcomes visible while requiring the corrected
     # Habu tree, complete progress, and preserved task contents.
     zig, habu = observed
     zig_root, habu_root = roots
-    def files(root):
-        return {str(path.relative_to(root / '.dots')): path.read_text()
-                for path in (root / '.dots').rglob('*.md')}
-    zig_files, habu_files = files(zig_root), files(habu_root)
+    zig_files, habu_files = md_files(zig_root), md_files(habu_root)
     if case == 'slugify-archived-parent':
         expected_zig = {'archive/a-12345678/a-12345678.md',
                         'archive/a-12345678/c-12345678.md'}
@@ -376,6 +457,12 @@ def main():
         ('show-unrelated-large', ['show', 'a']),
         ('show-depth-ten', ['show', 'leaf']),
         ('show-depth-eleven', ['show', 'leaf']),
+        ('show-archived-child', ['show', 'c']),
+        ('rm-archived-child-referencer', ['rm', 'q']),
+        ('tree-nested-owner', ['tree']),
+        ('tree-nested-owner-id', ['tree', 'c']),
+        ('rm-archived-child', ['rm', 'c']),
+        ('import-block-archived-child', ['init', '--from-jsonl', 'import.jsonl']),
         ('show-odd-id', ['show', 'odd#id']),
         ('empty-id-list', ['ls', '--json']),
         ('empty-prefix', ['add', 'Child', '-P', '']),
@@ -426,6 +513,8 @@ def main():
         same = observed[0] == observed[1]
         if case in ('slugify-archived-parent', 'slugify-deep'):
             same = corrected_slugify_case(case, roots, observed)
+        if case in CORRECTED:
+            same = corrected_case(case, roots, observed)
         if case == 'close-malformed-child':
             # Failure must preserve the parent; Zig rewrites it as closed.
             same = all(side['rc'] == 1 and side['stdout_bytes'] == 0 and
@@ -470,7 +559,6 @@ def main():
                                 side['config_values'] == {'mode': 'b', 'other': 'c', 'prefix': 'site'}
                                 for side in observed)
         expected_errors = {
-            'show-depth-eleven': 'Issue not found: leaf\n',
             'config-over-limit': 'Unexpected internal error (code: StreamTooLong)\n',
             'config-at-limit': 'Unexpected internal error (code: StreamTooLong)\n',
             'issue-at-limit': 'Unexpected internal error (code: StreamTooLong)\n',

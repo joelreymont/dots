@@ -122,7 +122,9 @@ class ArchiveRegression(unittest.TestCase):
         self.assertEqual((self.dots / 'container/p/c.md').read_bytes(), child)
         self.assertFalse((self.dots / 'p.md').exists())
 
-    def test_nested_parent_round_trips_beside_active_container(self):
+    def test_nested_parent_closes_and_reopens_in_place_beside_container(self):
+        # A nested folder's own task is a child of the folder enclosing it, so
+        # it never moves into the archive alone.
         container = self.dots / 'container'
         parent = container / 'p'
         parent.mkdir(parents=True)
@@ -134,14 +136,61 @@ class ArchiveRegression(unittest.TestCase):
 
         for _ in range(2):
             self.ok('close', 'p')
-            self.assertFalse(parent.exists())
-            self.assertTrue((self.dots / 'archive/container/p/p.md').exists())
-            self.assertEqual((container / 'container.md').read_bytes(), container_bytes)
-            self.ok('on', 'p')
-            self.assertFalse((self.dots / 'archive/container/p').exists())
-            self.assertIn(b'status: active', (parent / 'p.md').read_bytes())
+            self.assertIn(b'status: closed', (parent / 'p.md').read_bytes())
             self.assertEqual((parent / 'c.md').read_bytes(), closed_child)
             self.assertEqual((container / 'container.md').read_bytes(), container_bytes)
+            self.assertEqual(list((self.dots / 'archive').iterdir()), [])
+            self.ok('on', 'p')
+            reopened = (parent / 'p.md').read_bytes()
+            self.assertIn(b'status: active', reopened)
+            self.assertNotIn(b'closed-at:', reopened)
+            self.assertEqual((parent / 'c.md').read_bytes(), closed_child)
+            self.assertEqual((container / 'container.md').read_bytes(), container_bytes)
+            self.assertEqual(list((self.dots / 'archive').iterdir()), [])
+
+    def _seed_nested_family(self):
+        # p > c > g > l, each owner in its own folder.
+        family = {'p': 'p/p.md', 'c': 'p/c/c.md', 'g': 'p/c/g/g.md', 'l': 'p/c/g/l.md'}
+        for name, path in family.items():
+            (self.dots / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.dots / path).write_bytes(issue(name.upper()))
+        return family
+
+    def test_nested_family_lifecycle(self):
+        family = self._seed_nested_family()
+        for name in ('p', 'c', 'g'):
+            result = self.run_dot('off', name)
+            self.assertEqual((result.returncode, result.stderr),
+                             (1, f'Cannot close {name}: children are not all closed\n'.encode()))
+        for name, path in family.items():
+            self.assertEqual((self.dots / path).read_bytes(), issue(name.upper()))
+
+        for name in ('l', 'g', 'c'):
+            self.ok('off', name)
+            self.assertIn(b'status: closed', (self.dots / family[name]).read_bytes())
+            self.assertEqual(list((self.dots / 'archive').iterdir()), [])
+
+        self.ok('off', 'p')
+        self.assertFalse((self.dots / 'p').exists())
+        for name, path in family.items():
+            self.assertIn(b'status: closed', (self.dots / 'archive' / path).read_bytes())
+            shown = self.ok('show', name).stdout
+            self.assertTrue(shown.startswith(f'ID:       {name}\nTitle:    {name.upper()}\n'
+                                             'Status:   done\n'.encode()), shown)
+
+        self.ok('on', 'l')
+        self.assertFalse((self.dots / 'archive/p').exists())
+        for name, path in family.items():
+            content = (self.dots / path).read_bytes()
+            status = b'active' if name == 'l' else b'open'
+            self.assertIn(b'status: ' + status + b'\n', content)
+            self.assertNotIn(b'closed-at:', content)
+
+        self.ok('off', 'l', 'g', 'c', 'p')
+        self.assertTrue((self.dots / 'archive/p/c/g/l.md').exists())
+        self.ok('purge')
+        self.assertFalse((self.dots / 'p').exists())
+        self.assertEqual(list((self.dots / 'archive').iterdir()), [])
 
     def test_nested_archived_child_reopens_beside_active_container(self):
         container = self.dots / 'container'
@@ -393,19 +442,28 @@ class ArchiveRegression(unittest.TestCase):
         self.assertEqual(archived.read_bytes(), parent)
         self.assertEqual(active.read_bytes(), child)
 
-    def test_archived_parent_closes_with_closed_nested_descendant(self):
+    def test_archived_parent_counts_active_folder_at_any_depth(self):
+        # An archived task's descendants include every record under the
+        # active .dots/<id>/, at any depth, besides those in its own folder.
         leaf = issue('Leaf', 'closed')
-        archived, _ = self._seed_archived_parent_and_nested_leaf(leaf)
-        active_leaf = issue('Unrelated active leaf')
-        active = self.dots / 'p/deep/leaf.md'
+        archived, parent = self._seed_archived_parent_and_nested_leaf(leaf)
+        active = self.dots / 'p/deep/other.md'
         active.parent.mkdir(parents=True)
-        active.write_bytes(active_leaf)
+        active.write_bytes(issue('Active deep task'))
 
+        result = self.run_dot('close', 'p')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'children are not all closed', result.stderr)
+        self.assertEqual((archived / 'p.md').read_bytes(), parent)
+
+        closed_active = issue('Active deep task', 'closed')
+        active.write_bytes(closed_active)
         self.ok('close', 'p')
 
         self.assertIn(b'status: closed', (archived / 'p.md').read_bytes())
         self.assertEqual((archived / 'deep/leaf.md').read_bytes(), leaf)
-        self.assertEqual(active.read_bytes(), active_leaf)
+        self.assertEqual(active.read_bytes(), closed_active)
 
     def test_archived_single_ignores_unrelated_archive_entries_on_close(self):
         archive = self.dots / 'archive'

@@ -133,9 +133,9 @@ and Habu commands must succeed; the harness then relocates only the named
 archived path in the disposable Zig fixture before resuming exact comparison.
 Two additional Habu assertions check the reopened active paths, metadata,
 children, and empty output. Slugify archive/nested cases, refusal to close
-over malformed descendants, and the reserved `archive` ID assert the corrected
-state directly. The Zig
-reference source and executable remain unchanged.
+over malformed descendants, the reserved `archive` ID and the nested-layout
+cases assert both sides' outcome directly. The Zig reference source and
+executable remain unchanged.
 
 Real-store slugify checks compare task contents, archive placement, and the
 set of dependency targets before and after renaming, then require an
@@ -169,6 +169,37 @@ actual rename failure after the original file has moved. Archive tests also
 inject failed writes with a zero file-size limit and ignored `SIGXFSZ`.
 Real task contents are not committed as fixtures. Rebuild and rerun after
 source or toolchain changes.
+
+## Nested layout
+
+A task's file is `D/t.md`, where `D` is a partition root (`.dots` or
+`.dots/archive`) or its parent's own folder. A task with children has its own
+folder `D/t/`, holding its file `D/t/t.md` and its children. A file named after
+its folder is that folder's task, and its parent is the task owning the
+enclosing folder, if any. Any other file is a child of the folder it sits in.
+Zig reads only the first path component, so below the top level it gives a
+nested owner no parent and cannot find an archived child.
+
+A task with a parent closes in place; a parentless task moves to the archive
+with its whole folder. Reopening moves the top-most archived folder containing
+the target back and reopens its closed ancestors. Closing requires the
+descendants under the task's own folder, under `<partition>/<id>/` and, for an
+archived task, under `.dots/<id>/` to be closed at any depth. A folder
+`.dots/<id>/` whose task lives elsewhere, as Zig's `add -P` writes for a nested
+parent, still reads as that task's children; `tree` shows them as orphan
+roots, as Zig does. Habu finds a task at any depth the 512-byte path buffer
+admits; Zig's search stops at 10 levels.
+
+| Case | Zig | Habu | Check |
+| --- | --- | --- | --- |
+| `show` of an archived child | `Issue not found` | shows it | `test.py` hierarchy step 11; edge `show-archived-child` |
+| `show` 11 levels deep | `Issue not found` | shows it | edge `show-depth-eleven` |
+| `tree` over a nested owner | omits the owner | lists it under its parent | edge `tree-nested-owner`, `tree-nested-owner-id` |
+| `tree` over a deep child without a parent file | omits it | lists it as an orphan root | `test.py` tree-shapes step 0; edge `tree-deep-root` |
+| `off a child` once `a` has moved to the archive | `Issue not found` | closes the archived child | loading `status-after-parent-move` |
+| `rm` of an archived child | `Issue not found` | removes it | edge `rm-archived-child` |
+| `rm q` while an archived child blocks on `q` | `Issue not found` | removes `q` and the reference | edge `rm-archived-child-referencer` |
+| JSONL import blocking on an archived child | skips the dependency with a warning | keeps it | edge `import-block-archived-child` |
 
 ## Deliberate behavior and limits
 
@@ -212,8 +243,8 @@ measurement is not a general performance claim.
 ## Bounds and deliberate difference
 
 The upstream compatible limits are an ID of at most 128 bytes, issue file
-under 1 MiB, config under 64 KiB, path buffer of 512 bytes,
-recursive path search depth of 10, and JSONL line of at most 1 MiB. Issue
+under 1 MiB, config under 64 KiB, path buffer of 512 bytes, and JSONL line of
+at most 1 MiB. Issue
 count, aggregate data, and child count use dynamic buffers. The synthetic
 edges include more than 300 issues, 70 KiB descriptions, 630 long filenames,
 4.5 MiB JSON output, newline-containing filenames, and 10-level paths.
