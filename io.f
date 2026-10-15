@@ -6,7 +6,7 @@ package DOT-IO
 create CHAR-BUF 1 allot
 variable OUTPUT-READY
 : WRITE-FAIL ( -- )
-   s" Unexpected internal error (code: WriteFailed)" 1 die ;
+   s" I/O error" 1 die ;
 : INIT-OUTPUT ( -- )
    OUTPUT-READY @ if exit then
    [: 1 >FD FD-NOSIGPIPE! ;] catch 0<> if WRITE-FAIL then

@@ -1,9 +1,9 @@
 \ case-read.f - storage and reading: how ls, ready, show and find read a
 \ store's task files: listing order and filters, field defaults, quoted
 \ scalars, malformed files, entries that are not regular files, nested archive
-\ folders, selective loading beside an oversized file, and stores past one
-\ directory read or one output buffer. Each case is one `dot` command on its
-\ own store.
+\ folders, selective loading beside an oversized file, the commands that
+\ refuse one, a file of exactly the limit, and stores past one directory read
+\ or one output buffer. Each case is one `dot` command on its own store.
 require dot.f
 require src/lib/string.f
 require src/lib/byte-buffer.f
@@ -11,7 +11,7 @@ require src/lib/fmt.f
 using DOT-T
 package DOT-READ
 
-1048577 constant TOO-BIG                \ one byte over dot's 1 MiB task file limit
+1048576 constant ISSUE-LIMIT            \ dot's task file limit, inclusive
 630 constant MANY                       \ names past one 64 KiB directory read
 65 constant WIDE                        \ tasks whose JSON passes 4 MiB
 70000 constant WIDE-DESC                \ each one's description bytes
@@ -85,10 +85,30 @@ GEN-TREE 4096 BUF:N>BLEN BUF:INIT
 
 : ITEM-ID ( -- ptr u8 n ) GEN-NAME GEN$ 3 - ;
 
-\ z.md, one byte over the limit, in GEN-FILE.
-: BIG-SIBLING ( -- )
-   GEN-FILE BUF:CLEAR  [char] x TOO-BIG GEN-FILE GEN-BYTES
-   s" z.md" GEN-FILE GEN$ PUT ;
+\ A file at the path one byte over the limit, in GEN-FILE.
+: BIG ( ptr u8 n -- )
+   GEN-FILE BUF:CLEAR  [char] x ISSUE-LIMIT 1+ GEN-FILE GEN-BYTES
+   GEN-FILE GEN$ PUT ;
+
+\ a.md, open, beside z.md one byte over the limit.
+: BIG-STORE ( -- )
+   s" a.md" s" A" s" open" 2 PUT-ISSUE
+   s" z.md" BIG ;
+
+\ BIG-STORE's tree.
+: BIG-STORE-TREE ( -- ptr u8 n )
+   s\" d .dots\nf .dots/a.md\n  ---\n  title: A\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\nd .dots/archive\n" TREE-FROM
+   s" z.md" GEN-FILE GEN$ TREE-FILE
+   GEN-TREE GEN$ ;
+
+\ A command that reads z.md refuses it by its path and changes nothing.
+: TOO-LARGE ( ptr u8 n -- )
+   BIG-STORE
+   RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue file too large: .dots/z.md\n" ERR=
+   BIG-STORE-TREE TREE= ;
 
 \ ---- the listing store ------------------------------------------------------
 
@@ -1031,22 +1051,18 @@ s" newline-name" ' NEWLINE-NAME DOT-CASE
 
 \ show reads only the task it names, not an oversized sibling.
 : OVERSIZED-SIBLING-SHOW ( -- )
-   s" a.md" s" A" s" open" 2 PUT-ISSUE
-   BIG-SIBLING
+   BIG-STORE
    s" show|a" RUN
    0 RC=
    s\" ID:       a\nTitle:    A\nStatus:   open\nPriority: 2\nCreated:  2026-01-01T00:00:00Z\n" OUT=
    s" " ERR=
-   s\" d .dots\nf .dots/a.md\n  ---\n  title: A\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\nd .dots/archive\n" TREE-FROM
-   s" z.md" GEN-FILE GEN$ TREE-FILE
-   GEN-TREE GEN$ TREE=
+   BIG-STORE-TREE TREE=
 ;
 s" oversized-sibling-show" ' OVERSIZED-SIBLING-SHOW DOT-CASE
 
 \ A mutation reads only the task it changes, not an oversized sibling.
 : OVERSIZED-SIBLING-ON ( -- )
-   s" a.md" s" A" s" open" 2 PUT-ISSUE
-   BIG-SIBLING
+   BIG-STORE
    s" on|a" RUN
    0 RC=
    s" " OUT=
@@ -1056,6 +1072,55 @@ s" oversized-sibling-show" ' OVERSIZED-SIBLING-SHOW DOT-CASE
    GEN-TREE GEN$ TREE=
 ;
 s" oversized-sibling-on" ' OVERSIZED-SIBLING-ON DOT-CASE
+
+: TOO-LARGE-LS ( -- ) s" ls" TOO-LARGE ;
+s" too-large-ls" ' TOO-LARGE-LS DOT-CASE
+
+: TOO-LARGE-LS-JSON ( -- ) s" ls|--json" TOO-LARGE ;
+s" too-large-ls-json" ' TOO-LARGE-LS-JSON DOT-CASE
+
+: TOO-LARGE-ON ( -- ) s" on|z" TOO-LARGE ;
+s" too-large-on" ' TOO-LARGE-ON DOT-CASE
+
+: TOO-LARGE-OFF ( -- ) s" off|z" TOO-LARGE ;
+s" too-large-off" ' TOO-LARGE-OFF DOT-CASE
+
+: TOO-LARGE-UPDATE ( -- ) s" update|z|--status|active" TOO-LARGE ;
+s" too-large-update" ' TOO-LARGE-UPDATE DOT-CASE
+
+: TOO-LARGE-CLOSE ( -- ) s" close|z" TOO-LARGE ;
+s" too-large-close" ' TOO-LARGE-CLOSE DOT-CASE
+
+\ Closing p reads its child z to see that it is closed.
+: TOO-LARGE-CHILD ( -- )
+   s" p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/z.md" BIG
+   s" off|p" RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue file too large: .dots/p/z.md\n" ERR=
+   s\" d .dots\nd .dots/archive\nd .dots/p\nf .dots/p/p.md\n  ---\n  title: P\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE-FROM
+   s" p/z.md" GEN-FILE GEN$ TREE-FILE
+   GEN-TREE GEN$ TREE=
+;
+s" too-large-child" ' TOO-LARGE-CHILD DOT-CASE
+
+\ A task file of exactly the limit is read.
+: AT-LIMIT ( -- )
+   GEN-FILE BUF:CLEAR
+   s\" ---\ntitle: Big\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---\n\n" GEN-FILE GEN+
+   [char] x ISSUE-LIMIT GEN-FILE GEN$ nip - 1- GEN-FILE GEN-BYTES
+   10 GEN-FILE BUF:APPEND-BYTE
+   s" big.md" GEN-FILE GEN$ PUT
+   s" ls" RUN
+   0 RC=
+   s\" [big] o Big\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\n" TREE-FROM
+   s" big.md" GEN-FILE GEN$ TREE-FILE
+   GEN-TREE GEN$ TREE=
+;
+s" at-limit" ' AT-LIMIT DOT-CASE
 
 : LARGE-DIRECTORY ( -- )
    s\" d .dots\nd .dots/archive\n" TREE-FROM

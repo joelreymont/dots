@@ -19,7 +19,7 @@ create LETTER 1 allot
    0 ?do [char] x WANT BUF:APPEND-BYTE loop ;
 
 : WRITE-FAILED ( -- ptr u8 n )
-   s\" Unexpected internal error (code: WriteFailed)\n" ;
+   s\" I/O error\n" ;
 
 \ Seed `a` with a title of n x's, as one line.
 : PUT-LONG ( n -- )
@@ -100,6 +100,16 @@ d .dots/archive
 " TREE=
 ;
 s" closed-stdout-silent" ' CLOSED-STDOUT-SILENT DOT-CASE
+
+: CLOSED-STDOUT-HELP ( -- )
+   s" help" RUN-CLOSED
+   1 RC=
+   WRITE-FAILED ERR=
+   s" d .dots
+d .dots/archive
+" TREE=
+;
+s" closed-stdout-help" ' CLOSED-STDOUT-HELP DOT-CASE
 
 : READ-ONLY-STDOUT ( -- )
    s" help" RUN-READONLY

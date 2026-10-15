@@ -9,6 +9,19 @@ package DOT-ADD
 
 : PREFIX-X ( -- ) s" config" s\" prefix=x\n" PUT ;
 
+65536 constant CONFIG-LIMIT             \ dot's config limit, inclusive
+create CONF BUF:HDR-BYTES allot         \ a generated config
+CONF 256 BUF:N>BLEN BUF:INIT
+create CONF-TREE BUF:HDR-BYTES allot    \ the tree expected beside it
+CONF-TREE 256 BUF:N>BLEN BUF:INIT
+
+: CONF+ ( ptr u8 n -- ) BUF:N>BLEN CONF BUF:APPEND-SPAN ;
+: CONF-TREE+ ( ptr u8 n -- ) BUF:N>BLEN CONF-TREE BUF:APPEND-SPAN ;
+: CONF$ ( -- ptr u8 n ) CONF BUF:SPAN$ BUF:BLEN>N ;
+: CONF-TREE$ ( -- ptr u8 n ) CONF-TREE BUF:SPAN$ BUF:BLEN>N ;
+: CONF-BYTES ( n n ptr a -- ) {: c:n k:n b:ptr :}
+   k 0 ?do c b BUF:APPEND-BYTE loop ;
+
 s" add" SECTION
 
 : CONFIG-PREFIX ( -- )
@@ -692,6 +705,64 @@ f .dots/<A>.md
 " TREE=
 ;
 s" config-keys" ' CONFIG-KEYS DOT-CASE
+
+\ A config of n bytes ends with its prefix, so only a whole read finds it.
+: PUT-CONFIG ( n -- ) {: n:n :}
+   CONF BUF:CLEAR
+   s" pad=" CONF+  [char] x n 14 - CONF CONF-BYTES  s\" \nprefix=x\n" CONF+
+   s" config" CONF$ PUT ;
+
+\ The tree of a store holding PUT-CONFIG's n bytes and nothing else.
+: CONFIG-TREE ( n -- ) {: n:n :}
+   CONF-TREE BUF:CLEAR
+   s\" d .dots\nd .dots/archive\nf .dots/config\n  pad=" CONF-TREE+
+   [char] x n 14 - CONF-TREE CONF-BYTES
+   s\" \n  prefix=x\n.\n" CONF-TREE+ ;
+
+\ A config of exactly the limit is read.
+: CONFIG-AT-LIMIT ( -- )
+   CONFIG-LIMIT PUT-CONFIG
+   s" add|T" RUN
+   s" A" SAVE-ID
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s" A" s" x-t-<hex>" ID=
+   CONFIG-LIMIT CONFIG-TREE
+   s\" f .dots/<A>.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" CONF-TREE+
+   CONF-TREE$ TREE=
+;
+s" config-at-limit" ' CONFIG-AT-LIMIT DOT-CASE
+
+: CONFIG-TOO-LARGE ( -- )
+   CONFIG-LIMIT 1+ PUT-CONFIG
+   s" add|T" RUN
+   1 RC=
+   s" " OUT=
+   s\" Config file too large: .dots/config\n" ERR=
+   CONFIG-LIMIT 1+ CONFIG-TREE
+   CONF-TREE$ TREE=
+;
+s" config-too-large" ' CONFIG-TOO-LARGE DOT-CASE
+
+: CONFIG-DIRECTORY ( -- )
+   s" .dots/config" FILE$ MAKE-DIRS
+   s" add|T" RUN
+   1 RC=
+   s" " OUT=
+   s\" Not a file: .dots/config\n" ERR=
+   s\" d .dots\nd .dots/archive\nd .dots/config\n" TREE=
+;
+s" config-directory" ' CONFIG-DIRECTORY DOT-CASE
 
 \ A 400-byte title of 200 two-byte characters is kept whole.
 : UTF8-TITLE ( -- )

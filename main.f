@@ -17,10 +17,9 @@ require lock.f
 
 package DOT-READ
 
-1048576 constant FILE-CAP
-\ The read limits are exclusive: a file of exactly the limit fails.
-FILE-CAP 1- constant ISSUE-MAX
-65535 constant CONFIG-MAX
+\ The read limits are inclusive: a file of exactly the limit is read.
+1048576 constant ISSUE-MAX
+65536 constant CONFIG-MAX
 512 constant MAX-DEPTH
 31 constant REC-CELLS
 
@@ -49,7 +48,7 @@ DYNAMIC-BUFFER RECORDS n
 DYNAMIC-BUFFER ARENA u8
 variable ARENA-U
 variable ISSUE-N
-create FILE-BUF FILE-CAP allot
+create FILE-BUF ISSUE-MAX allot
 variable FILE-U
 DYNAMIC-BUFFER BLOCK-BUF u8
 create PATHS MAX-DEPTH FS-PATH-CAP * allot
@@ -298,8 +297,7 @@ DYNAMIC-BUFFER SORT-BUF n
    1 idx F-ERROR REC-CELL !
    idx F-PATH FIELD$ {: path:ptr pu:n :}
    path pu [: 2dup FILE-BUF ISSUE-MAX READ-ALL FILE-U ! ;] catch
-   dup E-FS-CAPACITY =
-   s" Unexpected internal error (code: StreamTooLong)" ?FAIL
+   dup E-FS-CAPACITY = s" Issue file too large: " path pu ?ISSUE-ERROR
    dup 0<> if throw then drop 2drop
    FILE-BUF FILE-U @ 0 NEXT-LINE {: head:ptr hu:n off:n more:bool :}
    head hu s" ---" STR= 0= if exit then
@@ -772,10 +770,13 @@ FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
 2 constant FS-NO-ENTRY
 13 constant FS-ACCESS-DENIED
 : FS-DIR-NOT-EMPTY ( -- n ) HB-TARGET-MACOS? if 66 else 39 then ;
-: ?FS-MUTATION-ERROR ( n -- )
-   dup 0= if drop exit then
-   dup FS-ACCESS-DENIED = s" Permission denied" ?FAIL
-   FS-DIR-NOT-EMPTY = s" Unexpected internal error (code: DirNotEmpty)" ?FAIL
+\ The errno a mutation of path failed with: a non-empty directory where it
+\ needs an empty one is named, any other cause is an I/O error.
+: ?FS-MUTATION-ERROR ( n ptr u8 n -- )
+   {: reason:n path:ptr pu:n :}
+   reason 0= if exit then
+   reason FS-ACCESS-DENIED = s" Permission denied" ?FAIL
+   reason FS-DIR-NOT-EMPTY = s" Directory not empty: " path pu ?ISSUE-ERROR
    E-FS-IO throw ;
 PROCESS-SYMBOLS
 FUNCTION: RENAME-CALL rename ( ptr u8 ptr u8 -- i32 ) ;FUNCTION
@@ -790,7 +791,8 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
    {: src:ptr su:n dst:ptr du:n :}
    src su FS-PATHZ dst du FS-MUT-PATHZ2 RENAME-CALL FS-CAUSE ;
 : RENAME-ISSUE ( ptr u8 n ptr u8 n -- )
-   RENAME-CAUSE ?FS-MUTATION-ERROR ;
+   {: src:ptr su:n dst:ptr du:n :}
+   src su dst du RENAME-CAUSE dst du ?FS-MUTATION-ERROR ;
 \ macOS RENAME_EXCL is 4; Linux RENAME_NOREPLACE is 1 and AT_FDCWD is -100.
 \ Both calls refuse an occupied destination in the same rename operation.
 : RENAME-NOREPLACE-CAUSE ( ptr u8 n ptr u8 n -- n )
@@ -805,13 +807,16 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
       else E-FS-IO throw then
    then ;
 : RENAME-ISSUE-NOREPLACE ( ptr u8 n ptr u8 n -- )
-   RENAME-NOREPLACE-CAUSE
+   {: src:ptr su:n dst:ptr du:n :}
+   src su dst du RENAME-NOREPLACE-CAUSE
    dup 17 = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
-   ?FS-MUTATION-ERROR ;
+   dst du ?FS-MUTATION-ERROR ;
 : REMOVE-ISSUE-FILE ( ptr u8 n -- )
-   FS-PATHZ UNLINK-CALL FS-CAUSE ?FS-MUTATION-ERROR ;
+   {: path:ptr pu:n :}
+   path pu FS-PATHZ UNLINK-CALL FS-CAUSE path pu ?FS-MUTATION-ERROR ;
 : REMOVE-ISSUE-DIR ( ptr u8 n -- )
-   FS-PATHZ RMDIR-CALL FS-CAUSE ?FS-MUTATION-ERROR ;
+   {: path:ptr pu:n :}
+   path pu FS-PATHZ RMDIR-CALL FS-CAUSE path pu ?FS-MUTATION-ERROR ;
 PROCESS-SYMBOLS
 FUNCTION: ACCESS-CALL access ( ptr u8 n -- i32 ) ;FUNCTION
 : PARENT-WRITABLE? ( ptr u8 n -- bool )
@@ -827,9 +832,17 @@ PTR-VARIABLE RESERVED-TEMP
 variable RESERVED-U
 variable RESERVED-FD
 -91001 constant E-ISSUE-PERMISSION
--91002 constant E-ISSUE-WRITE
--91003 constant E-ISSUE-ISDIR
--91004 constant E-ISSUE-DIR-NOT-EMPTY
+-91002 constant E-ISSUE-ISDIR
+-91003 constant E-ISSUE-TOO-LARGE
+\ The path an E-ISSUE-ISDIR or E-ISSUE-TOO-LARGE names. It reached a syscall,
+\ so it fits FS-PATH-CAP.
+create FAILED-PATH FS-PATH-CAP allot
+variable FAILED-PATH-U
+: FAILED-PATH$ ( -- ptr u8 n ) FAILED-PATH FAILED-PATH-U @ ;
+: PATH-THROW ( ptr u8 n n -- )
+   {: path:ptr pu:n code:n :}
+   path FAILED-PATH pu BYTE-COPY pu FAILED-PATH-U !
+   code throw ;
 : TEMP-THROW ( n ptr u8 n n -- )
    {: fd:n temp:ptr tu:n code:n :}
    fd close temp tu REMOVE-FILE code throw ;
@@ -855,26 +868,35 @@ variable RESERVED-FD
    0 begin dup su < while
       {: off:n :}
       fd src off + su off - write {: count:n :}
-      count 0 <= if fd temp tu E-ISSUE-WRITE TEMP-THROW then
+      count 0 <= if fd temp tu E-FS-IO TEMP-THROW then
       off count +
    repeat drop
-   fd FSYNC-CALL 0<> if fd temp tu E-ISSUE-WRITE TEMP-THROW then
+   fd FSYNC-CALL 0<> if fd temp tu E-FS-IO TEMP-THROW then
    fd close
    temp tu path pu RENAME-CAUSE {: reason:n :}
    reason 0<> if
       temp tu REMOVE-FILE
-      path pu DIR? if E-ISSUE-ISDIR throw then
+      path pu DIR? if path pu E-ISSUE-ISDIR PATH-THROW then
       reason FS-ACCESS-DENIED = if E-ISSUE-PERMISSION throw then
-      reason FS-DIR-NOT-EMPTY = if E-ISSUE-DIR-NOT-EMPTY throw then
       E-FS-IO throw
    then ;
-: REPORT-ISSUE-WRITE-ERROR ( n -- )
+\ Whether code is a failure of Habu's filesystem or directory listing words.
+: FS-FAILURE? ( n -- bool )
+   {: code:n :}
+   code E-FS-LAST >= code E-FS-FIRST <= and
+   code E-FS-LIST-LAST >= code E-FS-LIST-FIRST <= and or ;
+\ Ends dot with the message a failure's code names; a filesystem failure
+\ without one is an I/O error. Any other code is not dot's to name.
+: REPORT-FAILURE ( n -- )
    dup E-ISSUE-PERMISSION = s" Permission denied" ?FAIL
-   dup E-ISSUE-WRITE = s" I/O error" ?FAIL
-   dup E-ISSUE-ISDIR = s" Unexpected internal error (code: IsDir)" ?FAIL
-   dup E-ISSUE-DIR-NOT-EMPTY =
-   s" Unexpected internal error (code: DirNotEmpty)" ?FAIL
+   dup E-ISSUE-ISDIR = s" Not a file: " FAILED-PATH$ ?ISSUE-ERROR
+   dup E-ISSUE-TOO-LARGE = s" Issue file too large: " FAILED-PATH$ ?ISSUE-ERROR
+   dup FS-FAILURE? s" I/O error" ?FAIL
    throw ;
+\ Runs xt; a failure it throws ends dot with the message REPORT-FAILURE names.
+: REPORTING ( [ -- ] -- )
+   catch {: code:n :}
+   code 0<> if code REPORT-FAILURE then ;
 PTR-VARIABLE WRITE-PATH
 variable WRITE-PATH-U
 PTR-VARIABLE WRITE-SRC
@@ -885,7 +907,7 @@ variable WRITE-SRC-U
    src WRITE-SRC ! su WRITE-SRC-U !
    [: WRITE-PATH @ WRITE-PATH-U @ WRITE-SRC @ WRITE-SRC-U @
       WRITE-ATOMIC-THROW ;] catch
-   dup 0<> if REPORT-ISSUE-WRITE-ERROR else drop then ;
+   dup 0<> if REPORT-FAILURE else drop then ;
 : SAVE-RECORD-THROW ( n -- )
    {: idx:n :}
    idx SERIALIZE
@@ -913,7 +935,7 @@ variable WORD-START
 variable WORD-COUNT
 create PREFIX-ROW 65536 allot
 variable PREFIX-U
-create CONFIG-ROW 65536 allot
+create CONFIG-ROW CONFIG-MAX allot
 variable CONFIG-U
 variable PAD-COPY
 
@@ -982,12 +1004,17 @@ variable PAD-COPY
       ;MATCH
       next
    repeat drop false ;
+\ Whether .dots/config exists; anything there but a file is refused.
+: CONFIG? ( -- bool )
+   s" .dots/config" FS-TRY-STAT-MODE MATCH option
+      none OF false ENDOF
+      some OF S-IFMT and S-IFREG <> s" Not a file: .dots/config" ?FAIL true ENDOF
+   ;MATCH ;
 : LOAD-PREFIX ( -- )
    0 CONFIG-U !
-   s" .dots/config" FILE? if
+   CONFIG? if
       [: s" .dots/config" CONFIG-ROW CONFIG-MAX READ-ALL CONFIG-U ! ;] catch
-      dup E-FS-CAPACITY =
-      s" Unexpected internal error (code: StreamTooLong)" ?FAIL
+      dup E-FS-CAPACITY = s" Config file too large: .dots/config" ?FAIL
       dup 0<> if throw then drop
       CONFIG-U @ {: len:n :}
       0 begin dup len < while
@@ -1530,7 +1557,7 @@ variable REOPEN-PARENT-KEEP-U
    {: at:n :}
    at REOPEN-INDEX F-PATH FIELD$ {: path:ptr pu:n :}
    path pu [: 2dup FILE-BUF ISSUE-MAX READ-ALL FILE-U ! ;] catch
-   dup E-FS-CAPACITY = if E-ISSUE-WRITE throw then
+   dup E-FS-CAPACITY = if path pu E-ISSUE-TOO-LARGE PATH-THROW then
    dup 0<> if throw then drop 2drop
    FILE-U @ {: size:n :}
    path pu RESERVE-ISSUE-SIBLING {: temp:ptr tu:n fd:n :}
@@ -1540,10 +1567,10 @@ variable REOPEN-PARENT-KEEP-U
    0 begin dup size < while
       {: off:n :}
       fd FILE-BUF off + size off - write {: count:n :}
-      count 0 <= if fd temp tu E-ISSUE-WRITE TEMP-THROW then
+      count 0 <= if fd temp tu E-FS-IO TEMP-THROW then
       off count +
    repeat drop
-   fd FSYNC-CALL 0<> if fd temp tu E-ISSUE-WRITE TEMP-THROW then
+   fd FSYNC-CALL 0<> if fd temp tu E-FS-IO TEMP-THROW then
    fd close
    1 REOPEN-BACKUPS +! ;
 : REOPEN-STAGE-ALL ( -- )
@@ -1590,7 +1617,7 @@ variable REOPEN-PARENT-KEEP-U
    dup 0<> if
       REOPEN-CLEAN-NEW-PARENTS
       dup 17 = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
-      ?FS-MUTATION-ERROR
+      REOPEN-DEST$ ?FS-MUTATION-ERROR
    else drop then
    [: REOPEN-FINISH ;] catch {: code:n :}
    code 0<> if
@@ -1598,7 +1625,7 @@ variable REOPEN-PARENT-KEEP-U
       REOPEN-DEST$ REOPEN-SOURCE$ RENAME-ISSUE-NOREPLACE
       REOPEN-DEST$ REOPEN-SOURCE$ REBASE-STATUS-SUBTREE
       REOPEN-CLEAN-NEW-PARENTS
-      code REPORT-ISSUE-WRITE-ERROR
+      code REPORT-FAILURE
    then
    REOPEN-CLEAN-BACKUPS ;
 variable STATUS-SAVE-IDX
@@ -1647,7 +1674,7 @@ variable STATUS-SAVE-IDX
    [: STATUS-SAVE-IDX @ SAVE-RECORD-THROW ;] catch {: code:n :}
    code 0<> if
       moved 1 = if idx UNARCHIVE-STATUS then
-      code REPORT-ISSUE-WRITE-ERROR
+      code REPORT-FAILURE
    then ;
 : REASON-FLAG? ( ptr u8 n -- bool )
    2dup s" -r" STR= -rot s" --reason" STR= or ;
@@ -2292,7 +2319,7 @@ variable SLUG-PATH-U
    code 0<> if
       [: SLUG-ROLLBACK ;] catch dup 0<> if drop E-FS-IO throw then drop
       code E-SLUG-COLLISION = s" Issue already exists" ?FAIL
-      code REPORT-ISSUE-WRITE-ERROR
+      code REPORT-FAILURE
    then
    [: SLUG-CLEANUP ;] catch dup 0<> if
       drop s" Warning: temporary cleanup failed" 2 -rot STDERR-WRITE drop
@@ -2681,7 +2708,6 @@ variable CYCLE-TAIL
    0 IMPORTED-N ! 0 IMPORT-SKIPPED-N ! 0 DEP-SKIPPED-N !
    path pu [: 2dup IMPORT-LINES ;] catch
    dup JSONL:E-LIMIT = s" JSONL line too long" ?FAIL
-   dup E-FS-OPEN = over E-FS-IO = or s" I/O error" ?FAIL
    dup 0<> if throw then drop 2drop
    IMPORT-ARCHIVE-CLOSED
    IMPORTED-N @ 0 > if
@@ -2784,7 +2810,8 @@ variable CYCLE-TAIL
 public
 \ Whether the command with this dispatch code runs without the writer lock.
 : READ-ONLY-COMMAND? ( n -- bool ) CMD-HELP < ;
-: MAIN ( -- )
+private
+: DISPATCH ( -- )
    script-argc 0= if
       1 USE-JSON ! -1 FILTER ! 1 WANT-READY ! false LOAD-ISSUES PRINT-LIST exit
    then
@@ -2795,6 +2822,8 @@ public
       dup READ-ONLY-COMMAND? 0= if DOT-LOCK:ACQUIRE then
       dup RUN-COMMAND
    endcase ;
+public
+: MAIN ( -- ) [: DISPATCH ;] REPORTING ;
 
 ;package
 

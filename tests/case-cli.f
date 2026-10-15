@@ -648,6 +648,31 @@ d .dots/archive
 ;
 s" show-ambiguous-prefix" ' SHOW-AMBIGUOUS-PREFIX DOT-CASE
 
+\ A filesystem failure with no message of its own is an I/O error: ls cannot
+\ list the folder p. The harness restores p's mode to read the tree.
+: UNREADABLE-FOLDER ( -- )
+   s" p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p" 0 MODE
+   s" ls" RUN
+   s" p" FS-MUT-MODE-DIR MODE
+   1 RC=
+   s" " OUT=
+   s\" I/O error\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" unreadable-folder" ' UNREADABLE-FOLDER DOT-CASE
+
 : WRITER-WAITS-FOR-LOCK ( -- )
    s" a.md" s" Before" s" open" 2 PUT-ISSUE
    HOLD
