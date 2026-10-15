@@ -938,6 +938,17 @@ f .dots/twin.md
 ;
 s" tree-twin-owners" ' TREE-TWIN-OWNERS DOT-CASE
 
+\ Without `.dots` tree shows nothing and creates nothing.
+: TREE-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" tree" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s" " TREE=
+;
+s" tree-no-store" ' TREE-NO-STORE DOT-CASE
+
 : SHOW-DEPTH-ELEVEN ( -- )
    s" d0/d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/leaf.md" s" Deep leaf" s" open" 2 PUT-ISSUE
    s" show|leaf" RUN

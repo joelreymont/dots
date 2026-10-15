@@ -3,7 +3,8 @@
 \ rewritten, and an occupied destination, an unsafe archive or a failed write
 \ leaves the store as it was. Tasks go in id byte order, records sharing an id
 \ in path byte order, so the output and blocker order are the same on every
-\ filesystem. Each store's config fixes the prefix `p`.
+\ filesystem. Each store's config fixes the prefix `p`, but those of cwd-prefix
+\ and slug-no-store-git, which have none.
 require dot.f
 using DOT-T
 package DOT-SLUG
@@ -216,6 +217,29 @@ f .dots/p-parent-task-bbbbcccc/p-parent-task-bbbbcccc.md
 " TREE=
 ;
 s" settled-store" ' SETTLED-STORE DOT-CASE
+
+\ Without a config the prefix is the store's name, and slugify writes no config:
+\ only add records the prefix.
+: CWD-PREFIX ( -- )
+   s" old-12345678.md" s" Target" s" open" 2 PUT-ISSUE
+   s" slugify" RUN
+   0 RC=
+   s\" old-12345678 -> cwd-prefix-target-12345678\nSlugified 1 issue(s)\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/cwd-prefix-target-12345678.md
+  ---
+  title: Target
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" cwd-prefix" ' CWD-PREFIX DOT-CASE
 
 \ Two tasks share an id: the dependent keeps a blocker for each new id, so it
 \ stays blocked until both are closed. `nested/` sorts before `same-`.
@@ -1019,6 +1043,18 @@ f .dots/p-normal-title-12345678.md
 " TREE=
 ;
 s" slug-no-git" ' SLUG-NO-GIT DOT-CASE
+
+\ Beside a .git with no `.dots` slugify renames nothing and stages nothing.
+: SLUG-NO-STORE-GIT ( -- )
+   s" ../.dots" RM-DIR
+   s" .git" FILE$ MAKE-DIRS
+   s" slugify" RUN
+   0 RC=
+   s\" Slugified 0 issue(s)\n" OUT=
+   s" " ERR=
+   s" " TREE=
+;
+s" slug-no-store-git" ' SLUG-NO-STORE-GIT DOT-CASE
 
 ;package
 ;using

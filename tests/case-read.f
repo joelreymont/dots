@@ -1,9 +1,10 @@
 \ case-read.f - storage and reading: how ls, ready, show and find read a
 \ store's task files: listing order and filters, field defaults, quoted
 \ scalars, malformed files, entries that are not regular files, nested archive
-\ folders, selective loading beside an oversized file, the commands that
-\ refuse one, a file of exactly the limit, and stores past one directory read
-\ or one output buffer. Each case is one `dot` command on its own store.
+\ folders, a missing `.dots` or archive, which reading never creates, selective
+\ loading beside an oversized file, the commands that refuse one, a file of
+\ exactly the limit, and stores past one directory read or one output buffer.
+\ Each case is one `dot` command on its own store.
 require dot.f
 require src/lib/string.f
 require src/lib/byte-buffer.f
@@ -1046,6 +1047,112 @@ s" orphan-folder" ' ORPHAN-FOLDER DOT-CASE
    s\" d .dots\nd .dots/archive\nf .dots/odd\nname.md\n  ---\n  title: Odd name\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
 ;
 s" newline-name" ' NEWLINE-NAME DOT-CASE
+
+\ ---- missing store pieces ----------------------------------------------------
+
+\ Reading writes nothing: without `.dots` each read finds no task and creates
+\ nothing.
+: LS-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" ls" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s" " TREE=
+;
+s" ls-no-store" ' LS-NO-STORE DOT-CASE
+
+: LS-JSON-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" ls|--json" RUN
+   0 RC=
+   s\" []\n" OUT=
+   s" " ERR=
+   s" " TREE=
+;
+s" ls-json-no-store" ' LS-JSON-NO-STORE DOT-CASE
+
+: READY-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" ready" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s" " TREE=
+;
+s" ready-no-store" ' READY-NO-STORE DOT-CASE
+
+: FIND-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" find|A" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s" " TREE=
+;
+s" find-no-store" ' FIND-NO-STORE DOT-CASE
+
+: SHOW-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" show|a" RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue not found: a\n" ERR=
+   s" " TREE=
+;
+s" show-no-store" ' SHOW-NO-STORE DOT-CASE
+
+\ No arguments lists the ready tasks as JSON.
+: NO-ARGS-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" " RUN
+   0 RC=
+   s\" []\n" OUT=
+   s" " ERR=
+   s" " TREE=
+;
+s" no-args-no-store" ' NO-ARGS-NO-STORE DOT-CASE
+
+\ A store without an archive lists its tasks and creates none.
+: LS-NO-ARCHIVE ( -- )
+   s" archive" RM-DIR
+   s" a.md" s" A" s" open" 2 PUT-ISSUE
+   s" ls" RUN
+   0 RC=
+   s\" [a] o A\n" OUT=
+   s" " ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" ls-no-archive" ' LS-NO-ARCHIVE DOT-CASE
+
+: LS-JSON-NO-ARCHIVE ( -- )
+   s" archive" RM-DIR
+   s" a.md" s" A" s" open" 2 PUT-ISSUE
+   s" ls|--json" RUN
+   0 RC=
+   s\" [{\"id\":\"a\",\"title\":\"A\",\"description\":null,\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"closed_at\":null,\"close_reason\":null}]\n" OUT=
+   s" " ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" ls-json-no-archive" ' LS-JSON-NO-ARCHIVE DOT-CASE
 
 \ ---- selective loading and capacity ------------------------------------------
 

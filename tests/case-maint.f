@@ -261,6 +261,17 @@ f .dots/child.md
 ;
 s" fix-orphan-folder" ' FIX-ORPHAN-FOLDER DOT-CASE
 
+\ Without `.dots` fix finds nothing to repair and creates nothing.
+: FIX-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" fix" RUN
+   0 RC=
+   s\" No fixes needed\n" OUT=
+   s" " ERR=
+   s" " TREE=
+;
+s" fix-no-store" ' FIX-NO-STORE DOT-CASE
+
 \ The orphan file's name holds a newline; it moves to the top like any other.
 : FIX-NEWLINE-NAME ( -- )
    s\" orphan/odd\nname.md" s" Orphan newline child" s" open" 2 PUT-ISSUE

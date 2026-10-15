@@ -435,10 +435,13 @@ DYNAMIC-BUFFER SORT-BUF n
       then
    repeat drop ;
 
+\ Whether .dots exists. Reading creates nothing: without .dots the store is
+\ empty, and the archive is read only where it is a directory.
+: STORE? ( -- bool ) s" .dots" FS-TRY-LSTAT ;
 : LOAD-ISSUES ( bool -- )
    {: include-archive:bool :}
    0 ISSUE-N ! 0 ARENA-U ! 0 SCAN-NAMES-U !
-   s" .dots/archive" MAKE-DIRS
+   STORE? 0= if exit then
    s" .dots" 0 PATH-AT swap BYTE-COPY
    0 s" .dots" nip false false SCAN-DIR
    include-archive if
@@ -937,6 +940,7 @@ create PREFIX-ROW 65536 allot
 variable PREFIX-U
 create CONFIG-ROW CONFIG-MAX allot
 variable CONFIG-U
+variable PREFIX-STORED                  \ 1: the config holds the prefix
 variable PAD-COPY
 
 : WORD32@ ( ptr u8 -- n )
@@ -1011,7 +1015,7 @@ variable PAD-COPY
       some OF S-IFMT and S-IFREG <> s" Not a file: .dots/config" ?FAIL true ENDOF
    ;MATCH ;
 : LOAD-PREFIX ( -- )
-   0 CONFIG-U !
+   0 CONFIG-U ! 1 PREFIX-STORED !
    CONFIG? if
       [: s" .dots/config" CONFIG-ROW CONFIG-MAX READ-ALL CONFIG-U ! ;] catch
       dup E-FS-CAPACITY = s" Config file too large: .dots/config" ?FAIL
@@ -1026,11 +1030,18 @@ variable PAD-COPY
          next
       repeat drop
    then
+   0 PREFIX-STORED !
    CWD-LEN CWD-ROW swap BASENAME {: base:ptr size:n :}
    size begin dup 0 > if base over 1- + c@ 45 = else false then while
       1-
    repeat {: trim:n :}
-   trim 0= if s" dot" PREFIX! else base trim PREFIX! then
+   trim 0= if s" dot" PREFIX! else base trim PREFIX! then ;
+\ add records a derived prefix, the only change it makes to the config: the
+\ other keys stay, a repeated key once with its last value. A symlinked config
+\ is read through and never replaced.
+: SAVE-CONFIG ( -- )
+   PREFIX-STORED @ if exit then
+   s" .dots/config" SYMLINK? s" Config is a symlink: .dots/config" ?FAIL
    OUT-RESET
    0 begin dup CONFIG-U @ < while
       {: at:n :}
@@ -1219,6 +1230,7 @@ variable PARENT-IDX
    repeat drop false ;
 : ID-TAKEN? ( ptr u8 n -- bool )
    {: id:ptr iu:n :}
+   STORE? 0= if false exit then
    s" .dots/" id iu false ID-AT? if true exit then
    s" .dots/" id iu true ID-AT? if true exit then
    s" .dots/archive/" id iu false ID-AT? if true exit then
@@ -1274,7 +1286,7 @@ variable PARENT-IDX
       AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ SCAN-KEY+ then
       PARENT-SET @ 0<> if PARENT-A @ PARENT-U @ SCAN-KEY+ then
       true LOAD-ISSUES
-   else s" .dots/archive" MAKE-DIRS then
+   then
    LOAD-PREFIX
    -1 AFTER-IDX !
    AFTER-SET @ 0<> if AFTER-A @ AFTER-U @ s" After issue not found: " RESOLVE-LABELED AFTER-IDX ! then
@@ -1288,6 +1300,7 @@ variable PARENT-IDX
    TITLE-A @ TITLE-U @ NEW-ID$ 2dup CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
    NEW-RECORD {: idx:n :}
    idx F-ID FIELD$ ID-TAKEN? s" Issue already exists" ?FAIL
+   s" .dots" MAKE-DIRS SAVE-CONFIG
    TITLE-A @ TITLE-U @ idx F-TITLE FIELD!
    DESC-U @ 0 > if DESC-A @ DESC-U @ idx F-DESC FIELD! then
    ADD-PRIORITY @ idx F-PRIORITY REC-CELL !
@@ -1423,7 +1436,7 @@ variable CLOSED-TIME-U
 : STATUS-ENSURE-ARCHIVE-PARENT ( ptr u8 n -- )
    {: path:ptr pu:n :}
    path pu STATUS-DIR-U {: parent-u:n :}
-   s" .dots/archive" nip parent-u >= if exit then
+   s" .dots/archive" nip parent-u > if exit then
    s" .dots/archive" nip 1+ begin dup parent-u < while
       path over + c@ 47 = if
          path over SYMLINK? s" Unsafe archive symlink" ?FAIL
@@ -1994,7 +2007,7 @@ create FIX-FOLDER-ROW 256 allot
    false LOAD-ISSUES
    0 FIX-FOLDERS ! 0 FIX-FILES !
    0 SCAN-NAMES-U !
-   s" .dots" [: GATHER-SCAN-NAME ;] FS-LIST:EACH
+   STORE? if s" .dots" [: GATHER-SCAN-NAME ;] FS-LIST:EACH then
    SCAN-NAMES-U @ {: end-at:n :}
    0 begin dup end-at < while
       {: at:n :}
@@ -2328,6 +2341,7 @@ variable SLUG-PATH-U
    1 SLUG-RENAMED +! ;
 create GIT-EXEC-ROW PATH-CAP allot
 : GIT-ADD-DOTS ( -- )
+   STORE? 0= if exit then
    s" .git" EXISTS? 0= if exit then
    s" git" >LEN GIT-EXEC-ROW FIND-EXECUTABLE MATCH option
       none OF s\" Warning: git not found; .dots not staged\n" 2 -rot STDERR-WRITE drop ENDOF

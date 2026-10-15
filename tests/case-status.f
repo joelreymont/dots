@@ -35,6 +35,30 @@ f .dots/archive/a.md
 ;
 s" off-archives" ' OFF-ARCHIVES DOT-CASE
 
+\ Without an archive off creates it to hold the closed task.
+: OFF-NO-ARCHIVE ( -- )
+   s" archive" RM-DIR
+   s" a.md" s" A" s" open" 2 PUT-ISSUE
+   s" off|a" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/archive/a.md
+  ---
+  title: A
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" off-no-archive" ' OFF-NO-ARCHIVE DOT-CASE
+
 : CLOSE-REASON ( -- )
    s" a.md" s" A" s" open" 2 PUT-ISSUE
    s" close|a|--reason|finished" RUN

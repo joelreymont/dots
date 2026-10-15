@@ -574,9 +574,6 @@ s" purge-extra-argument" ' PURGE-EXTRA-ARGUMENT DOT-CASE
    s" " ERR=
    s" d .dots
 d .dots/archive
-f .dots/config
-  prefix=slugify-extra-argument
-.
 " TREE=
 ;
 s" slugify-extra-argument" ' SLUGIFY-EXTRA-ARGUMENT DOT-CASE

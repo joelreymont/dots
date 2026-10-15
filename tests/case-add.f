@@ -1,8 +1,8 @@
 \ case-add.f - add: the id it prints from the prefix and the title's slug, the
 \ fields and options it writes, where a child goes, and the adds it refuses.
 \ Each case is one `dot add` on its own store, parent-folder then reading it
-\ with `tree`; a refused add's store holds a config with a prefix, so the
-\ refusal alone decides its tree.
+\ with `tree`. A refused add leaves the store as it was: it writes no config,
+\ folder or archive.
 require dot.f
 using DOT-T
 package DOT-ADD
@@ -104,6 +104,17 @@ f .dots/<A>.md
 " TREE=
 ;
 s" ---" ' PREFIX-FALLBACK DOT-CASE
+
+\ The store's name holds `#`, which no id may hold, so the id add derives is
+\ invalid and the refusal writes nothing.
+: INVALID-STORE-ID ( -- )
+   s" add|T" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue id\n" ERR=
+   s\" d .dots\nd .dots/archive\n" TREE=
+;
+s" add-invalid-store#id" ' INVALID-STORE-ID DOT-CASE
 
 : SLUG-ABBREVIATION ( -- )
    PREFIX-X
@@ -589,7 +600,6 @@ s" after-blocks" ' AFTER-BLOCKS DOT-CASE
 
 \ `archive` names the archive partition, never a task.
 : PARENT-ARCHIVE-ID ( -- )
-   PREFIX-X
    s" archive.md" s" Archive" s" open" 2 PUT-ISSUE
    s" add|Kid|-P|archive" RUN
    1 RC=
@@ -605,39 +615,54 @@ f .dots/archive.md
   created-at: 2026-01-01T00:00:00Z
   ---
 .
-f .dots/config
-  prefix=x
-.
 " TREE=
 ;
 s" parent-archive-id" ' PARENT-ARCHIVE-ID DOT-CASE
 
+\ In a directory without `.dots` add creates the store with its task and config,
+\ but no archive.
+: ADD-NO-STORE ( -- )
+   s" ../.dots" RM-DIR
+   s" add|T" RUN
+   s" A" SAVE-ID
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s\" d .dots
+f .dots/<A>.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+f .dots/config
+  prefix=add-no-store
+.
+" TREE=
+;
+s" add-no-store" ' ADD-NO-STORE DOT-CASE
+
+\ In a directory without `.dots` the refusal creates nothing.
 : PARENT-ABSENT ( -- )
-   PREFIX-X
-   s" add|T|-P|absent" RUN
+   s" ../.dots" RM-DIR
+   s" add|Title|-P|absent" RUN
    1 RC=
    s" " OUT=
    s\" Parent issue not found: absent\n" ERR=
-   s" d .dots
-d .dots/archive
-f .dots/config
-  prefix=x
-.
-" TREE=
+   s" " TREE=
 ;
 s" parent-absent" ' PARENT-ABSENT DOT-CASE
 
 : AFTER-ABSENT ( -- )
-   PREFIX-X
    s" add|T|-a|absent" RUN
    1 RC=
    s" " OUT=
    s\" After issue not found: absent\n" ERR=
    s" d .dots
 d .dots/archive
-f .dots/config
-  prefix=x
-.
 " TREE=
 ;
 s" after-absent" ' AFTER-ABSENT DOT-CASE
@@ -654,7 +679,6 @@ d .dots/archive
 s" parent-is-after" ' PARENT-IS-AFTER DOT-CASE
 
 : ARCHIVED-PARENT ( -- )
-   PREFIX-X
    s" archive/p.md" s" P" s" closed" 2 PUT-ISSUE
    s" add|Kid|-P|p" RUN
    1 RC=
@@ -669,9 +693,6 @@ f .dots/archive/p.md
   priority: 2
   created-at: 2026-01-01T00:00:00Z
   ---
-.
-f .dots/config
-  prefix=x
 .
 " TREE=
 ;
@@ -764,6 +785,79 @@ s" config-too-large" ' CONFIG-TOO-LARGE DOT-CASE
 ;
 s" config-directory" ' CONFIG-DIRECTORY DOT-CASE
 
+\ A config that holds a prefix is never rewritten: its lines stay as they were.
+: CONFIG-KEPT ( -- )
+   s" config" s\" mode=a\nprefix=x\nmode=b\nnote\n" PUT
+   s" add|T" RUN
+   s" A" SAVE-ID
+   s" A" s" x-t-<hex>" ID=
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/config
+  mode=a
+  prefix=x
+  mode=b
+  note
+.
+f .dots/<A>.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" config-kept" ' CONFIG-KEPT DOT-CASE
+
+\ A symlinked config is read through and never replaced.
+: CONFIG-SYMLINK ( -- )
+   s" ../shared/config" s\" prefix=x\n" PUT
+   s" ../shared/config" s" config" LINK
+   s" add|T" RUN
+   s" A" SAVE-ID
+   s" A" s" x-t-<hex>" ID=
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+l .dots/config -> ../shared/config
+f .dots/<A>.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+   s" shared" s\" d shared\nf shared/config\n  prefix=x\n.\n" DIR=
+;
+s" config-symlink" ' CONFIG-SYMLINK DOT-CASE
+
+\ The prefix add would record cannot go through a symlinked config.
+: CONFIG-SYMLINK-UNPREFIXED ( -- )
+   s" ../shared/config" s\" mode=a\n" PUT
+   s" ../shared/config" s" config" LINK
+   s" add|T" RUN
+   1 RC=
+   s" " OUT=
+   s\" Config is a symlink: .dots/config\n" ERR=
+   s" d .dots
+d .dots/archive
+l .dots/config -> ../shared/config
+" TREE=
+   s" shared" s\" d shared\nf shared/config\n  mode=a\n.\n" DIR=
+;
+s" config-symlink-unprefixed" ' CONFIG-SYMLINK-UNPREFIXED DOT-CASE
+
 \ A 400-byte title of 200 two-byte characters is kept whole.
 : UTF8-TITLE ( -- )
    PREFIX-X
@@ -833,6 +927,28 @@ f .dots/x-task-5eed1d00.md
 " TREE=
 ;
 s" pinned-taken-top" ' PINNED-TAKEN-TOP DOT-CASE
+
+\ Without a config the pinned id takes the store's name as its prefix, and the
+\ refusal writes no config.
+: PINNED-TAKEN-NO-CONFIG ( -- )
+   s" pinned-taken-no-config-task-5eed1d00.md" s" Taken" s" open" 2 PUT-ISSUE
+   s" add|Task" RUN-PINNED
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+d .dots/archive
+f .dots/pinned-taken-no-config-task-5eed1d00.md
+  ---
+  title: Taken
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" pinned-taken-no-config" ' PINNED-TAKEN-NO-CONFIG DOT-CASE
 
 : PINNED-TAKEN-FOLDER ( -- )
    PINNED-STORE
