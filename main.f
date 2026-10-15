@@ -2284,9 +2284,9 @@ variable TREE-CAP
    then
    ISSUE-N @ 0 ?do i ORDER @ dup TREE-ROOT? if PRINT-TREE-ROOT else drop then loop ;
 FUNCTION: STDERR-WRITE write ( n ptr u8 n -- n ) ;FUNCTION
-create OLD-ID-ROW 129 allot
+create OLD-ID-ROW ID-MAX allot
 variable OLD-ID-U
-create NEW-ID-ROW 512 allot
+create NEW-ID-ROW ID-MAX allot
 variable NEW-ID-U
 variable LAST-DASH
 variable SLUG-RENAMED
@@ -2298,7 +2298,7 @@ variable SLUG-CHANGED
 : OLD-ID$ ( -- ptr u8 n ) OLD-ID-ROW OLD-ID-U @ ;
 : NEW-ID! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u 512 > s" Invalid issue id" ?FAIL
+   u ID-MAX > s" Invalid issue id" ?FAIL
    a NEW-ID-ROW u BYTE-COPY u NEW-ID-U ! ;
 : RENAMED-ID$ ( -- ptr u8 n ) NEW-ID-ROW NEW-ID-U @ ;
 : HEX? ( n -- bool )
