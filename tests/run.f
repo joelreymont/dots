@@ -10,4 +10,5 @@ require case-read.f
 require case-layout.f
 require case-maint.f
 require case-status.f
+require case-add.f
 DOT-T:FINISH

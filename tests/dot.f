@@ -33,6 +33,11 @@
 \ and RM-DIR removes a directory tree: `s" archive" RM-DIR` leaves a store
 \ without an archive.
 \
+\ SAVE-ID captures the id on stdout's first line: the whole line, as add prints
+\ it, or the `id` of the JSON object `add --json` prints. ID= states a captured
+\ id's text, its eight random hex digits read as `<hex>`:
+\ `s" A" s" proj-fix-the-bug-<hex>" ID=`.
+\
 \ RUN-LIMITED runs dot as RUN does under tests/limit.f, which lets it write no
 \ byte to any file.
 \
@@ -60,6 +65,7 @@ package DOT-T
 124 constant ARG-SEP                    \ `|` between RUN's arguments
 26 constant ID-MAX                      \ ids A through Z
 512 constant ID-CAP                     \ main.f refuses a longer id
+8 constant HEX-U                        \ the random hex digits ending a new id
 64 constant NAME-CAP
 128 constant LABEL-CAP
 $12 constant UMASK                      \ 022: dot creates files rw-r--r--
@@ -172,6 +178,28 @@ variable NAMES-U
          a idu id idu STR= if i unloop exit then
       then
    loop -1 ;
+
+: JSON-ID-KEY ( -- ptr u8 n ) s\" {\"id\":\"" ;
+
+\ The id a line of add's output names: the `id` a JSON object starts with, empty
+\ when unterminated, else the whole line.
+: LINE-ID ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
+   a u JSON-ID-KEY STARTS-WITH? 0= if a u exit then
+   JSON-ID-KEY nip {: at:n :}
+   a at + u at - [char] " INDEX-OF MATCH option
+      none OF a 0 ENDOF
+      some OF IDX>N {: end:n :} a at + end ENDOF
+   ;MATCH ;
+
+: HEX-BYTE? ( n -- bool ) {: c:n :}
+   c STR-DIGIT? c [char] a >= c [char] f <= and or ;
+
+\ Whether the text ends in HEX-U lowercase hex digits, a new id's random part.
+: HEX-TAIL? ( ptr u8 n -- bool ) {: a:ptr u:n :}
+   u HEX-U < if false exit then
+   HEX-U 0 ?do
+      a u + HEX-U - i + c@ HEX-BYTE? 0= if false unloop exit then
+   loop true ;
 
 : TIME-SHAPE ( -- ptr u8 n ) s" dddd-dd-ddTdd:dd:dd.dddddd+dd:dd" ;
 
@@ -494,10 +522,10 @@ public
 : RELEASE ( -- )
    LOCK-FD @ CLOSE -1 LOCK-FD ! ;
 
-\ Capture the first stdout line, the id add printed, as the letter's id.
+\ Capture the id add printed on its first stdout line as the letter's id.
 : SAVE-ID ( ptr u8 n -- ) {: la:ptr lu:n :}
    la lu LETTER {: k:n :}
-   s" out" FILE$ READ-FILE 10 0 SPLIT-NEXT 2drop {: id:ptr idu:n :}
+   s" out" FILE$ READ-FILE 10 0 SPLIT-NEXT 2drop LINE-ID {: id:ptr idu:n :}
    idu 0 > idu ID-CAP <= and {: ok:bool :}
    ok s" id" LABEL GT-CHECK
    ok if
@@ -534,6 +562,15 @@ public
 
 : TREE= ( ptr u8 n -- ) {: want:ptr wantu:n :}
    TREE$ MASK want wantu s" tree" LABEL GT-CHECK$ ;
+
+\ The letter's captured id is the text, `<hex>` standing for its random part.
+: ID= ( ptr u8 n ptr u8 n -- ) {: la:ptr lu:n want:ptr wantu:n :}
+   la lu LETTER ID$ {: id:ptr idu:n :}
+   MASKED BUF:CLEAR
+   id idu HEX-TAIL? if
+      id idu HEX-U - MASKED B+ s" <hex>" MASKED B+
+   else id idu MASKED B+ then
+   MASKED B$ want wantu s" id-text" LABEL GT-CHECK$ ;
 
 \ The snapshot of a directory beside `.dots`, named as the store sees it.
 : DIR= ( ptr u8 n ptr u8 n -- ) {: a:ptr u:n want:ptr wantu:n :}
