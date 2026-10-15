@@ -32,6 +32,16 @@ DYNAMIC-BUFFER LINE u8
    10 u LINE c!
    count 0 ?do s" import.jsonl" FILE$ 0 LINE u 1+ APPEND-FILE loop ;
 
+create LONG BUF:HDR-BYTES allot         \ a long path, or the tree holding it
+LONG 1024 BUF:N>BLEN BUF:INIT
+: L+ ( ptr u8 n -- ) BUF:N>BLEN LONG BUF:APPEND-SPAN ;
+: L$ ( -- ptr u8 n ) LONG BUF:SPAN$ BUF:BLEN>N ;
+: L-BYTES ( n n -- ) {: c:n k:n :} k 0 ?do c LONG BUF:APPEND-BYTE loop ;
+\ Append `<255 b>/<255 c>/<n d>`, a deep parent's folders below the top.
+: BCD+ ( n -- ) {: du:n :}
+   [char] b NAME-MAX L-BYTES s" /" L+ [char] c NAME-MAX L-BYTES
+   s" /" L+ [char] d du L-BYTES ;
+
 s" import" SECTION
 
 \ Rows become task files with every field; a done row is archived and reads back.
@@ -101,6 +111,32 @@ d .dots/archive
 " TREE=
 ;
 s" malformed-line" ' MALFORMED-LINE DOT-CASE
+
+\ A row still waiting for its parent's row when a malformed line ends the
+\ import stays too, in the folder named after its parent.
+: MALFORMED-LINE-WAITING ( -- )
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+not json
+" JSONL
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Invalid JSONL file\n" ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" malformed-line-waiting" ' MALFORMED-LINE-WAITING DOT-CASE
 
 \ An empty close reason is kept as an empty string.
 : EMPTY-CLOSE-REASON ( -- )
@@ -630,19 +666,31 @@ f .dots/c.md
 ;
 s" dependency-repeated" ' DEPENDENCY-REPEATED DOT-CASE
 
-\ Rows naming an archived parent: the child gets a folder outside the archive, the blocker its edge.
+\ Under an archived parent an open row is skipped and a closed row nests in the
+\ archive; a row it blocks gets its edge.
 : ARCHIVED-PARENT ( -- )
    s" archive/p.md" s" P" s" closed" 1 PUT-ISSUE
    s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"d\",\"title\":\"D\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
 {\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"blocks\"}]}
 " JSONL
    IMPORT
    0 RC=
    s\" Imported 2 issues from import.jsonl\n" OUT=
-   s" " ERR=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
    s\" d .dots
 d .dots/archive
-f .dots/archive/p.md
+d .dots/archive/p
+f .dots/archive/p/d.md
+  ---
+  title: D
+  status: closed
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/archive/p/p.md
   ---
   title: P
   status: closed
@@ -661,21 +709,40 @@ f .dots/b.md
     - p
   ---
 .
-d .dots/p
-f .dots/p/c.md
-  ---
-  title: C
-  status: open
-  priority: 1
-  issue-type: task
-  created-at: \"2026-01-01T00:00:00Z\"
-  ---
-.
 " TREE=
 ;
 s" archived-parent" ' ARCHIVED-PARENT DOT-CASE
 
-\ Rows naming a nested parent: the child gets a top-level folder, the blocker its edge.
+\ A closed row does not nest under an archived parent through an archive that
+\ is a symlink: the import fails before it writes.
+: ARCHIVED-PARENT-SYMLINK ( -- )
+   s" ../external/p.md" s" P" s" closed" 1 PUT-ISSUE
+   s" archive" RM-DIR
+   s" ../external" s" archive" LINK
+   s\" {\"id\":\"d\",\"title\":\"D\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Unsafe archive symlink\n" ERR=
+   s" d .dots
+l .dots/archive -> ../external
+" TREE=
+   s" external" s" d external
+f external/p.md
+  ---
+  title: P
+  status: closed
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" DIR=
+;
+s" archived-parent-symlink" ' ARCHIVED-PARENT-SYMLINK DOT-CASE
+
+\ Rows naming a nested parent: the child goes in the parent's own folder, made
+\ where the parent lives, and the blocker gets its edge.
 : NESTED-PARENT ( -- )
    s" q/q.md" s" Q" s" open" 1 PUT-ISSUE
    s" q/p.md" s" P" s" open" 1 PUT-ISSUE
@@ -699,8 +766,9 @@ f .dots/b.md
     - p
   ---
 .
-d .dots/p
-f .dots/p/c.md
+d .dots/q
+d .dots/q/p
+f .dots/q/p/c.md
   ---
   title: C
   status: open
@@ -709,8 +777,7 @@ f .dots/p/c.md
   created-at: \"2026-01-01T00:00:00Z\"
   ---
 .
-d .dots/q
-f .dots/q/p.md
+f .dots/q/p/p.md
   ---
   title: P
   status: open
@@ -729,6 +796,450 @@ f .dots/q/q.md
 " TREE=
 ;
 s" nested-parent" ' NESTED-PARENT DOT-CASE
+
+\ Under a closed parent an open row is skipped, as add -P refuses it, and a
+\ closed row goes in the parent's own folder.
+: CLOSED-PARENT ( -- )
+   s" p/p.md" s" P" s" open" 1 PUT-ISSUE
+   s" p/c.md" s" C" s" closed" 1 PUT-ISSUE
+   s\" {\"id\":\"k\",\"title\":\"K\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"parent-child\"}]}
+{\"id\":\"m\",\"title\":\"M\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 1 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+d .dots/p/c
+f .dots/p/c/c.md
+  ---
+  title: C
+  status: closed
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/c/m.md
+  ---
+  title: M
+  status: closed
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" closed-parent" ' CLOSED-PARENT DOT-CASE
+
+\ Under a closed parent row an open row is skipped and a closed row nests, also
+\ before the parent's row; the closed family is archived.
+: CLOSED-PARENT-ROW ( -- )
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+{\"id\":\"d\",\"title\":\"D\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 2 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/archive/p
+f .dots/archive/p/d.md
+  ---
+  title: D
+  status: closed
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/archive/p/p.md
+  ---
+  title: P
+  status: closed
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" closed-parent-row" ' CLOSED-PARENT-ROW DOT-CASE
+
+\ Rows before their parent's row nest as they would after it.
+: CHILD-BEFORE-PARENT ( -- )
+   s\" {\"id\":\"g\",\"title\":\"G\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"parent-child\"}]}
+{\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 3 issues from import.jsonl\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+d .dots/p/c
+f .dots/p/c/c.md
+  ---
+  title: C
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/c/g.md
+  ---
+  title: G
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" child-before-parent" ' CHILD-BEFORE-PARENT DOT-CASE
+
+\ A row whose parent row was skipped is skipped, at any depth.
+: SKIPPED-FAMILY ( -- )
+   s\" {\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+{\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"g\",\"title\":\"G\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 1 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 2 issues due to errors\n" ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/archive/p.md
+  ---
+  title: P
+  status: closed
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" skipped-family" ' SKIPPED-FAMILY DOT-CASE
+
+\ The same rows before their parent's row are skipped as they would be after it.
+: SKIPPED-FAMILY-WAITING ( -- )
+   s\" {\"id\":\"g\",\"title\":\"G\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"parent-child\"}]}
+{\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 1 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 2 issues due to errors\n" ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/archive/p.md
+  ---
+  title: P
+  status: closed
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" skipped-family-waiting" ' SKIPPED-FAMILY-WAITING DOT-CASE
+
+\ An edge to a row still waiting for its parent's row is written when that row
+\ is placed.
+: HELD-EDGE ( -- )
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"blocks\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 3 issues from import.jsonl\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/b.md
+  ---
+  title: B
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  blocks:
+    - c
+  ---
+.
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" held-edge" ' HELD-EDGE DOT-CASE
+
+\ An edge held for a waiting row that is finally skipped counts as a skipped
+\ dependency and is never written.
+: HELD-EDGE-SKIPPED ( -- )
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"blocks\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 2 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 1 issues due to errors\nWarning: skipped 1 dependencies due to errors\n" ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/archive/p.md
+  ---
+  title: P
+  status: closed
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/b.md
+  ---
+  title: B
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" held-edge-skipped" ' HELD-EDGE-SKIPPED DOT-CASE
+
+\ A held edge is written before the waiting row's own edges, so the row's edge
+\ back to its blocker is a refused cycle, as when the rows come in order.
+: HELD-EDGE-ORDER ( -- )
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"},{\"depends_on_id\":\"b\",\"type\":\"blocks\"}]}
+{\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"blocks\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 3 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 1 dependencies due to errors\n" ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/b.md
+  ---
+  title: B
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  blocks:
+    - c
+  ---
+.
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" held-edge-order" ' HELD-EDGE-ORDER DOT-CASE
+
+\ The tree both held-edge-duplicate cases leave: c waited on p and b's held
+\ edge to it is written.
+: HELD-DUPLICATE-TREE$ ( -- ptr u8 n )
+   s\" d .dots
+d .dots/archive
+f .dots/b.md
+  ---
+  title: B
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  blocks:
+    - c
+  ---
+.
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" ;
+
+\ A duplicate of a held edge's blocker, skipped for its parent, leaves the
+\ blocker's held edge.
+: HELD-EDGE-DUPLICATE ( -- )
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"blocks\"}]}
+{\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"archive\",\"type\":\"parent-child\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 3 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   HELD-DUPLICATE-TREE$ TREE=
+;
+s" held-edge-duplicate" ' HELD-EDGE-DUPLICATE DOT-CASE
+
+\ A duplicate of a held edge's waiting row, skipped for its parent, leaves the
+\ edge held for the waiting row, uncounted.
+: HELD-EDGE-DUPLICATE-TARGET ( -- )
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"c\",\"type\":\"blocks\"}]}
+{\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"archive\",\"type\":\"parent-child\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 3 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   HELD-DUPLICATE-TREE$ TREE=
+;
+s" held-edge-duplicate-target" ' HELD-EDGE-DUPLICATE-TARGET DOT-CASE
+
+\ A row naming a malformed parent is skipped, as add -P refuses it.
+: MALFORMED-PARENT ( -- )
+   s" p.md" s\" not a task\n" PUT
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   0 RC=
+   s" " OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   s" d .dots
+d .dots/archive
+f .dots/p.md
+  not a task
+.
+" TREE=
+;
+s" malformed-parent" ' MALFORMED-PARENT DOT-CASE
+
+\ A file where the parent's own folder goes is no folder: the import ends before
+\ the row's first write, as add -P refuses.
+: PARENT-NOT-DIRECTORY ( -- )
+   s" p.md" s" P" s" open" 1 PUT-ISSUE
+   s" p" s\" junk\n" PUT
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Not a directory: .dots/p\n" ERR=
+   s" d .dots
+d .dots/archive
+f .dots/p
+  junk
+.
+f .dots/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" parent-not-directory" ' PARENT-NOT-DIRECTORY DOT-CASE
+
+\ With p at the 1015-byte path, p's own folder is 1012 bytes: p's file there,
+\ 1017 bytes, fits FS-PATH-CAP, but the 9-byte id's file, 1025 bytes, does
+\ not. The import ends before p gains a folder, as add -P refuses. The tree is
+\ read with the top folder renamed back to `a`.
+: CHILD-PATH-TOO-LONG ( -- )
+   LONG BUF:CLEAR s" a/" L+ D-NAME BCD+ s" /p.md" L+
+   L$ s" P" s" open" 1 PUT-ISSUE
+   s\" {\"id\":\"child-row\",\"title\":\"Child\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   true MOVE-TOP
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" I/O error\n" ERR=
+   false MOVE-TOP
+   LONG BUF:CLEAR
+   s\" d .dots\nd .dots/a\nd .dots/a/" L+ [char] b NAME-MAX L-BYTES
+   s\" \nd .dots/a/" L+ [char] b NAME-MAX L-BYTES s" /" L+ [char] c NAME-MAX L-BYTES
+   s\" \nd .dots/a/" L+ D-NAME BCD+ s\" \nf .dots/a/" L+ D-NAME BCD+
+   s\" /p.md\n  ---\n  title: P\n  status: open\n  priority: 1\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\nd .dots/archive\n" L+
+   L$ TREE=
+;
+s" child-path-too-long" ' CHILD-PATH-TOO-LONG DOT-CASE
 
 \ Strings given as byte arrays are written as their bytes.
 : BYTE-STRINGS ( -- )
