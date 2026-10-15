@@ -1,0 +1,929 @@
+\ case-read.f - storage and reading: how ls, ready, show and find read a
+\ store's task files: listing order and filters, field defaults, quoted
+\ scalars, malformed files, entries that are not regular files, nested archive
+\ folders, selective loading beside an oversized file, and stores past one
+\ directory read or one output buffer. Each case is one `dot` command on its
+\ own store.
+require dot.f
+require src/lib/string.f
+require src/lib/byte-buffer.f
+require src/lib/fmt.f
+using DOT-T
+package DOT-READ
+
+1048577 constant TOO-BIG                \ one byte over dot's 1 MiB task file limit
+630 constant MANY                       \ names past one 64 KiB directory read
+65 constant WIDE                        \ tasks whose JSON passes 4 MiB
+70000 constant WIDE-DESC                \ each one's description bytes
+104 constant NAME-PAD                   \ makes each generated name 117 bytes
+
+create GEN-FILE BUF:HDR-BYTES allot     \ a generated task file
+create GEN-NAME BUF:HDR-BYTES allot     \ its name
+create GEN-OUT BUF:HDR-BYTES allot      \ the expected stdout
+create GEN-TREE BUF:HDR-BYTES allot     \ the expected tree
+create DIG-BUF 20 allot
+GEN-FILE 256 BUF:N>BLEN BUF:INIT
+GEN-NAME 256 BUF:N>BLEN BUF:INIT
+GEN-OUT 4096 BUF:N>BLEN BUF:INIT
+GEN-TREE 4096 BUF:N>BLEN BUF:INIT
+
+\ ---- generated stores -------------------------------------------------------
+
+: GEN+ ( ptr u8 n ptr a -- ) {: a:ptr u:n b:ptr :}
+   a u BUF:N>BLEN b BUF:APPEND-SPAN ;
+
+: GEN$ ( ptr a -- ptr u8 n )
+   BUF:SPAN$ BUF:BLEN>N ;
+
+: GEN-BYTES ( n n ptr a -- ) {: c:n k:n b:ptr :}
+   k 0 ?do c b BUF:APPEND-BYTE loop ;
+
+: GEN-NUMBER ( n ptr a -- ) {: k:n b:ptr :}
+   SB-RESET k FMT:SB-INT SB$ b GEN+ ;
+
+\ The low w decimal digits of v, zero-padded.
+: GEN-DIGITS ( n n ptr a -- ) {: v:n w:n b:ptr :}
+   v w 0 ?do 10 /mod swap [char] 0 + DIG-BUF w i - 1- + c! loop drop
+   DIG-BUF w b GEN+ ;
+
+\ `2026-01-01T00:MM:SSZ`, k seconds into the year.
+: GEN-STAMP ( n ptr a -- ) {: k:n b:ptr :}
+   s" 2026-01-01T00:" b GEN+
+   k 60 / 2 b GEN-DIGITS  s" :" b GEN+  k 60 mod 2 b GEN-DIGITS
+   s" Z" b GEN+ ;
+
+: TREE-FROM ( ptr u8 n -- )
+   GEN-TREE BUF:CLEAR GEN-TREE GEN+ ;
+
+\ The entry TREE$ gives `.dots/<path>` holding the bytes.
+: TREE-FILE ( ptr u8 n ptr u8 n -- ) {: path:ptr pathu:n a:ptr u:n :}
+   s" f .dots/" GEN-TREE GEN+  path pathu GEN-TREE GEN+  10 GEN-TREE BUF:APPEND-BYTE
+   true u 0 ?do
+      if s"   " GEN-TREE GEN+ then
+      a i + c@ dup GEN-TREE BUF:APPEND-BYTE 10 =
+   loop
+   0= if s\" \n\\\n" GEN-TREE GEN+ then
+   s\" .\n" GEN-TREE GEN+ ;
+
+\ Seed `item-NNNN-x…x.md`, task "Item k" created k seconds into 2026 with a
+\ description of desc bytes (0: none), and add it to the expected tree.
+: GEN-ITEM ( n n -- ) {: k:n desc:n :}
+   GEN-NAME BUF:CLEAR
+   s" item-" GEN-NAME GEN+  k 4 GEN-NAME GEN-DIGITS  s" -" GEN-NAME GEN+
+   [char] x NAME-PAD GEN-NAME GEN-BYTES  s" .md" GEN-NAME GEN+
+   GEN-FILE BUF:CLEAR
+   s\" ---\ntitle: Item " GEN-FILE GEN+  k GEN-FILE GEN-NUMBER
+   s\" \nstatus: open\npriority: 2\ncreated-at: " GEN-FILE GEN+  k GEN-FILE GEN-STAMP
+   s\" \n---\n" GEN-FILE GEN+
+   desc 0 > if
+      10 GEN-FILE BUF:APPEND-BYTE
+      [char] x desc GEN-FILE GEN-BYTES
+      10 GEN-FILE BUF:APPEND-BYTE
+   then
+   GEN-NAME GEN$ GEN-FILE GEN$ PUT
+   GEN-NAME GEN$ GEN-FILE GEN$ TREE-FILE ;
+
+: ITEM-ID ( -- ptr u8 n ) GEN-NAME GEN$ 3 - ;
+
+\ z.md, one byte over the limit, in GEN-FILE.
+: BIG-SIBLING ( -- )
+   GEN-FILE BUF:CLEAR  [char] x TOO-BIG GEN-FILE GEN-BYTES
+   s" z.md" GEN-FILE GEN$ PUT ;
+
+\ ---- the listing store ------------------------------------------------------
+
+\ Open, active, blocked, done, nested, archived and defaulted tasks.
+: LISTING ( -- )
+   s" alpha.md" s" ---
+title: Alpha login
+status: open
+priority: 1
+created-at: 2026-01-01T00:00:00Z
+blocks:
+  - beta
+---
+
+Auth implementation
+" PUT
+   s" beta.md" s" Beta backend" s" active" 0 PUT-ISSUE
+   s" delta.md" s" ---
+title: Closed root
+status: done
+priority: 4
+created-at: 2026-01-01T00:00:00Z
+closed-at: 2026-02-03T00:00:00Z
+close-reason: Merged auth patch
+---
+" PUT
+   s" epsilon.md" s" ---
+title: Ready with done dependency
+status: open
+priority: 3
+created-at: 2026-01-01T00:00:00Z
+blocks:
+  - delta
+---
+" PUT
+   s" gamma.md" s" ---
+title: Ready with missing dependency
+status: open
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+blocks:
+  - missing
+---
+" PUT
+   s" project/project.md" s" Project parent" s" open" 5 PUT-ISSUE
+   s" project/child.md" s" ---
+title: Nested child
+status: open
+priority: 2
+created-at: 2026-01-02T00:00:00Z
+---
+" PUT
+   s" archive/old.md" s" ---
+title: Archived AUTH task
+status: closed
+priority: 0
+created-at: 2026-01-01T00:00:00Z
+closed-at: 2026-02-04T00:00:00Z
+close-reason: Old fix
+---
+" PUT
+   s" defaults.md" s" ---
+title: Defaults
+created-at: 2026-01-03T00:00:00Z
+---
+" PUT ;
+
+\ `\x20` spells a trailing space, which source text cannot keep.
+: LISTING-TREE ( -- ptr u8 n )
+   s\" d .dots
+f .dots/alpha.md
+  ---
+  title: Alpha login
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  blocks:
+    - beta
+  ---
+\x20\x20
+  Auth implementation
+.
+d .dots/archive
+f .dots/archive/old.md
+  ---
+  title: Archived AUTH task
+  status: closed
+  priority: 0
+  created-at: 2026-01-01T00:00:00Z
+  closed-at: 2026-02-04T00:00:00Z
+  close-reason: Old fix
+  ---
+.
+f .dots/beta.md
+  ---
+  title: Beta backend
+  status: active
+  priority: 0
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/defaults.md
+  ---
+  title: Defaults
+  created-at: 2026-01-03T00:00:00Z
+  ---
+.
+f .dots/delta.md
+  ---
+  title: Closed root
+  status: done
+  priority: 4
+  created-at: 2026-01-01T00:00:00Z
+  closed-at: 2026-02-03T00:00:00Z
+  close-reason: Merged auth patch
+  ---
+.
+f .dots/epsilon.md
+  ---
+  title: Ready with done dependency
+  status: open
+  priority: 3
+  created-at: 2026-01-01T00:00:00Z
+  blocks:
+    - delta
+  ---
+.
+f .dots/gamma.md
+  ---
+  title: Ready with missing dependency
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  blocks:
+    - missing
+  ---
+.
+d .dots/project
+f .dots/project/child.md
+  ---
+  title: Nested child
+  status: open
+  priority: 2
+  created-at: 2026-01-02T00:00:00Z
+  ---
+.
+f .dots/project/project.md
+  ---
+  title: Project parent
+  status: open
+  priority: 5
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" ;
+
+s" read" SECTION
+
+\ ---- listing ----------------------------------------------------------------
+
+\ Open and active tasks, nested ones too, by priority then creation time.
+: LS-TEXT ( -- )
+   LISTING
+   s" ls" RUN
+   0 RC=
+   s" [beta] > Beta backend
+[alpha] o Alpha login
+[gamma] o Ready with missing dependency
+[child] o Nested child
+[defaults] o Defaults
+[epsilon] o Ready with done dependency
+[project] o Project parent
+" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" ls-text" ' LS-TEXT DOT-CASE
+
+\ Every field, with defaults for the ones a file leaves out.
+: LS-JSON ( -- )
+   LISTING
+   s" ls|--json" RUN
+   0 RC=
+   s\" [{\"id\":\"beta\",\"title\":\"Beta backend\",\"description\":null,\"status\":\"active\",\"priority\":0,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"closed_at\":null,\"close_reason\":null},{\"id\":\"alpha\",\"title\":\"Alpha login\",\"description\":\"Auth implementation\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"closed_at\":null,\"close_reason\":null},{\"id\":\"gamma\",\"title\":\"Ready with missing dependency\",\"description\":null,\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"closed_at\":null,\"close_reason\":null},{\"id\":\"child\",\"title\":\"Nested child\",\"description\":null,\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"created_at\":\"2026-01-02T00:00:00Z\",\"closed_at\":null,\"close_reason\":null},{\"id\":\"defaults\",\"title\":\"Defaults\",\"description\":null,\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"created_at\":\"2026-01-03T00:00:00Z\",\"closed_at\":null,\"close_reason\":null},{\"id\":\"epsilon\",\"title\":\"Ready with done dependency\",\"description\":null,\"status\":\"open\",\"priority\":3,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"closed_at\":null,\"close_reason\":null},{\"id\":\"project\",\"title\":\"Project parent\",\"description\":null,\"status\":\"open\",\"priority\":5,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"closed_at\":null,\"close_reason\":null}]\n" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" ls-json" ' LS-JSON DOT-CASE
+
+: LS-STATUS-ACTIVE ( -- )
+   LISTING
+   s" ls|--status|active" RUN
+   0 RC=
+   s\" [beta] > Beta backend\n" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" ls-status-active" ' LS-STATUS-ACTIVE DOT-CASE
+
+\ Done tasks outside the archive only.
+: LS-STATUS-DONE ( -- )
+   LISTING
+   s" ls|--status|done" RUN
+   0 RC=
+   s\" [delta] x Closed root\n" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" ls-status-done" ' LS-STATUS-DONE DOT-CASE
+
+: LS-STATUS-CLOSED ( -- )
+   LISTING
+   s" ls|--status|closed" RUN
+   0 RC=
+   s\" [delta] x Closed root\n" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" ls-status-closed" ' LS-STATUS-CLOSED DOT-CASE
+
+: LS-STATUS-OPEN ( -- )
+   LISTING
+   s" ls|--status|open" RUN
+   0 RC=
+   s" [alpha] o Alpha login
+[gamma] o Ready with missing dependency
+[child] o Nested child
+[defaults] o Defaults
+[epsilon] o Ready with done dependency
+[project] o Project parent
+" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" ls-status-open" ' LS-STATUS-OPEN DOT-CASE
+
+\ A dependency that is done or missing does not block; an active one does.
+: READY-TEXT ( -- )
+   LISTING
+   s" ready" RUN
+   0 RC=
+   s" [gamma] o Ready with missing dependency
+[child] o Nested child
+[defaults] o Defaults
+[epsilon] o Ready with done dependency
+[project] o Project parent
+" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" ready-text" ' READY-TEXT DOT-CASE
+
+\ ---- find -------------------------------------------------------------------
+
+\ One match per searched field, archived tasks included, case ignored.
+: FIND-DESCRIPTION ( -- )
+   LISTING
+   s" find|IMPLEMENTATION" RUN
+   0 RC=
+   s\" [alpha] o Alpha login\n" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" find-description" ' FIND-DESCRIPTION DOT-CASE
+
+: FIND-CLOSE-REASON ( -- )
+   LISTING
+   s" find|patch" RUN
+   0 RC=
+   s\" [delta] x Closed root\n" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" find-close-reason" ' FIND-CLOSE-REASON DOT-CASE
+
+: FIND-CLOSED-AT ( -- )
+   LISTING
+   s" find|2026-02-04" RUN
+   0 RC=
+   s\" [old] x Archived AUTH task\n" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" find-closed-at" ' FIND-CLOSED-AT DOT-CASE
+
+: FIND-CREATED-AT ( -- )
+   LISTING
+   s" find|2026-01-02" RUN
+   0 RC=
+   s\" [child] o Nested child\n" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" find-created-at" ' FIND-CREATED-AT DOT-CASE
+
+: FIND-NO-MATCH ( -- )
+   LISTING
+   s" find|no-match" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" find-no-match" ' FIND-NO-MATCH DOT-CASE
+
+\ ---- show -------------------------------------------------------------------
+
+: SHOW-ROOT ( -- )
+   LISTING
+   s" show|alpha" RUN
+   0 RC=
+   s" ID:       alpha
+Title:    Alpha login
+Status:   open
+Priority: 1
+Desc:     Auth implementation
+Created:  2026-01-01T00:00:00Z
+" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" show-root" ' SHOW-ROOT DOT-CASE
+
+: SHOW-PREFIX ( -- )
+   LISTING
+   s" show|bet" RUN
+   0 RC=
+   s" ID:       beta
+Title:    Beta backend
+Status:   active
+Priority: 0
+Created:  2026-01-01T00:00:00Z
+" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" show-prefix" ' SHOW-PREFIX DOT-CASE
+
+: SHOW-NESTED ( -- )
+   LISTING
+   s" show|child" RUN
+   0 RC=
+   s" ID:       child
+Title:    Nested child
+Status:   open
+Priority: 2
+Created:  2026-01-02T00:00:00Z
+" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" show-nested" ' SHOW-NESTED DOT-CASE
+
+\ An archived task reads as done, with its closing time and reason.
+: SHOW-ARCHIVED ( -- )
+   LISTING
+   s" show|old" RUN
+   0 RC=
+   s" ID:       old
+Title:    Archived AUTH task
+Status:   done
+Priority: 0
+Created:  2026-01-01T00:00:00Z
+Closed:   2026-02-04T00:00:00Z
+Reason:   Old fix
+" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" show-archived" ' SHOW-ARCHIVED DOT-CASE
+
+: SHOW-DEFAULTS ( -- )
+   LISTING
+   s" show|defaults" RUN
+   0 RC=
+   s" ID:       defaults
+Title:    Defaults
+Status:   open
+Priority: 2
+Created:  2026-01-03T00:00:00Z
+" OUT=
+   s" " ERR=
+   LISTING-TREE TREE=
+;
+s" show-defaults" ' SHOW-DEFAULTS DOT-CASE
+
+\ ---- scalars ----------------------------------------------------------------
+
+\ Quoted values with escapes, a quoted priority, unknown keys and a padded
+\ description.
+: QUOTED ( -- )
+   s" quote.md" s\" ---
+title: \"Quotes: \\\"hello\\\" \\t café A\\nB\\rC\\\\E\\qF\"
+status: open
+priority: \"-8\"
+created-at: \"\\\"2026-01-05T00:00:00Z\\\"\"
+closed-at: \"\\\"2026-03-01\\\"\"
+close-reason: \"Why: \\\"yes\\\"\"
+issue-type: feature
+assignee: alice
+unknown: ignored
+---
+
+  two lines
+second line\x20\x20
+" PUT ;
+
+: QUOTED-TREE ( -- ptr u8 n )
+   s\" d .dots
+d .dots/archive
+f .dots/quote.md
+  ---
+  title: \"Quotes: \\\"hello\\\" \\t café A\\nB\\rC\\\\E\\qF\"
+  status: open
+  priority: \"-8\"
+  created-at: \"\\\"2026-01-05T00:00:00Z\\\"\"
+  closed-at: \"\\\"2026-03-01\\\"\"
+  close-reason: \"Why: \\\"yes\\\"\"
+  issue-type: feature
+  assignee: alice
+  unknown: ignored
+  ---
+\x20\x20
+    two lines
+  second line\x20\x20
+.
+" ;
+
+: SHOW-QUOTED ( -- )
+   QUOTED
+   s" show|quote" RUN
+   0 RC=
+   s\" ID:       quote
+Title:    Quotes: \"hello\" \t café A\nB\rC\\E\\qF
+Status:   open
+Priority: -8
+Desc:     two lines
+second line
+Created:  2026-01-05T00:00:00Z
+Closed:   2026-03-01
+Reason:   Why: \"yes\"
+" OUT=
+   s" " ERR=
+   QUOTED-TREE TREE=
+;
+s" show-quoted" ' SHOW-QUOTED DOT-CASE
+
+: JSON-QUOTED ( -- )
+   QUOTED
+   s" ls|--json" RUN
+   0 RC=
+   s\" [{\"id\":\"quote\",\"title\":\"Quotes: \\\"hello\\\" \\t café A\\nB\\rC\\\\E\\\\qF\",\"description\":\"two lines\\nsecond line\",\"status\":\"open\",\"priority\":-8,\"issue_type\":\"feature\",\"created_at\":\"2026-01-05T00:00:00Z\",\"closed_at\":\"2026-03-01\",\"close_reason\":\"Why: \\\"yes\\\"\"}]\n" OUT=
+   s" " ERR=
+   QUOTED-TREE TREE=
+;
+s" json-quoted" ' JSON-QUOTED DOT-CASE
+
+\ A created-at that opens a quote and never closes it is kept as written.
+: UNTERMINATED-TIMESTAMP ( -- )
+   s" un.md" s\" ---\ntitle: Unterminated\nstatus: open\npriority: 2\ncreated-at: \"2026-01-01\n---\n" PUT
+   s" show|un" RUN
+   0 RC=
+   s\" ID:       un\nTitle:    Unterminated\nStatus:   open\nPriority: 2\nCreated:  \"2026-01-01\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/un.md\n  ---\n  title: Unterminated\n  status: open\n  priority: 2\n  created-at: \"2026-01-01\n  ---\n.\n" TREE=
+;
+s" unterminated-timestamp" ' UNTERMINATED-TIMESTAMP DOT-CASE
+
+: PRIORITY-UNDERSCORE ( -- )
+   s" number.md" s\" ---\ntitle: Number\nstatus: open\npriority: 0_2\ncreated-at: 2026-01-01T00:00:00Z\n---\n" PUT
+   s" show|number" RUN
+   0 RC=
+   s\" ID:       number\nTitle:    Number\nStatus:   open\nPriority: 2\nCreated:  2026-01-01T00:00:00Z\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/number.md\n  ---\n  title: Number\n  status: open\n  priority: 0_2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
+;
+s" priority-underscore" ' PRIORITY-UNDERSCORE DOT-CASE
+
+: PRIORITY-LEADING-ZEROS ( -- )
+   s" number.md" s\" ---\ntitle: Number\nstatus: open\npriority: 000000000000000000000000000000000000000000000000000000000000000000000000000000002\ncreated-at: 2026-01-01T00:00:00Z\n---\n" PUT
+   s" show|number" RUN
+   0 RC=
+   s\" ID:       number\nTitle:    Number\nStatus:   open\nPriority: 2\nCreated:  2026-01-01T00:00:00Z\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/number.md\n  ---\n  title: Number\n  status: open\n  priority: 000000000000000000000000000000000000000000000000000000000000000000000000000000002\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
+;
+s" priority-leading-zeros" ' PRIORITY-LEADING-ZEROS DOT-CASE
+
+\ An undecodable description lists as its bytes.
+: DESCRIPTION-BYTES ( -- )
+   s" a.md" s\" ---\ntitle: Bytes\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---\n\nbody\xFF\n" PUT
+   s" ls|--json" RUN
+   0 RC=
+   s\" [{\"id\":\"a\",\"title\":\"Bytes\",\"description\":[98,111,100,121,255],\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"closed_at\":null,\"close_reason\":null}]\n" OUT=
+   s" " ERR=
+   s\" d .dots\nf .dots/a.md\n  ---\n  title: Bytes\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n  \n  body\xFF\n.\nd .dots/archive\n" TREE=
+;
+s" description-bytes" ' DESCRIPTION-BYTES DOT-CASE
+
+\ ---- malformed files --------------------------------------------------------
+
+: LS-SKIPS-MALFORMED ( -- )
+   s" good.md" s" Good" s" open" 2 PUT-ISSUE
+   s" plain.md" s\" not frontmatter\n" PUT
+   s" mystery.md" s" Bad status" s" mystery" 2 PUT-ISSUE
+   s" banana.md" s\" ---\ntitle: Bad priority\nstatus: open\npriority: banana\ncreated-at: 2026-01-01T00:00:00Z\n---\n" PUT
+   s" outside.md" s\" ---\ntitle: Bad dependency\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\nblocks:\n  - ../outside\n---\n" PUT
+   s" untitled.md" s\" ---\ncreated-at: 2026-01-01\n---\n" PUT
+   s" ls" RUN
+   0 RC=
+   s\" [good] o Good\n" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+f .dots/banana.md
+  ---
+  title: Bad priority
+  status: open
+  priority: banana
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/good.md
+  ---
+  title: Good
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/mystery.md
+  ---
+  title: Bad status
+  status: mystery
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/outside.md
+  ---
+  title: Bad dependency
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  blocks:
+    - ../outside
+  ---
+.
+f .dots/plain.md
+  not frontmatter
+.
+f .dots/untitled.md
+  ---
+  created-at: 2026-01-01
+  ---
+.
+" TREE=
+;
+s" ls-skips-malformed" ' LS-SKIPS-MALFORMED DOT-CASE
+
+: SHOW-INVALID-STATUS ( -- )
+   s" mystery.md" s" Bad status" s" mystery" 2 PUT-ISSUE
+   s" show|mystery" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue status\n" ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/mystery.md\n  ---\n  title: Bad status\n  status: mystery\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
+;
+s" show-invalid-status" ' SHOW-INVALID-STATUS DOT-CASE
+
+\ A dependency id that climbs out of the store.
+: SHOW-INVALID-FRONTMATTER ( -- )
+   s" outside.md" s\" ---\ntitle: Bad dependency\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\nblocks:\n  - ../outside\n---\n" PUT
+   s" show|outside" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/outside.md\n  ---\n  title: Bad dependency\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  blocks:\n    - ../outside\n  ---\n.\n" TREE=
+;
+s" show-invalid-frontmatter" ' SHOW-INVALID-FRONTMATTER DOT-CASE
+
+\ A line that starts with `---` closes the frontmatter: `---\r` here, `---tail`
+\ below, whose rest of line opens the description.
+: CLOSING-CRLF ( -- )
+   s" delimiter.md" s\" ---\ntitle: Closing CRLF\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---\r\n\nBody\n" PUT
+   s" show|delimiter" RUN
+   0 RC=
+   s\" ID:       delimiter\nTitle:    Closing CRLF\nStatus:   open\nPriority: 2\nDesc:     Body\nCreated:  2026-01-01T00:00:00Z\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/delimiter.md\n  ---\n  title: Closing CRLF\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\r\n  \n  Body\n.\n" TREE=
+;
+s" closing-crlf" ' CLOSING-CRLF DOT-CASE
+
+: CLOSING-TAIL ( -- )
+   s" delimiter.md" s\" ---\ntitle: Closing prefix\nstatus: open\npriority: 2\ncreated-at: 2026-01-01T00:00:00Z\n---tail\n\nBody\n" PUT
+   s" show|delimiter" RUN
+   0 RC=
+   s\" ID:       delimiter\nTitle:    Closing prefix\nStatus:   open\nPriority: 2\nDesc:     tail\n\nBody\nCreated:  2026-01-01T00:00:00Z\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/delimiter.md\n  ---\n  title: Closing prefix\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---tail\n  \n  Body\n.\n" TREE=
+;
+s" closing-tail" ' CLOSING-TAIL DOT-CASE
+
+\ ---- entries that are not task files -----------------------------------------
+
+: LS-SKIPS-SYMLINKS ( -- )
+   s" alpha.md" s" Alpha" s" open" 1 PUT-ISSUE
+   s" project/project.md" s" Project" s" open" 2 PUT-ISSUE
+   s" alpha.md" s" link.md" LINK
+   s" project" s" linkdir" LINK
+   s" ls" RUN
+   0 RC=
+   s\" [alpha] o Alpha\n[project] o Project\n" OUT=
+   s" " ERR=
+   s" d .dots
+f .dots/alpha.md
+  ---
+  title: Alpha
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+l .dots/link.md -> alpha.md
+l .dots/linkdir -> project
+d .dots/project
+f .dots/project/project.md
+  ---
+  title: Project
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" ls-skips-symlinks" ' LS-SKIPS-SYMLINKS DOT-CASE
+
+: SHOW-SYMLINK ( -- )
+   s" alpha.md" s" Alpha" s" open" 1 PUT-ISSUE
+   s" alpha.md" s" link.md" LINK
+   s" show|link" RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue not found: link\n" ERR=
+   s\" d .dots\nf .dots/alpha.md\n  ---\n  title: Alpha\n  status: open\n  priority: 1\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\nd .dots/archive\nl .dots/link.md -> alpha.md\n" TREE=
+;
+s" show-symlink" ' SHOW-SYMLINK DOT-CASE
+
+\ A named pipe is never opened: reading one would block.
+: LS-SKIPS-FIFOS ( -- )
+   s" a.md" s" A" s" open" 1 PUT-ISSUE
+   s" p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" pipe.md" PUT-FIFO
+   s" p/pipe.md" PUT-FIFO
+   s" ls" RUN
+   0 RC=
+   s\" [a] o A\n[p] o P\n" OUT=
+   s" " ERR=
+   s" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+d .dots/p
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+p .dots/p/pipe.md
+p .dots/pipe.md
+" TREE=
+;
+s" ls-skips-fifos" ' LS-SKIPS-FIFOS DOT-CASE
+
+: SHOW-FIFO ( -- )
+   s" a.md" s" A" s" open" 1 PUT-ISSUE
+   s" pipe.md" PUT-FIFO
+   s" show|pipe" RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue not found: pipe\n" ERR=
+   s\" d .dots\nf .dots/a.md\n  ---\n  title: A\n  status: open\n  priority: 1\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\nd .dots/archive\np .dots/pipe.md\n" TREE=
+;
+s" show-fifo" ' SHOW-FIFO DOT-CASE
+
+\ ---- folders ----------------------------------------------------------------
+
+: NESTED-ARCHIVE ( -- )
+   s" project/project.md" s" Visible project" s" open" 2 PUT-ISSUE
+   s" project/archive/hidden.md" s" Hidden project" s" open" 2 PUT-ISSUE ;
+
+: NESTED-ARCHIVE-TREE ( -- ptr u8 n )
+   s" d .dots
+d .dots/archive
+d .dots/project
+d .dots/project/archive
+f .dots/project/archive/hidden.md
+  ---
+  title: Hidden project
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/project/project.md
+  ---
+  title: Visible project
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" ;
+
+\ Only the store's own `archive` is the archive; a deeper one is not read.
+: NESTED-ARCHIVE-LS ( -- )
+   NESTED-ARCHIVE
+   s" ls" RUN
+   0 RC=
+   s\" [project] o Visible project\n" OUT=
+   s" " ERR=
+   NESTED-ARCHIVE-TREE TREE=
+;
+s" nested-archive-ls" ' NESTED-ARCHIVE-LS DOT-CASE
+
+: NESTED-ARCHIVE-FIND ( -- )
+   NESTED-ARCHIVE
+   s" find|project" RUN
+   0 RC=
+   s\" [project] o Visible project\n" OUT=
+   s" " ERR=
+   NESTED-ARCHIVE-TREE TREE=
+;
+s" nested-archive-find" ' NESTED-ARCHIVE-FIND DOT-CASE
+
+\ A folder without its owner's file still lists its tasks.
+: ORPHAN-FOLDER ( -- )
+   s" orphan/kid.md" s" Kid" s" open" 2 PUT-ISSUE
+   s" ls" RUN
+   0 RC=
+   s\" [kid] o Kid\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nd .dots/orphan\nf .dots/orphan/kid.md\n  ---\n  title: Kid\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
+;
+s" orphan-folder" ' ORPHAN-FOLDER DOT-CASE
+
+: NEWLINE-NAME ( -- )
+   s\" odd\nname.md" s" Odd name" s" open" 2 PUT-ISSUE
+   s" ls|--json" RUN
+   0 RC=
+   s\" [{\"id\":\"odd\\nname\",\"title\":\"Odd name\",\"description\":null,\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"closed_at\":null,\"close_reason\":null}]\n" OUT=
+   s" " ERR=
+   s\" d .dots\nd .dots/archive\nf .dots/odd\nname.md\n  ---\n  title: Odd name\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
+;
+s" newline-name" ' NEWLINE-NAME DOT-CASE
+
+\ ---- selective loading and capacity ------------------------------------------
+
+\ show reads only the task it names, not an oversized sibling.
+: OVERSIZED-SIBLING-SHOW ( -- )
+   s" a.md" s" A" s" open" 2 PUT-ISSUE
+   BIG-SIBLING
+   s" show|a" RUN
+   0 RC=
+   s\" ID:       a\nTitle:    A\nStatus:   open\nPriority: 2\nCreated:  2026-01-01T00:00:00Z\n" OUT=
+   s" " ERR=
+   s\" d .dots\nf .dots/a.md\n  ---\n  title: A\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\nd .dots/archive\n" TREE-FROM
+   s" z.md" GEN-FILE GEN$ TREE-FILE
+   GEN-TREE GEN$ TREE=
+;
+s" oversized-sibling-show" ' OVERSIZED-SIBLING-SHOW DOT-CASE
+
+\ A mutation reads only the task it changes, not an oversized sibling.
+: OVERSIZED-SIBLING-ON ( -- )
+   s" a.md" s" A" s" open" 2 PUT-ISSUE
+   BIG-SIBLING
+   s" on|a" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots\nf .dots/a.md\n  ---\n  title: A\n  status: active\n  priority: 2\n  issue-type: task\n  created-at: \"2026-01-01T00:00:00Z\"\n  ---\n.\nd .dots/archive\n" TREE-FROM
+   s" z.md" GEN-FILE GEN$ TREE-FILE
+   GEN-TREE GEN$ TREE=
+;
+s" oversized-sibling-on" ' OVERSIZED-SIBLING-ON DOT-CASE
+
+: LARGE-DIRECTORY ( -- )
+   s\" d .dots\nd .dots/archive\n" TREE-FROM
+   GEN-OUT BUF:CLEAR
+   MANY 0 ?do
+      i 0 GEN-ITEM
+      s" [" GEN-OUT GEN+  ITEM-ID GEN-OUT GEN+  s" ] o Item " GEN-OUT GEN+
+      i GEN-OUT GEN-NUMBER  10 GEN-OUT BUF:APPEND-BYTE
+   loop
+   s" ls" RUN
+   0 RC=
+   GEN-OUT GEN$ OUT=
+   s" " ERR=
+   GEN-TREE GEN$ TREE=
+;
+s" large-directory" ' LARGE-DIRECTORY DOT-CASE
+
+: LARGE-JSON ( -- )
+   s\" d .dots\nd .dots/archive\n" TREE-FROM
+   GEN-OUT BUF:CLEAR
+   s" [" GEN-OUT GEN+
+   WIDE 0 ?do
+      i 0 > if s" ," GEN-OUT GEN+ then
+      i WIDE-DESC GEN-ITEM
+      s\" {\"id\":\"" GEN-OUT GEN+  ITEM-ID GEN-OUT GEN+
+      s\" \",\"title\":\"Item " GEN-OUT GEN+  i GEN-OUT GEN-NUMBER
+      s\" \",\"description\":\"" GEN-OUT GEN+  [char] x WIDE-DESC GEN-OUT GEN-BYTES
+      s\" \",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"created_at\":\"" GEN-OUT GEN+
+      i GEN-OUT GEN-STAMP
+      s\" \",\"closed_at\":null,\"close_reason\":null}" GEN-OUT GEN+
+   loop
+   s\" ]\n" GEN-OUT GEN+
+   s" ls|--json" RUN
+   0 RC=
+   GEN-OUT GEN$ OUT=
+   s" " ERR=
+   GEN-TREE GEN$ TREE=
+;
+s" large-json" ' LARGE-JSON DOT-CASE
+
+;package
+;using

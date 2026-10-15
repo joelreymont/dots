@@ -6,4 +6,5 @@ require dot.f
 
 DOT-T:START
 require case-cli.f
+require case-read.f
 DOT-T:FINISH

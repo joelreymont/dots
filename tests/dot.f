@@ -25,6 +25,10 @@
 \ compared text is masked: each
 \ captured id reads `<A>`, `<B>`…, and each generated timestamp
 \ (2026-10-15T11:05:55.731062+00:00) reads `<time>`.
+\
+\ A seed's path is relative to `.dots/`. PUT writes a file and LINK makes a
+\ symlink to the target, each making the directories above it; PUT-FIFO makes
+\ a named pipe and PUT-ISSUE writes a task in dot's frontmatter.
 require src/lib/errors.f
 require src/lib/string.f
 require src/lib/byte-buffer.f
@@ -75,7 +79,7 @@ create TEXT BUF:HDR-BYTES allot         \ a seeded file's bytes
 create SNAP BUF:HDR-BYTES allot         \ TREE$
 create MASKED BUF:HDR-BYTES allot       \ the text a check compares
 DYNAMIC-BUFFER RAW u8                   \ a file read back
-DYNAMIC-BUFFER NAMES u8                 \ the open directories' listings, innermost last
+DYNAMIC-BUFFER NAMES u8                 \ the open directories' names, each NUL-ended, innermost last
 variable NAMES-U
 
 \ ---- text ---------------------------------------------------------------------
@@ -103,6 +107,12 @@ variable NAMES-U
 
 : DOTS$ ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
    SB-RESET s" .dots/" SB-APPEND a u SB-APPEND SB$ FILE$ ;
+
+\ Make the directories above the path.
+: PARENTS ( ptr u8 n -- ) {: f:ptr fu:n :}
+   fu begin dup 0 > while
+      dup 1- f + c@ [char] / = if 1- f swap MAKE-DIRS 0 else 1- then
+   repeat drop ;
 
 : READ-FILE ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
    a u FILE-SIZE {: size:n :}
@@ -217,16 +227,41 @@ variable NAMES-U
    WALK$ LINK-BUF READ-LINK {: n:n :}
    LINK-BUF SPAN:$ drop n SNAP B+ 10 SNAP BUF:APPEND-BYTE ;
 
-\ The names of the visited directory, appended to NAMES; answers where they start.
-: NAMES-COUNT ( ptr u8 n -- ) nip 1+ NAMES-U +! ;
+\ Append the name, NUL-ended: a name holds any byte but NUL and `/`.
+: NAME+ ( ptr u8 n -- ) {: a:ptr u:n :}
+   NAMES-U @ {: at:n :}
+   at u + 1+ NAMES-RESERVE
+   a 0 NAMES at + u BYTE-COPY
+   0 0 NAMES at u + + c!
+   at u + 1+ NAMES-U ! ;
 
+\ The names of the visited directory, appended to NAMES; answers where they
+\ start and end.
 : LIST ( -- n n )
    NAMES-U @ {: at:n :}
-   WALK$ [: NAMES-COUNT ;] FS-LIST:EACH
-   NAMES-U @ 1+ NAMES-RESERVE
-   WALK$ at NAMES NAMES-U @ at - FS-LIST:NAMES {: n:n :}
-   at n + NAMES-U !
-   at at n + ;
+   WALK$ [: NAME+ ;] FS-LIST:EACH
+   at NAMES-U @ ;
+
+: NAME@ ( n -- ptr u8 n ) {: at:n :}
+   0 NAMES at + {: a:ptr :}
+   0 begin a over + c@ 0<> while 1+ repeat {: u:n :}
+   a u ;
+
+variable BEST
+
+\ The offset of the name at or after at, before end, that follows the one at
+\ prev (-1: none) in byte order; -1 when no name follows it.
+: NEXT-NAME ( n n n -- n ) {: at:n end:n prev:n :}
+   -1 BEST !
+   at begin dup end < while {: from:n :}
+      prev 0 < if true else prev NAME@ from NAME@ STR< then
+      if
+         BEST @ 0 < if true else from NAME@ BEST @ NAME@ STR< then
+         if from BEST ! then
+      then
+      from NAME@ nip 1+ from +
+   repeat drop
+   BEST @ ;
 
 : SNAP-ENTRY ( -- )
    WALK$ SYMLINK? if SNAP-LINK exit then
@@ -234,12 +269,11 @@ variable NAMES-U
    WALK$ DIR? 0= if s" p" ENTRY 10 SNAP BUF:APPEND-BYTE exit then
    s" d" ENTRY 10 SNAP BUF:APPEND-BYTE
    LIST {: at:n end:n :}
-   at begin dup end < while {: from:n :}
-      0 NAMES end 10 from SPLIT-NEXT drop {: name:ptr nameu:n next:n :}
-      name nameu WALK-PUSH {: old:n :}
+   -1 begin at end rot NEXT-NAME dup 0 >= while {: name:n :}
+      name NAME@ WALK-PUSH {: old:n :}
       RECURSE
       old WALK-U !
-      next
+      name
    repeat drop
    at NAMES-U ! ;
 
@@ -251,6 +285,10 @@ variable NAMES-U
    s" .dots" WALK-PUSH drop
    WALK$ SYMLINK? WALK$ EXISTS? or if SNAP-ENTRY then
    SNAP B$ ;
+
+PROCESS-SYMBOLS
+FUNCTION: MKFIFO-CALL mkfifo ( ptr u8 n -- i32 ) ;FUNCTION
+420 constant FIFO-MODE                  \ 0644
 
 \ ---- running dot ----------------------------------------------------------------
 
@@ -322,11 +360,17 @@ public
 
 \ Seed `.dots/<path>` with the bytes.
 : PUT ( ptr u8 n ptr u8 n -- ) {: path:ptr pathu:n a:ptr u:n :}
-   path pathu DOTS$ {: f:ptr fu:n :}
-   fu begin dup 0 > while
-      dup 1- f + c@ [char] / = if 1- f swap MAKE-DIRS 0 else 1- then
-   repeat drop
+   path pathu DOTS$ PARENTS
    path pathu DOTS$ a u WRITE-ALL ;
+
+\ Seed `.dots/<path>` as a symlink to the target.
+: LINK ( ptr u8 n ptr u8 n -- ) {: target:ptr targetu:n path:ptr pathu:n :}
+   path pathu DOTS$ PARENTS
+   target targetu path pathu DOTS$ MAKE-SYMLINK ;
+
+\ Make `.dots/<path>` a named pipe.
+: PUT-FIFO ( ptr u8 n -- )
+   DOTS$ FS-PATHZ FIFO-MODE MKFIFO-CALL 0<> if E-FS-IO throw then ;
 
 \ Seed a task file in the frontmatter dot writes.
 : PUT-ISSUE ( ptr u8 n ptr u8 n ptr u8 n n -- )
