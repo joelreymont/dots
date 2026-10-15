@@ -132,8 +132,9 @@ Corrected Zig bugs have explicit expectations. For reopening, both reference
 and Habu commands must succeed; the harness then relocates only the named
 archived path in the disposable Zig fixture before resuming exact comparison.
 Two additional Habu assertions check the reopened active paths, metadata,
-children, and empty output. Slugify archive/nested cases and refusal to close
-over malformed descendants assert the corrected state directly. The Zig
+children, and empty output. Slugify archive/nested cases, refusal to close
+over malformed descendants, and the reserved `archive` ID assert the corrected
+state directly. The Zig
 reference source and executable remain unchanged.
 
 Real-store slugify checks compare task contents, archive placement, and the
@@ -188,6 +189,12 @@ source or toolchain changes.
 - Injected syscall failures test rollback, not power-loss or process-kill
   durability across multiple files. A rollback can itself fail if the
   filesystem keeps failing; no blanket crash-durability guarantee is made.
+- `archive` names the archive partition, so no command creates a task with
+  that ID. `add -P archive` fails with `Invalid issue id`, and JSONL import
+  skips a row whose ID or parent is `archive`, counting it in the
+  skipped-issues warning. Zig writes those tasks into `.dots/archive/`.
+  Existing records named `archive` still read. `edge_test.py` asserts both
+  sides in `import-archive-id` and `add-parent-archive-id`.
 - On a read-only task directory, Habu reports `Permission denied`; the adapted
   Zig reference can abort with a double-free panic. The Habu diagnostic is
   intentional.
