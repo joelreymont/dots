@@ -672,6 +672,79 @@ f .dots/p/q/leaf.md
 ;
 s" tree-deep-orphan" ' TREE-DEEP-ORPHAN DOT-CASE
 
+\ Roots and children tied on priority and creation time go by id.
+: TREE-TIES ( -- )
+   s" p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/delta.md" s" Delta" s" open" 2 PUT-ISSUE
+   s" p/alpha.md" s" Alpha" s" open" 2 PUT-ISSUE
+   s" p/charlie.md" s" Charlie" s" open" 2 PUT-ISSUE
+   s" foxtrot.md" s" Foxtrot" s" open" 2 PUT-ISSUE
+   s" bravo.md" s" Bravo" s" open" 2 PUT-ISSUE
+   s" tree" RUN
+   0 RC=
+   s" [bravo] ○ Bravo
+[foxtrot] ○ Foxtrot
+[p] ○ P
+  └─ [alpha] ○ Alpha
+  └─ [charlie] ○ Charlie
+  └─ [delta] ○ Delta
+" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+f .dots/bravo.md
+  ---
+  title: Bravo
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/foxtrot.md
+  ---
+  title: Foxtrot
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p
+f .dots/p/alpha.md
+  ---
+  title: Alpha
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/charlie.md
+  ---
+  title: Charlie
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/delta.md
+  ---
+  title: Delta
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" tree-ties" ' TREE-TIES DOT-CASE
+
 : TREE-MALFORMED-PARENT ( -- )
    s" bent/bent.md" s\" not frontmatter\n" PUT
    s" bent/sprout.md" s" Sprout" s" open" 2 PUT-ISSUE

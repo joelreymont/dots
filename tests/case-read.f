@@ -245,6 +245,97 @@ f .dots/project/project.md
 .
 " ;
 
+\ Tasks tied on priority and creation time but for Zero; two share the id
+\ bravo.
+: TIES ( -- )
+   s" foxtrot.md" s" Foxtrot" s" open" 2 PUT-ISSUE
+   s" nested/bravo.md" s" Nested bravo" s" open" 2 PUT-ISSUE
+   s" charlie.md" s" Charlie" s" active" 2 PUT-ISSUE
+   s" zero.md" s" Zero" s" open" 0 PUT-ISSUE
+   s" bravo.md" s" Bravo" s" open" 2 PUT-ISSUE
+   s" alpha.md" s" Alpha" s" open" 2 PUT-ISSUE
+   s" hotel.md" s" Hotel" s" done" 2 PUT-ISSUE
+   s" archive/zulu.md" s" Zulu" s" closed" 2 PUT-ISSUE
+   s" archive/kilo.md" s" Kilo" s" closed" 2 PUT-ISSUE ;
+
+: TIES-TREE ( -- ptr u8 n )
+   s" d .dots
+f .dots/alpha.md
+  ---
+  title: Alpha
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+f .dots/archive/kilo.md
+  ---
+  title: Kilo
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/zulu.md
+  ---
+  title: Zulu
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/bravo.md
+  ---
+  title: Bravo
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/charlie.md
+  ---
+  title: Charlie
+  status: active
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/foxtrot.md
+  ---
+  title: Foxtrot
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/hotel.md
+  ---
+  title: Hotel
+  status: done
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/nested
+f .dots/nested/bravo.md
+  ---
+  title: Nested bravo
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/zero.md
+  ---
+  title: Zero
+  status: open
+  priority: 0
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" ;
+
 s" read" SECTION
 
 \ ---- listing ----------------------------------------------------------------
@@ -325,6 +416,23 @@ s" ls-status-closed" ' LS-STATUS-CLOSED DOT-CASE
 ;
 s" ls-status-open" ' LS-STATUS-OPEN DOT-CASE
 
+\ Ties go by id, and records sharing an id by path.
+: LS-TIES ( -- )
+   TIES
+   s" ls" RUN
+   0 RC=
+   s" [zero] o Zero
+[alpha] o Alpha
+[bravo] o Bravo
+[bravo] o Nested bravo
+[charlie] > Charlie
+[foxtrot] o Foxtrot
+" OUT=
+   s" " ERR=
+   TIES-TREE TREE=
+;
+s" ls-ties" ' LS-TIES DOT-CASE
+
 \ A dependency that is done or missing does not block; an active one does.
 : READY-TEXT ( -- )
    LISTING
@@ -393,6 +501,26 @@ s" find-created-at" ' FIND-CREATED-AT DOT-CASE
    LISTING-TREE TREE=
 ;
 s" find-no-match" ' FIND-NO-MATCH DOT-CASE
+
+\ Open and active matches, then closed ones, each in ls order.
+: FIND-TIES ( -- )
+   TIES
+   s" find|2026" RUN
+   0 RC=
+   s" [zero] o Zero
+[alpha] o Alpha
+[bravo] o Bravo
+[bravo] o Nested bravo
+[charlie] > Charlie
+[foxtrot] o Foxtrot
+[hotel] x Hotel
+[kilo] x Kilo
+[zulu] x Zulu
+" OUT=
+   s" " ERR=
+   TIES-TREE TREE=
+;
+s" find-ties" ' FIND-TIES DOT-CASE
 
 \ ---- show -------------------------------------------------------------------
 

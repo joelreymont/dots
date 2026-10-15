@@ -1,7 +1,9 @@
 \ case-slug.f - slugify: every task takes the id `<prefix>-<title slug>-<hex>`
 \ wherever it lives, its folders follow it, every blocks reference is
 \ rewritten, and an occupied destination, an unsafe archive or a failed write
-\ leaves the store as it was. Each store's config fixes the prefix `p`.
+\ leaves the store as it was. Tasks go in id byte order, records sharing an id
+\ in path byte order, so the output and blocker order are the same on every
+\ filesystem. Each store's config fixes the prefix `p`.
 require dot.f
 using DOT-T
 package DOT-SLUG
@@ -77,11 +79,11 @@ blocks:
    s" slugify" RUN
    0 RC=
    s" active-aaaabbbb -> p-active-task-aaaabbbb
-parent-bbbbcccc -> p-parent-task-bbbbcccc
-child-ccccdddd -> p-child-task-ccccdddd
-archived-simple-ffff0000 -> p-archived-simple-ffff0000
 archived-child-eeeeffff -> p-archived-child-eeeeffff
 archived-ddddeeee -> p-archived-parent-ddddeeee
+archived-simple-ffff0000 -> p-archived-simple-ffff0000
+child-ccccdddd -> p-child-task-ccccdddd
+parent-bbbbcccc -> p-parent-task-bbbbcccc
 Slugified 6 issue(s)
 " OUT=
    s" " ERR=
@@ -216,7 +218,7 @@ f .dots/p-parent-task-bbbbcccc/p-parent-task-bbbbcccc.md
 s" settled-store" ' SETTLED-STORE DOT-CASE
 
 \ Two tasks share an id: the dependent keeps a blocker for each new id, so it
-\ stays blocked until both are closed.
+\ stays blocked until both are closed. `nested/` sorts before `same-`.
 : DUPLICATE-IDS ( -- )
    PUT-PREFIX
    s" same-12345678.md" s" First target" s" open" 2 PUT-ISSUE
@@ -233,8 +235,8 @@ blocks:
    s" slugify" RUN
    0 RC=
    s" dependent-22222222 -> p-dependent-22222222
-same-12345678 -> p-first-target-12345678
 same-12345678 -> p-second-target-12345678
+same-12345678 -> p-first-target-12345678
 Slugified 3 issue(s)
 " OUT=
    s" " ERR=
@@ -279,14 +281,15 @@ f .dots/p-dependent-22222222.md
   issue-type: task
   created-at: \"2026-01-01T00:00:00Z\"
   blocks:
-    - p-second-target-12345678
     - p-first-target-12345678
+    - p-second-target-12345678
   ---
 .
 " TREE=
 ;
 s" duplicate-ids" ' DUPLICATE-IDS DOT-CASE
 
+\ `archive/` sorts before `same-`.
 : DUPLICATE-ID-ARCHIVED ( -- )
    PUT-PREFIX
    s" same-12345678.md" s" Active target" s" open" 2 PUT-ISSUE
@@ -303,8 +306,8 @@ blocks:
    s" slugify" RUN
    0 RC=
    s" dependent-22222222 -> p-dependent-22222222
-same-12345678 -> p-active-target-12345678
 same-12345678 -> p-archived-target-12345678
+same-12345678 -> p-active-target-12345678
 Slugified 3 issue(s)
 " OUT=
    s" " ERR=
@@ -339,8 +342,8 @@ f .dots/p-dependent-22222222.md
   issue-type: task
   created-at: \"2026-01-01T00:00:00Z\"
   blocks:
-    - p-archived-target-12345678
     - p-active-target-12345678
+    - p-archived-target-12345678
   ---
 .
 " TREE=
@@ -473,9 +476,9 @@ blocks:
    PUT-EXTRA
    s" slugify" RUN
    0 RC=
-   s" extra-ddddeeee -> p-extra-task-ddddeeee
+   s" child-ccccdddd -> p-archived-child-ccccdddd
+extra-ddddeeee -> p-extra-task-ddddeeee
 parent-bbbbcccc -> p-parent-task-bbbbcccc
-child-ccccdddd -> p-archived-child-ccccdddd
 Slugified 3 issue(s)
 " OUT=
    s" " ERR=
@@ -526,8 +529,8 @@ s" child-folder-archived-parent" ' CHILD-FOLDER-ARCHIVED-PARENT DOT-CASE
    PUT-EXTRA
    s" slugify" RUN
    0 RC=
-   s" parent-bbbbcccc -> p-parent-task-bbbbcccc
-extra-ddddeeee -> p-extra-task-ddddeeee
+   s" extra-ddddeeee -> p-extra-task-ddddeeee
+parent-bbbbcccc -> p-parent-task-bbbbcccc
 Slugified 2 issue(s)
 " OUT=
    s" " ERR=
@@ -572,9 +575,9 @@ s" child-folder-plain-parent" ' CHILD-FOLDER-PLAIN-PARENT DOT-CASE
    PUT-EXTRA
    s" slugify" RUN
    0 RC=
-   s" group-aaaabbbb -> p-group-task-aaaabbbb
+   s" extra-ddddeeee -> p-extra-task-ddddeeee
+group-aaaabbbb -> p-group-task-aaaabbbb
 parent-bbbbcccc -> p-parent-task-bbbbcccc
-extra-ddddeeee -> p-extra-task-ddddeeee
 Slugified 3 issue(s)
 " OUT=
    s" " ERR=
@@ -777,10 +780,12 @@ f .dots/old-abcdef12.md
 ;
 s" archive-symlink" ' ARCHIVE-SYMLINK DOT-CASE
 
-\ The target with an archived dependent whose blocks reference it.
+\ The target with an archived dependent whose blocks reference it. The
+\ dependent's id sorts after the target's, so slugify reaches the target first
+\ and rewrites the dependent in the target's transaction.
 : PUT-DEPENDENT ( -- )
    PUT-TARGET
-   s" archive/dependent-22222222.md" s" ---
+   s" archive/waiter-22222222.md" s" ---
 title: Dependent
 status: closed
 priority: 2
@@ -798,7 +803,7 @@ blocks:
    s\" Permission denied\n" ERR=
    s" d .dots
 d .dots/archive
-f .dots/archive/dependent-22222222.md
+f .dots/archive/waiter-22222222.md
   ---
   title: Dependent
   status: closed
@@ -906,9 +911,9 @@ s" child-folder-rename-fails" ' CHILD-FOLDER-RENAME-FAILS DOT-CASE
    s" a-12345678/a+a/b-12345678/x-12345678.md" s" X leaf" s" open" 2 PUT-ISSUE
    s" slugify" RUN
    0 RC=
-   s" b-12345678 -> p-b-parent-12345678
+   s" a-12345678 -> p-a-parent-12345678
+b-12345678 -> p-b-parent-12345678
 x-12345678 -> p-x-leaf-12345678
-a-12345678 -> p-a-parent-12345678
 Slugified 3 issue(s)
 " OUT=
    s" " ERR=

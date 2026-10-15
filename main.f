@@ -319,7 +319,6 @@ DYNAMIC-BUFFER SORT-BUF n
 : PARSE-FILE ( ptr u8 n ptr u8 n bool bool -- )
    {: path:ptr pu:n id:ptr iu:n archived:bool child:bool :}
    ISSUE-N @ 1+ REC-CELLS * RECORDS-RESERVE
-   ISSUE-N @ 1+ ORDER-RESERVE
    ISSUE-N @ CURRENT !
    id iu CURRENT @ F-ID FIELD!
    path pu CURRENT @ F-PATH FIELD!
@@ -452,53 +451,58 @@ DYNAMIC-BUFFER SORT-BUF n
    idx PARSE-RECORD
    idx ;
 
-: BYTE-LESS? ( ptr u8 n ptr u8 n -- bool )
-   {: a:ptr au:n b:ptr bu:n :}
-   au bu min 0 ?do
-      a i + c@ b i + c@ <> if a i + c@ b i + c@ < unloop exit then
-   loop
-   au bu < ;
+\ Records sharing an id fall back to their paths, which are unique, so both
+\ orders are total and the same on every filesystem.
+: ID-LESS? ( n n -- bool )
+   {: a:n b:n :}
+   a F-ID FIELD$ b F-ID FIELD$ STR= if
+      a F-PATH FIELD$ b F-PATH FIELD$ STR< exit
+   then
+   a F-ID FIELD$ b F-ID FIELD$ STR< ;
+\ Listing order: priority, then created-at bytewise, then id.
 : ISSUE-LESS? ( n n -- bool )
    {: a:n b:n :}
    a F-PRIORITY REC-CELL @ b F-PRIORITY REC-CELL @ <> if
       a F-PRIORITY REC-CELL @ b F-PRIORITY REC-CELL @ < exit
    then
-   a F-CREATED FIELD$ b F-CREATED FIELD$ BYTE-LESS? ;
-: TAKE-RIGHT? ( n n n -- bool )
-   {: l:n r:n hi:n :}
-   r hi < if r ORDER @ l SORT-BUF @ ISSUE-LESS? exit then
+   a F-CREATED FIELD$ b F-CREATED FIELD$ STR= if a b ID-LESS? exit then
+   a F-CREATED FIELD$ b F-CREATED FIELD$ STR< ;
+: TAKE-RIGHT? ( n n n [ n n -- bool ] -- bool )
+   {: l:n r:n hi:n less :}
+   r hi < if r ORDER @ l SORT-BUF @ less execute exit then
    false ;
 \ Merge sorted ORDER[lo,mid) and ORDER[mid,hi) via a SORT-BUF copy of the left
-\ run. Right moves first only when strictly less, so ties keep load order: the
-\ sort is stable.
-: MERGE-RUN ( n n n -- )
-   {: lo:n mid:n hi:n :}
+\ run.
+: MERGE-RUN ( n n n [ n n -- bool ] -- )
+   {: lo:n mid:n hi:n less :}
    mid lo ?do i ORDER @ i lo - SORT-BUF ! loop
    0 mid begin
       {: l:n r:n :}
       l mid lo - <
    while
       l r + mid - lo + {: k:n :}
-      l r hi TAKE-RIGHT? if
+      l r hi less TAKE-RIGHT? if
          r ORDER @ k ORDER ! l r 1+
       else
          l SORT-BUF @ k ORDER ! l 1+ r
       then
    repeat ;
-: MERGE-PASS ( n -- )
-   {: width:n :}
+: MERGE-PASS ( n [ n n -- bool ] -- )
+   {: width:n less :}
    0 begin
       {: lo:n :}
       lo width + ISSUE-N @ <
    while
-      lo lo width + lo width 2 * + ISSUE-N @ min MERGE-RUN
+      lo lo width + lo width 2 * + ISSUE-N @ min less MERGE-RUN
       lo width 2 * +
    repeat ;
-: SORT-ISSUES ( -- )
+\ ORDER holds every record index sorted by the total order `less`.
+: SORT-ISSUES ( [ n n -- bool ] -- )
+   {: less :}
    ISSUE-N @ ORDER-RESERVE
    ISSUE-N @ SORT-BUF-RESERVE
    ISSUE-N @ 0 ?do i i ORDER ! loop
-   1 begin dup ISSUE-N @ < while dup MERGE-PASS 2 * repeat drop ;
+   1 begin dup ISSUE-N @ < while dup less MERGE-PASS 2 * repeat drop ;
 
 : BLOCKED? ( n -- bool )
    F-BLOCKS FIELD$ {: a:ptr u:n :}
@@ -572,7 +576,7 @@ DYNAMIC-BUFFER SORT-BUF n
    idx F-STATUS REC-CELL @ STATUS>CHAR DOT-IO:PRINT-BYTE 32 DOT-IO:PRINT-BYTE
    idx F-TITLE FIELD$ DOT-IO:PRINTLN ;
 : PRINT-LIST ( -- )
-   SORT-ISSUES
+   ['] ISSUE-LESS? SORT-ISSUES
    USE-JSON @ 0<> if
       JSON-OUT-BUF 1024 BUF:N>BLEN BUF:INIT
       JSON-W JSON-OUT-BUF JSON-WRITE:OPEN-BUF JSON-WRITE:ARRAY-START
@@ -610,11 +614,14 @@ DYNAMIC-BUFFER SORT-BUF n
    idx F-CREATED FIELD$ QUERY-A @ QUERY-U @ CONTAINS-CI? if true exit then
    idx F-CLOSED FIELD$ QUERY-A @ QUERY-U @ CONTAINS-CI? ;
 : PRINT-FIND ( -- )
+   ['] ISSUE-LESS? SORT-ISSUES
    ISSUE-N @ 0 ?do
-      i F-STATUS REC-CELL @ 2 <> if i dup MATCHES? if PRINT-ISSUE else drop then then
+      i ORDER @ {: idx:n :}
+      idx F-STATUS REC-CELL @ 2 <> if idx MATCHES? if idx PRINT-ISSUE then then
    loop
    ISSUE-N @ 0 ?do
-      i F-STATUS REC-CELL @ 2 = if i dup MATCHES? if PRINT-ISSUE else drop then then
+      i ORDER @ {: idx:n :}
+      idx F-STATUS REC-CELL @ 2 = if idx MATCHES? if idx PRINT-ISSUE then then
    loop ;
 
 : RESOLVE ( ptr u8 n -- n )
@@ -1872,7 +1879,7 @@ variable TREE-CAP
    FIND-HELP? if TREE-HELP exit then
    script-argc 2 > s" Usage: dot tree [id]" ?FAIL
    false LOAD-ISSUES
-   SORT-ISSUES
+   ['] ISSUE-LESS? SORT-ISSUES
    TREE-INDEX
    script-argc 2 = if
       1 RESOLVE-ARG dup RECORD-PATH? 0= ?ARG-NOT-FOUND
@@ -2303,7 +2310,8 @@ create GIT-EXEC-ROW PATH-CAP allot
    ASSERT-ARCHIVE-REAL
    true LOAD-ISSUES LOAD-PREFIX
    0 SLUG-RENAMED !
-   ISSUE-N @ 0 ?do i SLUGIFY-ONE loop
+   ['] ID-LESS? SORT-ISSUES
+   ISSUE-N @ 0 ?do i ORDER @ SLUGIFY-ONE loop
    s" Slugified " DOT-IO:PRINT SLUG-RENAMED @ DOT-IO:INT s"  issue(s)" DOT-IO:PRINTLN
    GIT-ADD-DOTS ;
 
