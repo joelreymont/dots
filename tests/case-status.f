@@ -804,6 +804,517 @@ f .dots/p/p.md
 ;
 s" off-archive-occupied" ' OFF-ARCHIVE-OCCUPIED DOT-CASE
 
+\ T > C, in T's own folder, > G, in C's legacy folder, > X, in G's: X open.
+: LEGACY-OPEN-STORE ( -- )
+   s" t/t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" c/g.md" s" G" s" closed" 2 PUT-ISSUE
+   s" g/x.md" s" X" s" open" 2 PUT-ISSUE ;
+
+\ The close refused before any legacy folder nests.
+: LEGACY-OPEN-REFUSED ( -- )
+   1 RC=
+   s" " OUT=
+   s\" Cannot close t: children are not all closed\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/c
+f .dots/c/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/g
+f .dots/g/x.md
+  ---
+  title: X
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/t
+f .dots/t/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/t.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE= ;
+
+\ The closed check covers T's whole family: X, two legacy folders down, is
+\ open, so no command closes T.
+: OFF-LEGACY-OPEN-DESCENDANT ( -- )
+   LEGACY-OPEN-STORE
+   s" off|t" RUN LEGACY-OPEN-REFUSED
+   s" close|t" RUN LEGACY-OPEN-REFUSED
+   s" update|t|--status|closed" RUN LEGACY-OPEN-REFUSED
+;
+s" off-legacy-open-descendant" ' OFF-LEGACY-OPEN-DESCENDANT DOT-CASE
+
+\ G's move into C's own folder fails after T has nested: T's nest and C's own
+\ folder stay, T stays open, and a rerun completes the close.
+: OFF-LEGACY-NEST-FAILURE ( -- )
+   s" t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" c/g.md" s" G" s" closed" 2 PUT-ISSUE
+   s" off|t" s" .dots/t/c/g.md" s" .dots/t.md" RUN-PROBE
+   1 RC=
+   s" " OUT=
+   s\" Permission denied\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/c
+f .dots/c/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/t
+d .dots/t/c
+f .dots/t/c/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/t.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+   s" off|t" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/archive/t
+d .dots/archive/t/c
+f .dots/archive/t/c/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/t/c/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/t/t.md
+  ---
+  title: T
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" off-legacy-nest-failure" ' OFF-LEGACY-NEST-FAILURE DOT-CASE
+
+\ C's legacy folder holds a G where C's own folder already holds one: the close
+\ refuses before the folder moves.
+: OFF-LEGACY-COLLISION ( -- )
+   s" t/t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/c/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" t/c/g.md" s" G" s" closed" 2 PUT-ISSUE
+   s" c/g.md" s" Legacy G" s" closed" 2 PUT-ISSUE
+   s" off|t" RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/c
+f .dots/c/g.md
+  ---
+  title: Legacy G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/t
+d .dots/t/c
+f .dots/t/c/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/c/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/t.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" off-legacy-collision" ' OFF-LEGACY-COLLISION DOT-CASE
+
+\ C's own folder would be a link out of the store: the close refuses before
+\ anything moves, through the link or beside it.
+: OFF-LEGACY-NOT-DIRECTORY ( -- )
+   s" outside" FILE$ MAKE-DIRS
+   s" t/t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" ../../outside" s" t/c" LINK
+   s" c/g.md" s" G" s" closed" 2 PUT-ISSUE
+   s" off|t" RUN
+   1 RC=
+   s" " OUT=
+   s\" Not a directory: .dots/t/c\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/c
+f .dots/c/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/t
+l .dots/t/c -> ../../outside
+f .dots/t/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/t.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+   s" outside" s\" d outside\n" DIR=
+;
+s" off-legacy-not-directory" ' OFF-LEGACY-NOT-DIRECTORY DOT-CASE
+
+\ X's own file in its legacy folder is a link out of the store, which no scan
+\ follows: the folder stays legacy, so the close nests G with X and leaves the
+\ link, and its target, where they were.
+: OFF-LEGACY-LINKED-OWNER ( -- )
+   s" ../outside.md" s" Outside" s" open" 2 PUT-ISSUE
+   s" t/t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/x.md" s" X" s" closed" 2 PUT-ISSUE
+   s" x/g.md" s" G" s" closed" 2 PUT-ISSUE
+   s" ../../outside.md" s" x/x.md" LINK
+   s" off|t" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/archive/t
+f .dots/archive/t/t.md
+  ---
+  title: T
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+d .dots/archive/t/x
+f .dots/archive/t/x/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/t/x/x.md
+  ---
+  title: X
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/x
+l .dots/x/x.md -> ../../outside.md
+" TREE=
+   s" outside.md" s" f outside.md
+  ---
+  title: Outside
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" DIR=
+;
+s" off-legacy-linked-owner" ' OFF-LEGACY-LINKED-OWNER DOT-CASE
+
+NAME-MAX 3 - constant FILE-ID-MAX       \ the longest id a task file <id>.md names
+
+\ C's file in the own folder its legacy folder needs would be 1,028 bytes, past
+\ the path limit: the close refuses before C's file or folder moves.
+: OFF-LEGACY-PATH-CAP ( -- )
+   s" t/t.md" s" T" s" open" 2 PUT-ISSUE
+   LONG BUF:CLEAR s" t/" L+ DEEP+ s" /" L+ [char] c FILE-ID-MAX L-BYTES s" .md" L+
+   L$ s" C" s" closed" 2 PUT-ISSUE
+   LONG BUF:CLEAR [char] c FILE-ID-MAX L-BYTES s" /x.md" L+
+   L$ s" X" s" closed" 2 PUT-ISSUE
+   s" off|t" RUN
+   1 RC=
+   s" " OUT=
+   s\" I/O error\n" ERR=
+   LONG BUF:CLEAR
+   s\" d .dots\nd .dots/archive\nd .dots/" L+ [char] c FILE-ID-MAX L-BYTES
+   s\" \nf .dots/" L+ [char] c FILE-ID-MAX L-BYTES
+   s\" /x.md\n  ---\n  title: X\n  status: closed\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" L+
+   s\" d .dots/t\nf .dots/t/t.md\n  ---\n  title: T\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" L+
+   s" d .dots/t/" L+ [char] x NAME-MAX L-BYTES
+   s\" \nd .dots/t/" L+ DEEP+ s\" \nf .dots/t/" L+ DEEP+ s" /" L+ [char] c FILE-ID-MAX L-BYTES
+   s\" .md\n  ---\n  title: C\n  status: closed\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" L+
+   L$ TREE=
+;
+s" off-legacy-path-cap" ' OFF-LEGACY-PATH-CAP DOT-CASE
+
+\ Two closed tasks C own C's legacy folder: the close refuses before it moves,
+\ and the reopen of the same family, archived, refuses the same way.
+: OFF-LEGACY-AMBIGUOUS-OWNER ( -- )
+   s" t/t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" t/d/d.md" s" D" s" closed" 2 PUT-ISSUE
+   s" t/d/c.md" s" Twin C" s" closed" 2 PUT-ISSUE
+   s" c/g.md" s" G" s" closed" 2 PUT-ISSUE
+   s" off|t" RUN
+   1 RC=
+   s" " OUT=
+   s\" Ambiguous ID: c\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/c
+f .dots/c/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/t
+f .dots/t/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/t/d
+f .dots/t/d/c.md
+  ---
+  title: Twin C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/d/d.md
+  ---
+  title: D
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/t.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+   s" t" RM-DIR
+   s" archive/t/t.md" s" T" s" closed" 2 PUT-ISSUE
+   s" archive/t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" archive/t/d/d.md" s" D" s" closed" 2 PUT-ISSUE
+   s" archive/t/d/c.md" s" Twin C" s" closed" 2 PUT-ISSUE
+   s" on|t" RUN
+   1 RC=
+   s" " OUT=
+   s\" Ambiguous ID: c\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/archive/t
+f .dots/archive/t/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive/t/d
+f .dots/archive/t/d/c.md
+  ---
+  title: Twin C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/t/d/d.md
+  ---
+  title: D
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/t/t.md
+  ---
+  title: T
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/c
+f .dots/c/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" off-legacy-ambiguous-owner" ' OFF-LEGACY-AMBIGUOUS-OWNER DOT-CASE
+
+\ G, in C's legacy folder, is malformed: the close checks every family member
+\ valid before any folder moves.
+: OFF-LEGACY-MALFORMED-MEMBER ( -- )
+   s" t/t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" c/g.md" s\" junk\n" PUT
+   s" off|t" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/c
+f .dots/c/g.md
+  junk
+.
+d .dots/t
+f .dots/t/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/t.md
+  ---
+  title: T
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" off-legacy-malformed-member" ' OFF-LEGACY-MALFORMED-MEMBER DOT-CASE
+
+\ P's legacy folder keeps a file that is no task after D nests: the folder takes
+\ P's way back, so the reopen refuses with D's nest kept.
+: ON-LEGACY-LEFTOVER ( -- )
+   s" archive/p/p.md" s" P" s" closed" 2 PUT-ISSUE
+   s" p/d.md" s" D" s" closed" 2 PUT-ISSUE
+   s" p/notes.txt" s\" notes\n" PUT
+   s" on|p" RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/archive/p
+f .dots/archive/p/d.md
+  ---
+  title: D
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/p/p.md
+  ---
+  title: P
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p
+f .dots/p/notes.txt
+  notes
+.
+" TREE=
+;
+s" on-legacy-leftover" ' ON-LEGACY-LEFTOVER DOT-CASE
+
 : OFF-ARCHIVE-SYMLINK ( -- )
    s" a.md" s" A" s" open" 2 PUT-ISSUE
    s" ../external/sentinel.txt" s\" untouched\n" PUT

@@ -245,6 +245,94 @@ f .dots/archive/p/p.md
 ;
 s" off-root-moves-family" ' OFF-ROOT-MOVES-FAMILY DOT-CASE
 
+\ T's file beside its legacy folder: T moves into the folder, which then goes
+\ to the archive whole.
+: OFF-NESTS-TOP-LEGACY ( -- )
+   s" t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" off|t" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/archive/t
+f .dots/archive/t/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/t/t.md
+  ---
+  title: T
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" off-nests-top-legacy" ' OFF-NESTS-TOP-LEGACY DOT-CASE
+
+\ C's legacy folder holds G, and G's holds X: each nests into its owner's own
+\ folder before T's folder goes to the archive.
+: OFF-NESTS-MEMBER-LEGACY ( -- )
+   s" t/t.md" s" T" s" open" 2 PUT-ISSUE
+   s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" c/g.md" s" G" s" closed" 2 PUT-ISSUE
+   s" g/x.md" s" X" s" closed" 2 PUT-ISSUE
+   s" off|t" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/archive/t
+d .dots/archive/t/c
+f .dots/archive/t/c/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive/t/c/g
+f .dots/archive/t/c/g/g.md
+  ---
+  title: G
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/t/c/g/x.md
+  ---
+  title: X
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/t/t.md
+  ---
+  title: T
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" off-nests-member-legacy" ' OFF-NESTS-MEMBER-LEGACY DOT-CASE
+
 : ON-OWNER-IN-PLACE ( -- )
    s" open" s" closed" s" closed" FAMILY
    s" on|g" RUN
@@ -404,13 +492,151 @@ f .dots/p/p.md
 ;
 s" on-reopens-archived-family" ' ON-REOPENS-ARCHIVED-FAMILY DOT-CASE
 
+\ C's legacy folder holds X: X nests into C's archived own folder, and P's
+\ whole folder comes back.
+: ON-REOPENS-FAMILY-LEGACY ( -- )
+   ARCHIVED-FAMILY
+   s" c/x.md" s" X" s" closed" 2 PUT-ISSUE
+   s" on|l" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+d .dots/p/c
+f .dots/p/c/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+d .dots/p/c/g
+f .dots/p/c/g/g.md
+  ---
+  title: G
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/c/g/l.md
+  ---
+  title: L
+  status: active
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/p/c/x.md
+  ---
+  title: X
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" on-reopens-family-legacy" ' ON-REOPENS-FAMILY-LEGACY DOT-CASE
+
+\ P's legacy folder holds closed D: D nests into P's archived folder, which
+\ comes back whole.
+: ON-MERGES-LEGACY-FOLDER ( -- )
+   ARCHIVED-CHILD
+   s" p/d.md" s" D" s" closed" 2 PUT-ISSUE
+   s" on|p" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/d.md
+  ---
+  title: D
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: active
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" on-merges-legacy-folder" ' ON-MERGES-LEGACY-FOLDER DOT-CASE
+
+\ T lies bare in the archive beside its legacy folder: T gains its own folder
+\ there, C nests into it, and the folder comes back.
+: ON-NESTS-BARE-ARCHIVED ( -- )
+   s" archive/t.md" s" T" s" closed" 2 PUT-ISSUE
+   s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" on|t" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/t
+f .dots/t/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/t/t.md
+  ---
+  title: T
+  status: active
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" on-nests-bare-archived" ' ON-NESTS-BARE-ARCHIVED DOT-CASE
+
+\ P's legacy folder holds open Existing: on never moves an open task into the
+\ archive, so P stays there until Existing closes, and then merges.
 : ON-COMPETING-FOLDER ( -- )
    s" p/existing.md" s" Existing" s" open" 2 PUT-ISSUE
    ARCHIVED-CHILD
    s" on|p" RUN
    1 RC=
    s" " OUT=
-   s\" Issue already exists\n" ERR=
+   s\" Cannot nest p: children are not all closed\n" ERR=
    s" d .dots
 d .dots/archive
 d .dots/archive/p
@@ -440,8 +666,98 @@ f .dots/p/existing.md
   ---
 .
 " TREE=
+   s" off|existing" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s" on|p" RUN
+   0 RC=
+   s" " OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/existing.md
+  ---
+  title: Existing
+  status: closed
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  closed-at: \"<time>\"
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: active
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
 ;
 s" on-competing-folder" ' ON-COMPETING-FOLDER DOT-CASE
+
+\ D's legacy folder holds open E: the nest would carry D, and E with it, into
+\ the archive, so on refuses before D moves.
+: ON-LEGACY-OPEN-DESCENDANT ( -- )
+   ARCHIVED-CHILD
+   s" p/d.md" s" D" s" closed" 2 PUT-ISSUE
+   s" d/e.md" s" E" s" open" 2 PUT-ISSUE
+   s" on|p" RUN
+   1 RC=
+   s" " OUT=
+   s\" Cannot nest p: children are not all closed\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/archive/p
+f .dots/archive/p/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/p/p.md
+  ---
+  title: P
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/d
+f .dots/d/e.md
+  ---
+  title: E
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p
+f .dots/p/d.md
+  ---
+  title: D
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" on-legacy-open-descendant" ' ON-LEGACY-OPEN-DESCENDANT DOT-CASE
 
 : SHOW-ARCHIVED-MEMBER ( -- )
    ARCHIVED-FAMILY

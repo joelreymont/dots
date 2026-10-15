@@ -366,6 +366,10 @@ DYNAMIC-BUFFER SORT-BUF n
    u 256 / SCAN-NAMES-U @ 1+ SCAN-NAMES c!
    a SCAN-NAMES-U @ 2 + SCAN-NAMES u BYTE-COPY
    SCAN-NAMES-U @ u 2 + + SCAN-NAMES-U ! ;
+: SCANNED-NAME ( n -- ptr u8 n n )
+   {: at:n :}
+   at SCAN-NAMES c@ at 1+ SCAN-NAMES c@ 256 * + {: size:n :}
+   at 2 + SCAN-NAMES size at size 2 + + ;
 
 : SCAN-KEY+ ( ptr u8 n -- )
    {: a:ptr u:n :}
@@ -1394,13 +1398,6 @@ variable CLOSED-TIME-U
    {: prefix:ptr pu:n id:ptr iu:n :}
    SB-RESET prefix pu SB-APPEND id iu SB-APPEND
    s" : children are not all closed" SB-APPEND SB$ FAIL ;
-: LOAD-STATUS-CHILDREN ( n -- )
-   {: idx:n :}
-   ISSUE-N @ 0 ?do
-      i idx STATUS-DESCENDANT? i F-ERROR REC-CELL @ 0<> and if
-         i PARSE-RECORD
-      then
-   loop ;
 : VALIDATE-STATUS-DESCENDANTS ( n -- )
    {: idx:n :}
    ISSUE-N @ 0 ?do
@@ -1481,6 +1478,221 @@ variable CLOSED-TIME-U
    idx VALIDATE-STATUS-DESCENDANTS
    idx ARCHIVE-STATUS-UNCHECKED ;
 : UNARCHIVE-STATUS ( n -- ) false MOVE-STATUS-PATH ;
+\ A task's family: the records an rm or close operand removes or moves, the
+\ named task first.
+DYNAMIC-BUFFER FAMILY n
+variable FAMILY-N
+: FAMILY-ADD ( n -- )
+   FAMILY-N @ 1+ FAMILY-RESERVE
+   FAMILY-N @ FAMILY !
+   1 FAMILY-N +! ;
+: IN-FAMILY? ( n -- bool )
+   {: idx:n :}
+   FAMILY-N @ 0 ?do i FAMILY @ idx = if true unloop exit then loop false ;
+: FAMILY-ID? ( ptr u8 n -- bool )
+   {: id:ptr iu:n :}
+   FAMILY-N @ 0 ?do
+      i FAMILY @ F-ID FIELD$ id iu STR= if true unloop exit then
+   loop false ;
+\ A task's family is the task and, to a fixed point, every status descendant
+\ of a member. A record an earlier operand removed has no path.
+: GATHER-FAMILY ( n -- )
+   0 FAMILY-N ! FAMILY-ADD
+   0 begin dup FAMILY-N @ < while
+      dup FAMILY @ {: member:n :}
+      ISSUE-N @ 0 ?do
+         i F-PATH FIELD$ nip 0<> if
+            i member STATUS-DESCENDANT? if
+               i IN-FAMILY? 0= if i FAMILY-ADD then
+            then
+         then
+      loop
+      1+
+   repeat drop ;
+\ Whether anything, a dangling symlink included, takes the path.
+: OCCUPIED? ( ptr u8 n -- bool )
+   {: path:ptr pu:n :}
+   path pu EXISTS? path pu SYMLINK? or ;
+\ fix repairs each top-level folder .dots/<f>/ holding no valid task f. With no
+\ task f anywhere it is an orphan folder: its regular .md files move to .dots/.
+\ With one valid task f it is f's legacy folder: what a scan reads in it,
+\ regular .md files and directories, nests into f's own folder, the archived
+\ one when f is archived. fix repairs task files only, so a folder none move
+\ from stays. Orphan folders go before legacy ones. Each folder is checked
+\ before its first move and done before the next: a failure leaves earlier
+\ folders repaired and a rerun completes.
+variable FIX-FILES
+variable FIX-NESTED
+variable FIX-MOVES
+variable FIX-TAKEN
+variable FIX-LEFT
+variable FIX-NEST
+variable FIX-BAD
+variable FIX-ORPHANS
+create FIX-SOURCE-ROW FS-PATH-CAP allot
+variable FIX-SOURCE-U
+create FIX-DEST-ROW FS-PATH-CAP allot
+variable FIX-DEST-U
+: FIX-SOURCE$ ( -- ptr u8 n ) FIX-SOURCE-ROW FIX-SOURCE-U @ ;
+: FIX-DEST$ ( -- ptr u8 n ) FIX-DEST-ROW FIX-DEST-U @ ;
+: FIX-DEST! ( ptr u8 n -- )
+   {: a:ptr u:n :}
+   u FS-PATH-CAP > s" I/O error" ?FAIL
+   a FIX-DEST-ROW u BYTE-COPY u FIX-DEST-U ! ;
+: COUNT-FIX-ENTRY ( ptr u8 n -- ) 2drop 1 FIX-LEFT +! ;
+\ Whether a valid task f lies in the folder, which is then that task's own.
+: FIX-HOME? ( ptr u8 n -- bool )
+   {: id:ptr iu:n :}
+   ISSUE-N @ 0 ?do
+      i F-ERROR REC-CELL @ 0= i F-ID FIELD$ id iu STR= and if
+         i F-PATH FIELD$ FIX-SOURCE$ STATUS-UNDER? if true unloop exit then
+      then
+   loop false ;
+\ The one valid task f in either partition, -1 without one. A malformed task f
+\ keeps its folder from being an orphan: with no valid f it ends fix with its
+\ diagnostic.
+: FIX-OWNER ( ptr u8 n -- n )
+   {: id:ptr iu:n :}
+   -1 FIX-BAD !
+   -1 ISSUE-N @ 0 ?do
+      i F-ID FIELD$ id iu STR= if
+         i F-ERROR REC-CELL @ 0= if
+            dup 0 >= s" Ambiguous ID: " id iu ?ISSUE-ERROR
+            drop i
+         else i FIX-BAD ! then
+      then
+   loop
+   dup 0< FIX-BAD @ 0 >= and if FIX-BAD @ CHECK-ERROR then ;
+: FIX-PATHS ( ptr u8 n -- )
+   {: name:ptr nu:n :}
+   SB-RESET FIX-SOURCE$ SB-APPEND 47 SB-APPEND-C name nu SB-APPEND SB$ PATH-ONE!
+   SB-RESET FIX-DEST$ SB-APPEND 47 SB-APPEND-C name nu SB-APPEND SB$ PATH-TWO! ;
+\ Whether the entry at PATH-ONE moves: a regular .md file, or, when the folder
+\ nests, a directory other than archive.
+: FIX-MOVES? ( ptr u8 n -- bool )
+   {: name:ptr nu:n :}
+   PATH-ONE$ FS-TRY-LSTAT-MODE MATCH option
+      none OF 0 ENDOF
+      some OF S-IFMT and ENDOF
+   ;MATCH {: kind:n :}
+   kind S-IFREG = if name nu FILE-ENTRY? exit then
+   kind S-IFDIR = FIX-NEST @ 0<> and if name nu s" archive" STR= 0= exit then
+   false ;
+\ Counts the entries that move and notes whether anything takes a destination,
+\ or a legacy entry would take f's own file's. FIX-FOLDER refuses on that
+\ after it checks the destination folder, before the first move.
+: FIX-CHECK ( n n -- )
+   {: begin-at:n end-at:n :}
+   FIX-SOURCE$ BASENAME {: id:ptr iu:n :}
+   0 FIX-MOVES ! 0 FIX-TAKEN !
+   begin-at begin dup end-at < while
+      {: at:n :}
+      at SCANNED-NAME {: name:ptr nu:n next:n :}
+      name nu FIX-PATHS
+      name nu FIX-MOVES? if
+         PATH-TWO$ OCCUPIED?
+         FIX-NEST @ 0<> name nu FILE-ENTRY? and if name nu 3 - id iu STR= or then
+         if 1 FIX-TAKEN ! then
+         1 FIX-MOVES +!
+      then
+      next
+   repeat drop ;
+: FIX-MOVE ( n n -- )
+   {: begin-at:n end-at:n :}
+   begin-at begin dup end-at < while
+      {: at:n :}
+      at SCANNED-NAME {: name:ptr nu:n next:n :}
+      name nu FIX-PATHS
+      name nu FIX-MOVES? if
+         PATH-ONE$ PATH-TWO$ RENAME-ISSUE-NOREPLACE
+         REBASE-STATUS-MOVED
+      then
+      next
+   repeat drop
+   0 FIX-LEFT !
+   FIX-SOURCE$ [: COUNT-FIX-ENTRY ;] FS-LIST:EACH
+   FIX-LEFT @ 0= if FIX-SOURCE$ REMOVE-ISSUE-DIR then ;
+: FIX-FOLDER ( ptr u8 n -- )
+   {: name:ptr nu:n :}
+   SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ {: a:ptr u:n :}
+   a FIX-SOURCE-ROW u BYTE-COPY u FIX-SOURCE-U !
+   FIX-SOURCE$ BASENAME {: id:ptr iu:n :}
+   id iu FIX-HOME? if exit then
+   id iu FIX-OWNER {: owner:n :}
+   \ A nest can depend on an orphan repair.
+   owner 0< if FIX-ORPHANS @ 0= else FIX-ORPHANS @ 0<> then if exit then
+   owner 0< if
+      0 FIX-NEST ! s" .dots" FIX-DEST!
+   else
+      1 FIX-NEST ! owner OWN-FOLDER$ FIX-DEST!
+      \ f's file lies beside the folder at the top: it moves in.
+      FIX-DEST$ FIX-SOURCE$ STR= if
+         owner CHECK-OWN-FOLDER
+         owner ENSURE-OWN-FOLDER 1 FIX-NESTED +! exit
+      then
+   then
+   SCAN-NAMES-U @ {: begin-at:n :}
+   FIX-SOURCE$ [: GATHER-SCAN-NAME ;] FS-LIST:EACH
+   SCAN-NAMES-U @ {: end-at:n :}
+   begin-at end-at FIX-CHECK
+   FIX-MOVES @ 0= if exit then
+   owner 0< if
+      FIX-TAKEN @ 0<> s" Issue already exists" ?FAIL
+      begin-at end-at FIX-MOVE
+      FIX-MOVES @ FIX-FILES +! exit
+   then
+   \ An archived f takes only what close allows: every descendant valid and
+   \ closed.
+   owner F-ARCHIVED REC-CELL @ 0<> if
+      owner VALIDATE-STATUS-DESCENDANTS
+      owner STATUS-CHILDREN-OPEN? if s" Cannot nest " id iu CHILDREN-OPEN-FAIL then
+      FIX-DEST$ ASSERT-ARCHIVE-PATH-REAL
+   then
+   owner CHECK-OWN-FOLDER
+   FIX-TAKEN @ 0<> s" Issue already exists" ?FAIL
+   owner ENSURE-OWN-FOLDER
+   begin-at end-at FIX-MOVE
+   1 FIX-NESTED +! ;
+\ Runs FIX-FOLDER on the top-level folder .dots/<name>, archive and links aside.
+: FIX-NAME ( ptr u8 n -- )
+   {: name:ptr nu:n :}
+   name nu s" archive" STR= if exit then
+   SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ PATH-TWO!
+   PATH-TWO$ SYMLINK? 0= PATH-TWO$ DIR? and if name nu FIX-FOLDER then ;
+\ Runs FIX-NAME on each name the scanned names hold before byte n.
+: FIX-PASS ( n -- )
+   {: end-at:n :}
+   0 begin dup end-at < while
+      {: at:n :}
+      at SCANNED-NAME {: name:ptr nu:n next:n :}
+      name nu FIX-NAME
+      next
+   repeat drop ;
+: FIX-COMMAND ( -- )
+   true LOAD-ISSUES
+   0 FIX-FILES ! 0 FIX-NESTED !
+   0 SCAN-NAMES-U !
+   STORE? if s" .dots" [: GATHER-SCAN-NAME ;] FS-LIST:EACH then
+   SCAN-NAMES-U @ {: end-at:n :}
+   1 FIX-ORPHANS ! end-at FIX-PASS
+   0 FIX-ORPHANS ! end-at FIX-PASS
+   FIX-FILES @ FIX-NESTED @ + 0= if s" No fixes needed" DOT-IO:PRINTLN exit then
+   FIX-FILES @ 0 > if
+      s" Moved " DOT-IO:PRINT FIX-FILES @ DOT-IO:INT
+      s"  file(s) out of orphan folders" DOT-IO:PRINTLN
+   then
+   FIX-NESTED @ 0 > if
+      s" Nested " DOT-IO:PRINT FIX-NESTED @ DOT-IO:INT
+      s"  legacy folder(s)" DOT-IO:PRINTLN
+   then ;
+\ Nests each family member's legacy folder as fix does, the top's first. A
+\ keyed load has none (LEGACY-LAYOUT?).
+: NEST-FAMILY ( n -- )
+   {: top:n :}
+   SCAN-KEYED @ 0<> if exit then
+   0 FIX-ORPHANS !
+   top GATHER-FAMILY
+   FAMILY-N @ 0 ?do i FAMILY @ F-ID FIELD$ FIX-NAME loop ;
 256 constant REOPEN-MAX
 create REOPEN-INDICES REOPEN-MAX cells allot
 create REOPEN-BACKUP-PATHS REOPEN-MAX 1024 * allot
@@ -1625,10 +1837,52 @@ variable REOPEN-PARENT-KEEP-U
       dup 0<> if REOPEN-CLEAN-ERROR ! else drop then
    loop
    REOPEN-CLEAN-ERROR @ 0<> s" Reopened issue; temporary cleanup failed" ?FAIL ;
+\ Whether a family check covers the member: any member, or with outside set
+\ only one outside the archive.
+: CHECK-COVERS? ( n bool -- bool )
+   0= swap F-ARCHIVED REC-CELL @ 0= or ;
+\ Refuses unless every family member the check covers, the top aside, is
+\ valid, then unless each is closed; a keyed load parses them first. A close
+\ covers the whole family; a reopen's nest, with outside set, only the members
+\ outside the archive, which it would carry in. The refusal names the top
+\ after the prefix.
+: CHECK-FAMILY-CLOSED ( ptr u8 n n bool -- )
+   {: pre:ptr pu:n idx:n outside:bool :}
+   idx GATHER-FAMILY
+   FAMILY-N @ 1 ?do
+      i FAMILY @ dup outside CHECK-COVERS? over F-ERROR REC-CELL @ 0<> and
+      if PARSE-RECORD else drop then
+   loop
+   FAMILY-N @ 1 ?do
+      i FAMILY @ dup outside CHECK-COVERS? if CHECK-ERROR else drop then
+   loop
+   FAMILY-N @ 1 ?do
+      i FAMILY @ dup outside CHECK-COVERS? swap F-STATUS REC-CELL @ 2 <> and
+      if pre pu idx F-ID FIELD$ CHILDREN-OPEN-FAIL then
+   loop ;
+\ The archived task whose own folder a reopen of the task moves back, or the
+\ task itself when it lies bare at the archive root: the top whose family's
+\ legacy folders nest first.
+: REOPEN-TOP ( n -- n )
+   {: idx:n :}
+   idx REOPEN-ROOTS!
+   ISSUE-N @ 0 ?do
+      i F-ARCHIVED REC-CELL @ 0<> i OWN-FOLDER? and if
+         i F-PATH FIELD$ drop i OWN-FOLDER-U REOPEN-SOURCE$ STR= if i unloop exit then
+      then
+   loop idx ;
+\ Nests the reopened family's legacy folders, refusing first unless every
+\ member the nests would carry into the archive is valid and closed.
+: REOPEN-NEST ( n -- )
+   {: top:n :}
+   SCAN-KEYED @ 0<> if exit then
+   s" Cannot nest " top true CHECK-FAMILY-CLOSED
+   top NEST-FAMILY ;
 : REOPEN-ARCHIVED ( n n -- )
    {: idx:n status:n :}
    idx F-PATH FIELD$ ASSERT-ARCHIVE-PATH-REAL
    idx REOPEN-COLLECT
+   idx REOPEN-TOP REOPEN-NEST
    idx REOPEN-ROOTS!
    idx REOPEN-TARGET ! status REOPEN-WANTED-STATUS !
    0 REOPEN-BACKUPS !
@@ -1676,17 +1930,11 @@ variable STATUS-SAVE-IDX
       REOPEN-N @ 1 > if idx status REOPEN-IN-PLACE exit then
    then
    idx F-ARCHIVED REC-CELL @ 0<> if ASSERT-ARCHIVE-REAL then
-   status 2 = if
-      idx LOAD-STATUS-CHILDREN
-      idx VALIDATE-STATUS-DESCENDANTS
-      idx STATUS-CHILDREN-OPEN? if
-         s" Cannot close " idx F-ID FIELD$ CHILDREN-OPEN-FAIL
-      then
-   then
+   status 2 = if s" Cannot close " idx false CHECK-FAMILY-CLOSED then
    0
    status 2 = if
       idx F-ARCHIVED REC-CELL @ 0= idx F-CHILD REC-CELL @ 0= and if
-         drop idx ARCHIVE-STATUS 1
+         drop ASSERT-ARCHIVE-REAL idx NEST-FAMILY idx ARCHIVE-STATUS 1
       then
    then {: moved:n :}
    status 2 = if
@@ -1715,6 +1963,32 @@ variable STATUS-SAVE-IDX
 : RESOLVE-ARG ( n -- n )
    {: arg:n :}
    arg script-argv$ RESOLVE ;
+\ Whether a top-level folder .dots/<x>/, archive and links aside, lacks its own
+\ file, a regular .dots/<x>/<x>.md typed by lstat as the scan types entries: a
+\ legacy folder, which only a full load reads.
+: LEGACY-LAYOUT? ( -- bool )
+   STORE? 0= if false exit then
+   SCAN-NAMES-U @ {: begin-at:n :}
+   s" .dots" [: GATHER-SCAN-NAME ;] FS-LIST:EACH
+   SCAN-NAMES-U @ {: end-at:n :}
+   begin-at begin dup end-at < while
+      {: at:n :}
+      at SCANNED-NAME {: name:ptr nu:n next:n :}
+      name nu s" archive" STR= 0= if
+         SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ PATH-ONE!
+         PATH-ONE$ SYMLINK? 0= PATH-ONE$ DIR? and if
+            SB-RESET PATH-ONE$ SB-APPEND 47 SB-APPEND-C name nu SB-APPEND
+            s" .md" SB-APPEND SB$ FS-TRY-LSTAT-MODE MATCH option
+               none OF 0 ENDOF
+               some OF S-IFMT and ENDOF
+            ;MATCH S-IFREG <> if true exit then
+         then
+      then
+      next
+   repeat drop false ;
+\ A status change reads every task where a legacy folder may hold a family
+\ member, else only the tasks it names.
+: LOAD-STATUS-ISSUES ( -- ) LEGACY-LAYOUT? if 0 SCAN-KEYED ! then true LOAD-ISSUES ;
 : STATUS-MULTI ( n -- )
    STATUS-MODE !
    script-argc 2 < if
@@ -1737,7 +2011,7 @@ variable STATUS-SAVE-IDX
    STATUS-INDEX @ 0= s" Usage: dot off <id> [id2 ...] [-r reason]" ?FAIL
    1 SCAN-KEYED ! 1 SCAN-FAMILY !
    STATUS-INDEX @ 0 ?do i STATUS-ARGS @ script-argv$ SCAN-KEY+ loop
-   true LOAD-ISSUES
+   LOAD-STATUS-ISSUES
    STATUS-MODE @ 2 = if
       TIMESTAMP$ {: ts:ptr tu:n :}
       ts CLOSED-TIME tu BYTE-COPY tu CLOSED-TIME-U !
@@ -1761,14 +2035,10 @@ variable STATUS-SAVE-IDX
    repeat
    STATUS-MODE @ -1 = s" --status required" ?FAIL
    1 SCAN-KEYED ! 1 SCAN-FAMILY ! 1 script-argv$ SCAN-KEY+
-   true LOAD-ISSUES 1 RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
+   LOAD-STATUS-ISSUES 1 RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
    STATUS-MODE @ STATUS-CHANGE ;
 : INIT-EMPTY ( -- )
    s" .dots/archive" MAKE-DIRS ;
-: SCANNED-NAME ( n -- ptr u8 n n )
-   {: at:n :}
-   at SCAN-NAMES c@ at 1+ SCAN-NAMES c@ 256 * + {: size:n :}
-   at 2 + SCAN-NAMES size at size 2 + + ;
 : REMOVE-DEEP-TREE ( n n -- )
    {: depth:n plen:n :}
    depth MAX-DEPTH 1- >= s" I/O error" ?FAIL
@@ -1799,36 +2069,6 @@ variable STATUS-SAVE-IDX
    s" .dots/archive" REMOVE-ISSUE-TREE
    s" .dots/archive" MAKE-DIRS
    s" Archive purged" DOT-IO:PRINTLN ;
-\ rm's family: the records one operand removes, the named task first.
-DYNAMIC-BUFFER FAMILY n
-variable FAMILY-N
-: FAMILY-ADD ( n -- )
-   FAMILY-N @ 1+ FAMILY-RESERVE
-   FAMILY-N @ FAMILY !
-   1 FAMILY-N +! ;
-: IN-FAMILY? ( n -- bool )
-   {: idx:n :}
-   FAMILY-N @ 0 ?do i FAMILY @ idx = if true unloop exit then loop false ;
-: FAMILY-ID? ( ptr u8 n -- bool )
-   {: id:ptr iu:n :}
-   FAMILY-N @ 0 ?do
-      i FAMILY @ F-ID FIELD$ id iu STR= if true unloop exit then
-   loop false ;
-\ A task's family is the task and, to a fixed point, every status descendant
-\ of a member. A record an earlier operand removed has no path.
-: GATHER-FAMILY ( n -- )
-   0 FAMILY-N ! FAMILY-ADD
-   0 begin dup FAMILY-N @ < while
-      dup FAMILY @ {: member:n :}
-      ISSUE-N @ 0 ?do
-         i F-PATH FIELD$ nip 0<> if
-            i member STATUS-DESCENDANT? if
-               i IN-FAMILY? 0= if i FAMILY-ADD then
-            then
-         then
-      loop
-      1+
-   repeat drop ;
 \ Drops every family id from a remaining task's blocks, archived ones too.
 : STRIP-FAMILY-REFERENCES ( n -- )
    {: idx:n :}
@@ -2043,180 +2283,6 @@ variable TREE-CAP
       PRINT-TREE-ROOT exit
    then
    ISSUE-N @ 0 ?do i ORDER @ dup TREE-ROOT? if PRINT-TREE-ROOT else drop then loop ;
-\ Whether anything, a dangling symlink included, takes the path.
-: OCCUPIED? ( ptr u8 n -- bool )
-   {: path:ptr pu:n :}
-   path pu EXISTS? path pu SYMLINK? or ;
-\ fix repairs each top-level folder .dots/<f>/ holding no valid task f. With no
-\ task f anywhere it is an orphan folder: its regular .md files move to .dots/.
-\ With one valid task f it is f's legacy folder: what a scan reads in it,
-\ regular .md files and directories, nests into f's own folder, the archived
-\ one when f is archived. fix repairs task files only, so a folder none move
-\ from stays. Orphan folders go before legacy ones. Each folder is checked
-\ before its first move and done before the next: a failure leaves earlier
-\ folders repaired and a rerun completes.
-variable FIX-FILES
-variable FIX-NESTED
-variable FIX-MOVES
-variable FIX-TAKEN
-variable FIX-LEFT
-variable FIX-NEST
-variable FIX-BAD
-variable FIX-ORPHANS
-create FIX-SOURCE-ROW FS-PATH-CAP allot
-variable FIX-SOURCE-U
-create FIX-DEST-ROW FS-PATH-CAP allot
-variable FIX-DEST-U
-: FIX-SOURCE$ ( -- ptr u8 n ) FIX-SOURCE-ROW FIX-SOURCE-U @ ;
-: FIX-DEST$ ( -- ptr u8 n ) FIX-DEST-ROW FIX-DEST-U @ ;
-: FIX-DEST! ( ptr u8 n -- )
-   {: a:ptr u:n :}
-   u FS-PATH-CAP > s" I/O error" ?FAIL
-   a FIX-DEST-ROW u BYTE-COPY u FIX-DEST-U ! ;
-: COUNT-FIX-ENTRY ( ptr u8 n -- ) 2drop 1 FIX-LEFT +! ;
-\ Whether a valid task f lies in the folder, which is then that task's own.
-: FIX-HOME? ( ptr u8 n -- bool )
-   {: id:ptr iu:n :}
-   ISSUE-N @ 0 ?do
-      i F-ERROR REC-CELL @ 0= i F-ID FIELD$ id iu STR= and if
-         i F-PATH FIELD$ FIX-SOURCE$ STATUS-UNDER? if true unloop exit then
-      then
-   loop false ;
-\ The one valid task f in either partition, -1 without one. A malformed task f
-\ keeps its folder from being an orphan: with no valid f it ends fix with its
-\ diagnostic.
-: FIX-OWNER ( ptr u8 n -- n )
-   {: id:ptr iu:n :}
-   -1 FIX-BAD !
-   -1 ISSUE-N @ 0 ?do
-      i F-ID FIELD$ id iu STR= if
-         i F-ERROR REC-CELL @ 0= if
-            dup 0 >= s" Ambiguous ID: " id iu ?ISSUE-ERROR
-            drop i
-         else i FIX-BAD ! then
-      then
-   loop
-   dup 0< FIX-BAD @ 0 >= and if FIX-BAD @ CHECK-ERROR then ;
-: FIX-PATHS ( ptr u8 n -- )
-   {: name:ptr nu:n :}
-   SB-RESET FIX-SOURCE$ SB-APPEND 47 SB-APPEND-C name nu SB-APPEND SB$ PATH-ONE!
-   SB-RESET FIX-DEST$ SB-APPEND 47 SB-APPEND-C name nu SB-APPEND SB$ PATH-TWO! ;
-\ Whether the entry at PATH-ONE moves: a regular .md file, or, when the folder
-\ nests, a directory other than archive.
-: FIX-MOVES? ( ptr u8 n -- bool )
-   {: name:ptr nu:n :}
-   PATH-ONE$ FS-TRY-LSTAT-MODE MATCH option
-      none OF 0 ENDOF
-      some OF S-IFMT and ENDOF
-   ;MATCH {: kind:n :}
-   kind S-IFREG = if name nu FILE-ENTRY? exit then
-   kind S-IFDIR = FIX-NEST @ 0<> and if name nu s" archive" STR= 0= exit then
-   false ;
-\ Counts the entries that move and notes whether anything takes a destination,
-\ or a legacy entry would take f's own file's. FIX-FOLDER refuses on that
-\ after it checks the destination folder, before the first move.
-: FIX-CHECK ( n n -- )
-   {: begin-at:n end-at:n :}
-   FIX-SOURCE$ BASENAME {: id:ptr iu:n :}
-   0 FIX-MOVES ! 0 FIX-TAKEN !
-   begin-at begin dup end-at < while
-      {: at:n :}
-      at SCANNED-NAME {: name:ptr nu:n next:n :}
-      name nu FIX-PATHS
-      name nu FIX-MOVES? if
-         PATH-TWO$ OCCUPIED?
-         FIX-NEST @ 0<> name nu FILE-ENTRY? and if name nu 3 - id iu STR= or then
-         if 1 FIX-TAKEN ! then
-         1 FIX-MOVES +!
-      then
-      next
-   repeat drop ;
-: FIX-MOVE ( n n -- )
-   {: begin-at:n end-at:n :}
-   begin-at begin dup end-at < while
-      {: at:n :}
-      at SCANNED-NAME {: name:ptr nu:n next:n :}
-      name nu FIX-PATHS
-      name nu FIX-MOVES? if
-         PATH-ONE$ PATH-TWO$ RENAME-ISSUE-NOREPLACE
-         REBASE-STATUS-MOVED
-      then
-      next
-   repeat drop
-   0 FIX-LEFT !
-   FIX-SOURCE$ [: COUNT-FIX-ENTRY ;] FS-LIST:EACH
-   FIX-LEFT @ 0= if FIX-SOURCE$ REMOVE-ISSUE-DIR then ;
-: FIX-FOLDER ( ptr u8 n -- )
-   {: name:ptr nu:n :}
-   SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ {: a:ptr u:n :}
-   a FIX-SOURCE-ROW u BYTE-COPY u FIX-SOURCE-U !
-   FIX-SOURCE$ BASENAME {: id:ptr iu:n :}
-   id iu FIX-HOME? if exit then
-   id iu FIX-OWNER {: owner:n :}
-   \ A nest can depend on an orphan repair.
-   owner 0< if FIX-ORPHANS @ 0= else FIX-ORPHANS @ 0<> then if exit then
-   owner 0< if
-      0 FIX-NEST ! s" .dots" FIX-DEST!
-   else
-      1 FIX-NEST ! owner OWN-FOLDER$ FIX-DEST!
-      \ f's file lies beside the folder at the top: it moves in.
-      FIX-DEST$ FIX-SOURCE$ STR= if
-         owner CHECK-OWN-FOLDER
-         owner ENSURE-OWN-FOLDER 1 FIX-NESTED +! exit
-      then
-   then
-   SCAN-NAMES-U @ {: begin-at:n :}
-   FIX-SOURCE$ [: GATHER-SCAN-NAME ;] FS-LIST:EACH
-   SCAN-NAMES-U @ {: end-at:n :}
-   begin-at end-at FIX-CHECK
-   FIX-MOVES @ 0= if exit then
-   owner 0< if
-      FIX-TAKEN @ 0<> s" Issue already exists" ?FAIL
-      begin-at end-at FIX-MOVE
-      FIX-MOVES @ FIX-FILES +! exit
-   then
-   \ An archived f takes only what close allows: every descendant valid and
-   \ closed.
-   owner F-ARCHIVED REC-CELL @ 0<> if
-      owner VALIDATE-STATUS-DESCENDANTS
-      owner STATUS-CHILDREN-OPEN? if s" Cannot nest " id iu CHILDREN-OPEN-FAIL then
-      FIX-DEST$ ASSERT-ARCHIVE-PATH-REAL
-   then
-   owner CHECK-OWN-FOLDER
-   FIX-TAKEN @ 0<> s" Issue already exists" ?FAIL
-   owner ENSURE-OWN-FOLDER
-   begin-at end-at FIX-MOVE
-   1 FIX-NESTED +! ;
-\ Runs FIX-FOLDER on each top-level folder the scanned names hold before byte
-\ n, archive and links aside.
-: FIX-PASS ( n -- )
-   {: end-at:n :}
-   0 begin dup end-at < while
-      {: at:n :}
-      at SCANNED-NAME {: name:ptr nu:n next:n :}
-      name nu s" archive" STR= 0= if
-         SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ PATH-TWO!
-         PATH-TWO$ SYMLINK? 0= PATH-TWO$ DIR? and if name nu FIX-FOLDER then
-      then
-      next
-   repeat drop ;
-: FIX-COMMAND ( -- )
-   true LOAD-ISSUES
-   0 FIX-FILES ! 0 FIX-NESTED !
-   0 SCAN-NAMES-U !
-   STORE? if s" .dots" [: GATHER-SCAN-NAME ;] FS-LIST:EACH then
-   SCAN-NAMES-U @ {: end-at:n :}
-   1 FIX-ORPHANS ! end-at FIX-PASS
-   0 FIX-ORPHANS ! end-at FIX-PASS
-   FIX-FILES @ FIX-NESTED @ + 0= if s" No fixes needed" DOT-IO:PRINTLN exit then
-   FIX-FILES @ 0 > if
-      s" Moved " DOT-IO:PRINT FIX-FILES @ DOT-IO:INT
-      s"  file(s) out of orphan folders" DOT-IO:PRINTLN
-   then
-   FIX-NESTED @ 0 > if
-      s" Nested " DOT-IO:PRINT FIX-NESTED @ DOT-IO:INT
-      s"  legacy folder(s)" DOT-IO:PRINTLN
-   then ;
 FUNCTION: STDERR-WRITE write ( n ptr u8 n -- n ) ;FUNCTION
 create OLD-ID-ROW 129 allot
 variable OLD-ID-U

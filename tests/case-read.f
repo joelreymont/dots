@@ -1178,7 +1178,8 @@ s" ls-json-no-archive" ' LS-JSON-NO-ARCHIVE DOT-CASE
 ;
 s" oversized-sibling-show" ' OVERSIZED-SIBLING-SHOW DOT-CASE
 
-\ A mutation reads only the task it changes, not an oversized sibling.
+\ In a store without legacy folders a mutation reads only the task it changes,
+\ not an oversized sibling.
 : OVERSIZED-SIBLING-ON ( -- )
    BIG-STORE
    s" on|a" RUN
@@ -1190,6 +1191,21 @@ s" oversized-sibling-show" ' OVERSIZED-SIBLING-SHOW DOT-CASE
    GEN-TREE GEN$ TREE=
 ;
 s" oversized-sibling-on" ' OVERSIZED-SIBLING-ON DOT-CASE
+
+\ A legacy folder, q's without q's own file, makes a mutation read every task,
+\ the oversized sibling included.
+: OVERSIZED-SIBLING-ON-LEGACY ( -- )
+   BIG-STORE
+   s" q/x.md" s" X" s" open" 2 PUT-ISSUE
+   s" on|a" RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue file too large: .dots/z.md\n" ERR=
+   s\" d .dots\nf .dots/a.md\n  ---\n  title: A\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\nd .dots/archive\nd .dots/q\nf .dots/q/x.md\n  ---\n  title: X\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE-FROM
+   s" z.md" GEN-FILE GEN$ TREE-FILE
+   GEN-TREE GEN$ TREE=
+;
+s" oversized-sibling-on-legacy" ' OVERSIZED-SIBLING-ON-LEGACY DOT-CASE
 
 : TOO-LARGE-LS ( -- ) s" ls" TOO-LARGE ;
 s" too-large-ls" ' TOO-LARGE-LS DOT-CASE
