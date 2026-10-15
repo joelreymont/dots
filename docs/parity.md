@@ -102,14 +102,21 @@ only with `-target aarch64-macos.14.0`, the shipped runner's target. The later
 Zig 0.16 and 0.17 ports add about 55 KB of `std.Io` code, so the 0.17
 differential reference under `benchmark/` is not a size baseline.
 
-The file contains 151,408 bytes of code, 9,918 bytes of embedded data, 33,717
+The file contains 155,100 bytes of code, 9,918 bytes of embedded data, 30,025
 bytes of alignment padding, and 3,353 other bytes. Mach-O segments grow in
 16 KiB pages, so the file shrinks only when code and data leave a page empty.
-Importing JSONL through Habu's shared `jsonl.f` and `decimal.f` added about
-5.7 KB of code, which crossed one page boundary (previously 181,884 bytes).
-No arbitrary precision, binary128, or hexadecimal numeric parser was added.
-The loader restores a 5,926,872-byte data window; 5,916,954 of those bytes do
-not travel in the file. These are size measurements, not speed or memory
+Importing JSONL through Habu's shared `jsonl.f` and `decimal.f` replaced 4,216
+bytes of Dots-specific code with 9,932 bytes of library code (previously
+181,884 bytes). The build keeps only words reachable from `MAIN`, and every one
+of the 65 added words is called. Requiring both files without calling them
+leaves a binary byte-identical. The library code is larger because its cursor
+handles memory and file input, cleanup and close errors, and its decimal
+conversion checks overflow exactly. The extra 5,716 bytes of code overflowed
+the last `__TEXT` page, so 10,604 bytes of page padding, 128 bytes of code
+signature and 64 bytes of data-cell bitmap make up the rest of the 16,512-byte
+step. No arbitrary precision, binary128, or hexadecimal numeric parser was
+added. The loader restores a 5,919,256-byte data window; 5,909,338 of those
+bytes do not travel in the file. These are size measurements, not speed or memory
 benchmarks. The [validation record](../benchmark/results/adversarial-2026-10-13.json)
 holds hashes and section totals of the earlier 198,396-byte build with Habu
 `c53b4d2c`.
