@@ -592,6 +592,18 @@ HELD 1024 BUF:N>BLEN BUF:INIT
    HELD BUF:CLEAR long 0= TOP$ FILE$ HELD B+
    HELD B$ long TOP$ FILE$ RENAME-FILE ;
 
+create LONG BUF:HDR-BYTES allot         \ a long path, or the tree holding it
+LONG 1024 BUF:N>BLEN BUF:INIT
+: L+ ( ptr u8 n -- ) BUF:N>BLEN LONG BUF:APPEND-SPAN ;
+: L$ ( -- ptr u8 n ) LONG BUF:SPAN$ BUF:BLEN>N ;
+: L-BYTES ( n n -- ) {: c:n k:n :} k 0 ?do c LONG BUF:APPEND-BYTE loop ;
+\ Append `<255 x's>/<255 y's>`, a folder 511 bytes below its root.
+: DEEP+ ( -- ) [char] x NAME-MAX L-BYTES s" /" L+ [char] y NAME-MAX L-BYTES ;
+\ Append `<255 b>/<255 c>/<n d>`, a deep parent's folders below the top.
+: BCD+ ( n -- ) {: du:n :}
+   [char] b NAME-MAX L-BYTES s" /" L+ [char] c NAME-MAX L-BYTES
+   s" /" L+ [char] d du L-BYTES ;
+
 \ Start bin/dot in the store with the |-separated arguments.
 : SPAWN ( ptr u8 n -- pid )
    DOT-ARGV s" out" OPEN-OUT LAUNCH ;

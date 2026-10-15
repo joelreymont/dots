@@ -10,14 +10,6 @@ $16D constant READ-ONLY                 \ r-xr-xr-x
 $1ED constant WRITABLE                  \ rwxr-xr-x
 $180 constant OWNER-ONLY                \ rw-------
 $1A4 constant SHARED-READ               \ rw-r--r--
-create LONG BUF:HDR-BYTES allot         \ a long path, or the tree holding it
-LONG 1024 BUF:N>BLEN BUF:INIT
-
-: L+ ( ptr u8 n -- ) BUF:N>BLEN LONG BUF:APPEND-SPAN ;
-: L$ ( -- ptr u8 n ) LONG BUF:SPAN$ BUF:BLEN>N ;
-: L-BYTES ( n n -- ) {: c:n k:n :} k 0 ?do c LONG BUF:APPEND-BYTE loop ;
-\ Append `<255 x's>/<255 y's>`, a folder 511 bytes below its root.
-: DEEP+ ( -- ) [char] x NAME-MAX L-BYTES s" /" L+ [char] y NAME-MAX L-BYTES ;
 
 s" status" SECTION
 

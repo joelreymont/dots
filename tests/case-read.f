@@ -118,7 +118,7 @@ GEN-TREE 4096 BUF:N>BLEN BUF:INIT
    [char] y NAME-MAX GEN-NAME GEN-BYTES  s" /deep.md" GEN-NAME GEN+ ;
 
 \ Append `<255 b>/<255 c>/<236 d>`, the deep path's folders below the top.
-: BCD+ ( ptr a -- ) {: b:ptr :}
+: GEN-BCD+ ( ptr a -- ) {: b:ptr :}
    [char] b NAME-MAX b GEN-BYTES  s" /" b GEN+  [char] c NAME-MAX b GEN-BYTES
    s" /" b GEN+  [char] d D-NAME b GEN-BYTES ;
 
@@ -1242,21 +1242,21 @@ s" too-large-child" ' TOO-LARGE-CHILD DOT-CASE
 \ The error names the whole path, past the 1024 bytes a string builder holds.
 \ The tree is read with the top folder renamed back to `a`.
 : TOO-LARGE-LONG-PATH ( -- )
-   GEN-NAME BUF:CLEAR  s" a/" GEN-NAME GEN+  GEN-NAME BCD+  s" /z.md" GEN-NAME GEN+
+   GEN-NAME BUF:CLEAR  s" a/" GEN-NAME GEN+  GEN-NAME GEN-BCD+  s" /z.md" GEN-NAME GEN+
    GEN-NAME GEN$ BIG
    true MOVE-TOP
    s" ls" RUN
    1 RC=
    s" " OUT=
    GEN-OUT BUF:CLEAR  s" Issue file too large: .dots/" GEN-OUT GEN+
-   [char] a NAME-MAX GEN-OUT GEN-BYTES  s" /" GEN-OUT GEN+  GEN-OUT BCD+
+   [char] a NAME-MAX GEN-OUT GEN-BYTES  s" /" GEN-OUT GEN+  GEN-OUT GEN-BCD+
    s\" /z.md\n" GEN-OUT GEN+
    GEN-OUT GEN$ ERR=
    false MOVE-TOP
    s\" d .dots\nd .dots/a\nd .dots/a/" TREE-FROM  [char] b NAME-MAX GEN-TREE GEN-BYTES
    s\" \nd .dots/a/" GEN-TREE GEN+  [char] b NAME-MAX GEN-TREE GEN-BYTES
    s" /" GEN-TREE GEN+  [char] c NAME-MAX GEN-TREE GEN-BYTES
-   s\" \nd .dots/a/" GEN-TREE GEN+  GEN-TREE BCD+  10 GEN-TREE BUF:APPEND-BYTE
+   s\" \nd .dots/a/" GEN-TREE GEN+  GEN-TREE GEN-BCD+  10 GEN-TREE BUF:APPEND-BYTE
    GEN-NAME GEN$ GEN-FILE GEN$ TREE-FILE
    s\" d .dots/archive\n" GEN-TREE GEN+
    GEN-TREE GEN$ TREE=

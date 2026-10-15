@@ -32,16 +32,6 @@ DYNAMIC-BUFFER LINE u8
    10 u LINE c!
    count 0 ?do s" import.jsonl" FILE$ 0 LINE u 1+ APPEND-FILE loop ;
 
-create LONG BUF:HDR-BYTES allot         \ a long path, or the tree holding it
-LONG 1024 BUF:N>BLEN BUF:INIT
-: L+ ( ptr u8 n -- ) BUF:N>BLEN LONG BUF:APPEND-SPAN ;
-: L$ ( -- ptr u8 n ) LONG BUF:SPAN$ BUF:BLEN>N ;
-: L-BYTES ( n n -- ) {: c:n k:n :} k 0 ?do c LONG BUF:APPEND-BYTE loop ;
-\ Append `<255 b>/<255 c>/<n d>`, a deep parent's folders below the top.
-: BCD+ ( n -- ) {: du:n :}
-   [char] b NAME-MAX L-BYTES s" /" L+ [char] c NAME-MAX L-BYTES
-   s" /" L+ [char] d du L-BYTES ;
-
 s" import" SECTION
 
 \ Rows become task files with every field; a done row is archived and reads back.

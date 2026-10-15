@@ -7,9 +7,6 @@ require dot.f
 using DOT-T
 package DOT-ADD
 
-create LONG BUF:HDR-BYTES allot         \ a long path, or the tree holding it
-LONG 1024 BUF:N>BLEN BUF:INIT
-
 : PREFIX-X ( -- ) s" config" s\" prefix=x\n" PUT ;
 
 65536 constant CONFIG-LIMIT             \ dot's config limit, inclusive
@@ -24,17 +21,6 @@ CONF-TREE 256 BUF:N>BLEN BUF:INIT
 : CONF-TREE$ ( -- ptr u8 n ) CONF-TREE BUF:SPAN$ BUF:BLEN>N ;
 : CONF-BYTES ( n n ptr a -- ) {: c:n k:n b:ptr :}
    k 0 ?do c b BUF:APPEND-BYTE loop ;
-
-: L+ ( ptr u8 n -- ) BUF:N>BLEN LONG BUF:APPEND-SPAN ;
-: L$ ( -- ptr u8 n ) LONG BUF:SPAN$ BUF:BLEN>N ;
-: L-BYTES ( n n -- ) {: c:n k:n :} k 0 ?do c LONG BUF:APPEND-BYTE loop ;
-\ Append `<255 x's>/<255 y's>`, a folder 511 bytes below `.dots`.
-: DEEP+ ( -- ) [char] x NAME-MAX L-BYTES s" /" L+ [char] y NAME-MAX L-BYTES ;
-
-\ Append `<255 b>/<255 c>/<n d>`, a deep parent's folders below the top.
-: BCD+ ( n -- ) {: du:n :}
-   [char] b NAME-MAX L-BYTES s" /" L+ [char] c NAME-MAX L-BYTES
-   s" /" L+ [char] d du L-BYTES ;
 
 s" add" SECTION
 
