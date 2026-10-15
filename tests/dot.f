@@ -36,10 +36,13 @@
 \ SAVE-ID captures the id on stdout's first line: the whole line, as add prints
 \ it, or the `id` of the JSON object `add --json` prints. ID= states a captured
 \ id's text, its eight random hex digits read as `<hex>`:
-\ `s" A" s" proj-fix-the-bug-<hex>" ID=`.
+\ `s" A" s" proj-fix-the-bug-<hex>" ID=`. SAVE-AFTER captures the rest of
+\ stdout's first line after a marker, the new id in slugify's `old -> new`
+\ line: `s" archive -> " s" A" SAVE-AFTER`.
 \
 \ RUN-LIMITED runs dot as RUN does under tests/limit.f, which lets it write no
-\ byte to any file.
+\ byte to any file. GIT runs git in the store as RUN runs dot, so RC=, OUT= and
+\ ERR= check git's rc and output.
 \
 \ Beside RC=, OUT=, ERR= and TREE=, MODE= checks a path's permission bits,
 \ SAME-LINE that two files hold the same line under a prefix, unmasked, and
@@ -75,6 +78,7 @@ create DOT-BUF FS-PATH-CAP allot        \ bin/dot, absolute
 variable DOT-U
 create LIMIT-BUF FS-PATH-CAP allot      \ tests/limit.f, absolute
 variable LIMIT-U
+create GIT-BUF FS-PATH-CAP allot        \ git, resolved on PATH
 create STORE-BUF FS-PATH-CAP allot      \ the current case's store
 variable STORE-U
 create FILE-BUF FS-PATH-CAP allot       \ a path inside the store
@@ -399,6 +403,19 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
    LABEL-U @ u + 1+ LABEL-U !
    LABEL-BUF LABEL-U @ ;
 
+: FIRST-LINE$ ( -- ptr u8 n )
+   s" out" FILE$ READ-FILE 10 0 SPLIT-NEXT 2drop ;
+
+\ Keep the text as the letter's id; an empty or oversized one fails the case.
+: KEEP-ID ( ptr u8 n ptr u8 n -- ) {: id:ptr idu:n la:ptr lu:n :}
+   la lu LETTER {: k:n :}
+   idu 0 > idu ID-CAP <= and {: ok:bool :}
+   ok s" id" LABEL GT-CHECK
+   ok if
+      id k ID-SLOT idu BYTE-COPY
+      idu k ID-U-PTR !
+   then ;
+
 public
 
 \ ---- the run --------------------------------------------------------------------
@@ -501,6 +518,13 @@ public
    ARGV+
    ENGINE-ID:PATH$ LAUNCH WAIT ;
 
+\ Run git in the store with the |-separated arguments as RUN runs dot.
+: GIT ( ptr u8 n -- ) {: a:ptr u:n :}
+   s" git" >LEN GIT-BUF RESOLVE-EXECUTABLE LEN>N {: gu:n :}
+   PROC-ARGV-ENV-RESET
+   a u ARGV+
+   GIT-BUF gu LAUNCH WAIT ;
+
 \ The child is still running after ms: it waits on something the case holds.
 : WAITING ( pid n -- pid ) {: pid:pid ms:n :}
    pid ms >MS PROC-WAIT-BOUNDED {: o:outcome :}
@@ -524,14 +548,14 @@ public
 
 \ Capture the id add printed on its first stdout line as the letter's id.
 : SAVE-ID ( ptr u8 n -- ) {: la:ptr lu:n :}
-   la lu LETTER {: k:n :}
-   s" out" FILE$ READ-FILE 10 0 SPLIT-NEXT 2drop LINE-ID {: id:ptr idu:n :}
-   idu 0 > idu ID-CAP <= and {: ok:bool :}
-   ok s" id" LABEL GT-CHECK
-   ok if
-      id k ID-SLOT idu BYTE-COPY
-      idu k ID-U-PTR !
-   then ;
+   FIRST-LINE$ LINE-ID la lu KEEP-ID ;
+
+\ Capture the rest of the first stdout line after the marker as the letter's id.
+: SAVE-AFTER ( ptr u8 n ptr u8 n -- ) {: m:ptr mu:n la:ptr lu:n :}
+   FIRST-LINE$ {: line:ptr lineu:n :}
+   line lineu m mu STARTS-WITH? if
+      line mu + lineu mu - la lu KEEP-ID
+   else line 0 la lu KEEP-ID then ;
 
 \ Run the case's word on a fresh store, then print PASS or FAIL with its name.
 : DOT-CASE ( ptr u8 n [ -- ] -- ) {: a:ptr u:n body :}

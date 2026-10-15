@@ -11,4 +11,5 @@ require case-layout.f
 require case-maint.f
 require case-status.f
 require case-add.f
+require case-slug.f
 DOT-T:FINISH
