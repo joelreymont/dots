@@ -36,6 +36,7 @@ python3 regression_archive_test.py bin/dot
 python3 regression_slugify_test.py bin/dot
 python3 regression_io_test.py bin/dot
 python3 regression_concurrency_test.py bin/dot
+hb --load tests/run.f -- bin/dot
 ```
 
 The full harness checks exit status, stdout, stderr, and the complete `.dots`
