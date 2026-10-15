@@ -20,7 +20,7 @@ Commands:
   dot show <id>                Show dot details
   dot ready [--json]           Show unblocked dots
   dot tree [id]                Show hierarchy (with id: includes closed children)
-  dot fix                      Repair missing parents
+  dot fix                      Repair orphan and legacy folders
   dot find \"query\"             Search all dots (open first, then archived)
   dot purge                    Delete archived dots
   dot init                     Initialize .dots directory

@@ -1,7 +1,8 @@
 \ case-maint.f - maintenance: rm removes a task's whole family and strips the
-\ references to it, purge empties the archive without following a symlink, fix moves the files of
-\ a folder no task owns to the top, and each mutation reports Permission denied
-\ on a read-only store. Each case is one `dot` command on its own store.
+\ references to it, purge empties the archive without following a symlink, fix
+\ moves the files of a folder no task owns to the top and nests a task's legacy
+\ folder into its own folder, and each mutation reports Permission denied on a
+\ read-only store. Each case is one `dot` command on its own store.
 require dot.f
 using DOT-T
 package DOT-MAINT
@@ -449,7 +450,7 @@ s" purge-read-only" ' PURGE-READ-ONLY DOT-CASE
    s" orphan/child.md" s" Orphan child" s" open" 2 PUT-ISSUE
    s" fix" RUN
    0 RC=
-   s\" Fixed 1 orphan parent(s), moved 1 file(s)\n" OUT=
+   s\" Moved 1 file(s) out of orphan folders\n" OUT=
    s" " ERR=
    s" fix" RUN
    0 RC=
@@ -485,7 +486,7 @@ s" fix-no-store" ' FIX-NO-STORE DOT-CASE
    s\" orphan/odd\nname.md" s" Orphan newline child" s" open" 2 PUT-ISSUE
    s" fix" RUN
    0 RC=
-   s\" Fixed 1 orphan parent(s), moved 1 file(s)\n" OUT=
+   s\" Moved 1 file(s) out of orphan folders\n" OUT=
    s" " ERR=
    s\" d .dots\nd .dots/archive\nf .dots/odd\nname.md\n  ---\n  title: Orphan newline child\n  status: open\n  priority: 2\n  created-at: 2026-01-01T00:00:00Z\n  ---\n.\n" TREE=
 ;
@@ -536,13 +537,14 @@ l .dots/orphan -> ../external
 ;
 s" fix-symlink-folder" ' FIX-SYMLINK-FOLDER DOT-CASE
 
-\ orphan/x.md links to a task file beside `.dots`; the link stays in place.
+\ orphan/x.md links to a task file beside `.dots`; no task file moves, so the
+\ link and its folder stay in place.
 : FIX-SYMLINK-CHILD ( -- )
    s" ../external.md" s" X" s" open" 2 PUT-ISSUE
    s" ../../external.md" s" orphan/x.md" LINK
    s" fix" RUN
    0 RC=
-   s\" Fixed 1 orphan parent(s), moved 0 file(s)\n" OUT=
+   s\" No fixes needed\n" OUT=
    s" " ERR=
    s" d .dots
 d .dots/archive
@@ -591,6 +593,584 @@ f .dots/orphan/b.md
 " TREE=
 ;
 s" fix-occupied" ' FIX-OCCUPIED DOT-CASE
+
+\ p, Q's child, keeps its children in the legacy folder .dots/p/, a file and a
+\ child's own folder. Both nest into p's own folder, which fix makes by moving
+\ p's file into it; the second run finds nothing left to repair.
+: FIX-NEST-LEGACY ( -- )
+   s" q/q.md" s" Q" s" open" 2 PUT-ISSUE
+   s" q/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" p/d/d.md" s" D" s" open" 2 PUT-ISSUE
+   s" p/d/g.md" s" G" s" open" 2 PUT-ISSUE
+   s" fix" RUN
+   0 RC=
+   s\" Nested 1 legacy folder(s)\n" OUT=
+   s" " ERR=
+   s" fix" RUN
+   0 RC=
+   s\" No fixes needed\n" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+d .dots/q
+d .dots/q/p
+f .dots/q/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/q/p/d
+f .dots/q/p/d/d.md
+  ---
+  title: D
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/p/d/g.md
+  ---
+  title: G
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/q.md
+  ---
+  title: Q
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" fix-nest-legacy" ' FIX-NEST-LEGACY DOT-CASE
+
+\ Each kind of repair prints its own line, files first. p's file at the top
+\ moves into its legacy folder, which is where its own folder belongs.
+: FIX-BOTH-KINDS ( -- )
+   s" orphan/x.md" s" X" s" open" 2 PUT-ISSUE
+   s" p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" fix" RUN
+   0 RC=
+   s\" Moved 1 file(s) out of orphan folders\nNested 1 legacy folder(s)\n" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/x.md
+  ---
+  title: X
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" fix-both-kinds" ' FIX-BOTH-KINDS DOT-CASE
+
+\ p is archived: its legacy folder nests into its archived own folder and p
+\ stays closed.
+: FIX-NEST-ARCHIVED ( -- )
+   s" archive/p.md" s" P" s" closed" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" fix" RUN
+   0 RC=
+   s\" Nested 1 legacy folder(s)\n" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+d .dots/archive/p
+f .dots/archive/p/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/archive/p/p.md
+  ---
+  title: P
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" fix-nest-archived" ' FIX-NEST-ARCHIVED DOT-CASE
+
+\ Two tasks p, one active and one archived, could own .dots/p/: nothing moves.
+: FIX-NEST-AMBIGUOUS ( -- )
+   s" q/q.md" s" Q" s" open" 2 PUT-ISSUE
+   s" q/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" archive/p.md" s" Old P" s" closed" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" fix" RUN
+   1 RC=
+   s" " OUT=
+   s\" Ambiguous ID: p\n" ERR=
+   s" d .dots
+d .dots/archive
+f .dots/archive/p.md
+  ---
+  title: Old P
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/q
+f .dots/q/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/q.md
+  ---
+  title: Q
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" fix-nest-ambiguous" ' FIX-NEST-AMBIGUOUS DOT-CASE
+
+\ p's own folder already holds a c.md, so neither legacy file moves, d.md
+\ included.
+: FIX-NEST-OCCUPIED ( -- )
+   s" q/q.md" s" Q" s" open" 2 PUT-ISSUE
+   s" q/p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" q/p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" p/c.md" s" Legacy C" s" open" 2 PUT-ISSUE
+   s" p/d.md" s" D" s" open" 2 PUT-ISSUE
+   s" fix" RUN
+   1 RC=
+   s" " OUT=
+   s\" Issue already exists\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: Legacy C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/d.md
+  ---
+  title: D
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/q
+d .dots/q/p
+f .dots/q/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/q.md
+  ---
+  title: Q
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" fix-nest-occupied" ' FIX-NEST-OCCUPIED DOT-CASE
+
+\ Nesting never archives an open task: archived p's legacy folder holds an
+\ active grandchild, so p refuses as close does and nothing moves.
+: FIX-NEST-OPEN-CHILD ( -- )
+   s" archive/p.md" s" P" s" closed" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" closed" 2 PUT-ISSUE
+   s" p/d/d.md" s" D" s" closed" 2 PUT-ISSUE
+   s" p/d/g.md" s" G" s" active" 2 PUT-ISSUE
+   s" fix" RUN
+   1 RC=
+   s" " OUT=
+   s\" Cannot nest p: children are not all closed\n" ERR=
+   s" d .dots
+d .dots/archive
+f .dots/archive/p.md
+  ---
+  title: P
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p/d
+f .dots/p/d/d.md
+  ---
+  title: D
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/p/d/g.md
+  ---
+  title: G
+  status: active
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" fix-nest-open-child" ' FIX-NEST-OPEN-CHILD DOT-CASE
+
+\ A malformed descendant ends the nest into the archive with its diagnostic,
+\ as close's validity check does.
+: FIX-NEST-MALFORMED-CHILD ( -- )
+   s" archive/p.md" s" P" s" closed" 2 PUT-ISSUE
+   s" p/c.md" s\" junk\n" PUT
+   s" fix" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
+   s" d .dots
+d .dots/archive
+f .dots/archive/p.md
+  ---
+  title: P
+  status: closed
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/p
+f .dots/p/c.md
+  junk
+.
+" TREE=
+;
+s" fix-nest-malformed-child" ' FIX-NEST-MALFORMED-CHILD DOT-CASE
+
+\ f's only record is malformed, yet .dots/f/ is still f's: fix reports f's
+\ diagnostic and empties nothing.
+: FIX-MALFORMED-OWNER ( -- )
+   s" f.md" s\" junk\n" PUT
+   s" f/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" fix" RUN
+   1 RC=
+   s" " OUT=
+   s\" Invalid issue frontmatter\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/f
+f .dots/f/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/f.md
+  junk
+.
+" TREE=
+;
+s" fix-malformed-owner" ' FIX-MALFORMED-OWNER DOT-CASE
+
+\ a's file sits in an orphan folder that comes after .dots/a/ in directory
+\ order on APFS. Orphan folders go first, so a's file reaches the top before
+\ its legacy folder nests and the folder becomes a's own.
+: FIX-ORPHAN-THEN-NEST ( -- )
+   s" orphan/a.md" s" A" s" open" 2 PUT-ISSUE
+   s" a/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" fix" RUN
+   0 RC=
+   s\" Moved 1 file(s) out of orphan folders\nNested 1 legacy folder(s)\n" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/a
+f .dots/a/a.md
+  ---
+  title: A
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/a/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/archive
+" TREE=
+;
+s" fix-orphan-then-nest" ' FIX-ORPHAN-THEN-NEST DOT-CASE
+
+\ A link where p's own folder goes is no folder, as add says, even when its
+\ target holds a file the legacy one would collide with: fix moves nothing and
+\ writes nothing through it, so the outside folder keeps only its own c.md.
+: FIX-NEST-DEST-SYMLINK ( -- )
+   s" q/q.md" s" Q" s" open" 2 PUT-ISSUE
+   s" q/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" ../outside/c.md" s" X" s" open" 2 PUT-ISSUE
+   s" ../../outside" s" q/p" LINK
+   s" p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" fix" RUN
+   1 RC=
+   s" " OUT=
+   s\" Not a directory: .dots/q/p\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/q
+l .dots/q/p -> ../../outside
+f .dots/q/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/q.md
+  ---
+  title: Q
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+   s" outside" s" d outside
+f outside/c.md
+  ---
+  title: X
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" DIR=
+;
+s" fix-nest-dest-symlink" ' FIX-NEST-DEST-SYMLINK DOT-CASE
+
+\ p already has its own folder: the legacy file nests beside p's file.
+: FIX-NEST-OWN-FOLDER ( -- )
+   s" q/q.md" s" Q" s" open" 2 PUT-ISSUE
+   s" q/p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" fix" RUN
+   0 RC=
+   s\" Nested 1 legacy folder(s)\n" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+d .dots/q
+d .dots/q/p
+f .dots/q/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/q.md
+  ---
+  title: Q
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" fix-nest-own-folder" ' FIX-NEST-OWN-FOLDER DOT-CASE
+
+\ Each folder is done before the next: the orphan folder, repaired first,
+\ stays repaired when the legacy folder's move fails, and a rerun nests it.
+: FIX-COMMIT-PER-FOLDER ( -- )
+   s" orphan/x.md" s" X" s" open" 2 PUT-ISSUE
+   s" q/q.md" s" Q" s" open" 2 PUT-ISSUE
+   s" q/p/p.md" s" P" s" open" 2 PUT-ISSUE
+   s" p/c.md" s" C" s" open" 2 PUT-ISSUE
+   s" fix" s" .dots/q/p/c.md" s" .dots/orphan/x.md" RUN-PROBE
+   1 RC=
+   s" " OUT=
+   s\" Permission denied\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+d .dots/q
+d .dots/q/p
+f .dots/q/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/q.md
+  ---
+  title: Q
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/x.md
+  ---
+  title: X
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+   s" fix" RUN
+   0 RC=
+   s\" Nested 1 legacy folder(s)\n" OUT=
+   s" " ERR=
+   s" d .dots
+d .dots/archive
+d .dots/q
+d .dots/q/p
+f .dots/q/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/q/q.md
+  ---
+  title: Q
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/x.md
+  ---
+  title: X
+  status: open
+  priority: 2
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" fix-commit-per-folder" ' FIX-COMMIT-PER-FOLDER DOT-CASE
 
 : FIX-READ-ONLY ( -- )
    s" orphan/x.md" s" X" s" open" 2 PUT-ISSUE

@@ -63,7 +63,7 @@ no arguments prints ready tasks as JSON.
 | `dot update ID --status STATUS` | Change a task status. |
 | `dot tree [ID]` | Show task hierarchy. |
 | `dot rm ID [ID ...]` | Delete tasks; `delete` is an alias. |
-| `dot fix` | Promote children of missing parent tasks. |
+| `dot fix` | Move tasks out of orphan folders and nest legacy folders. |
 | `dot slugify` | Rename IDs to title slugs and update references. |
 | `dot purge` | Delete the archive. |
 | `dot init --from-jsonl FILE` | Import tasks from a JSONL export. |
