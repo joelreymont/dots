@@ -1,6 +1,7 @@
 \ case-import.f - JSONL import: `dot init --from-jsonl import.jsonl` on rows,
-\ priorities, byte arrays, dependencies, parents, line limits, duplicates and
-\ read failures, then init beside a broken .git and concurrent inits. An import
+\ priorities, byte arrays, dependencies, parents, line limits, duplicates, read
+\ failures and a path that is no file, then init beside a broken .git, beside
+\ a .git with no git on PATH, and concurrent inits. An import
 \ case writes import.jsonl beside `.dots` and runs one import on its own store.
 require src/lib/fs.f
 require src/lib/fs-mutate.f
@@ -908,6 +909,19 @@ d .dots/archive
 ;
 s" unreadable-file" ' UNREADABLE-FILE DOT-CASE
 
+\ init refuses an import path that is no regular file before it creates
+\ anything.
+: NOT-A-FILE ( -- )
+   s" ../.dots" RM-DIR
+   s" import.jsonl" FILE$ MAKE-DIRS
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Not a file: import.jsonl\n" ERR=
+   s" " TREE=
+;
+s" not-a-file" ' NOT-A-FILE DOT-CASE
+
 \ A read that fails after the open is an I/O error, never the end of input.
 : READ-FAILURE ( -- )
    s" import.jsonl" FILE$ MAKE-DIRS
@@ -933,6 +947,20 @@ d .dots/archive
 " TREE=
 ;
 s" init-git-invalid" ' INIT-GIT-INVALID DOT-CASE
+
+\ init beside a .git with no git on PATH warns that .dots is not staged.
+: INIT-NO-GIT ( -- )
+   s" ../.dots" RM-DIR
+   s" .git" FILE$ MAKE-DIRS
+   s" init" RUN-NO-GIT
+   0 RC=
+   s" " OUT=
+   s\" Warning: git not found; .dots not staged\n" ERR=
+   s" d .dots
+d .dots/archive
+" TREE=
+;
+s" init-no-git" ' INIT-NO-GIT DOT-CASE
 
 \ Concurrent inits on a directory without `.dots` all succeed.
 : INIT-CONCURRENT ( -- )

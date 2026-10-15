@@ -28,8 +28,8 @@ dot --version
 ```
 
 `build.sh` writes the binary to `bin/dot` and uses private caches under
-`.build/`. These outputs are ignored by version control. The CLI currently
-prints `dots 0.6.4 (f107d016)` for `--version` to match the reference CLI.
+`.build/`. These outputs are ignored by version control. The CLI prints
+`dots 0.6.4` for `--version`.
 
 ## Quick start
 
@@ -45,7 +45,8 @@ dot show <id>
 ```
 
 `dot init` creates `.dots/` and stages it with git when run in a git
-repository. Running `dot` with no arguments prints ready tasks as JSON.
+repository; without `git` on PATH it warns and continues. Running `dot` with
+no arguments prints ready tasks as JSON.
 
 ## Commands
 

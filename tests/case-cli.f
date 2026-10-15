@@ -96,7 +96,7 @@ s" help-long-extra" ' HELP-LONG-EXTRA DOT-CASE
 : VERSION ( -- )
    s" --version|ignored" RUN
    0 RC=
-   s\" dots 0.6.4 (f107d016)\n" OUT=
+   s\" dots 0.6.4\n" OUT=
    s" " ERR=
    s" d .dots
 d .dots/archive
@@ -107,7 +107,7 @@ s" version" ' VERSION DOT-CASE
 : VERSION-SHORT ( -- )
    s" -v|ignored" RUN
    0 RC=
-   s\" dots 0.6.4 (f107d016)\n" OUT=
+   s\" dots 0.6.4\n" OUT=
    s" " ERR=
    s" d .dots
 d .dots/archive
@@ -115,16 +115,30 @@ d .dots/archive
 ;
 s" version-short" ' VERSION-SHORT DOT-CASE
 
-: HOOK-UNKNOWN ( -- )
+: HOOK-QUICK-ADD ( -- )
    s" hook" RUN
-   1 RC=
-   s" " OUT=
-   s\" Unknown command: hook\n" ERR=
-   s" d .dots
+   s" A" SAVE-ID
+   s" A" s" hook-quick-add-hook-<hex>" ID=
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s\" d .dots
 d .dots/archive
+f .dots/config
+  prefix=hook-quick-add
+.
+f .dots/<A>.md
+  ---
+  title: hook
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
 " TREE=
 ;
-s" hook-unknown" ' HOOK-UNKNOWN DOT-CASE
+s" hook-quick-add" ' HOOK-QUICK-ADD DOT-CASE
 
 \ Each alias runs its command: create is add, it on, done off and delete rm.
 : ALIAS-CREATE ( -- )
@@ -276,6 +290,32 @@ f .dots/<A>.md
 " TREE=
 ;
 s" quick-add" ' QUICK-ADD DOT-CASE
+
+\ Quick add takes its argument verbatim as the title, an option's look and all.
+: QUICK-ADD-VERBATIM ( -- )
+   s" -v x" RUN
+   s" A" SAVE-ID
+   s" A" s" quick-add-verbatim-v-x-<hex>" ID=
+   0 RC=
+   s\" <A>\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/config
+  prefix=quick-add-verbatim
+.
+f .dots/<A>.md
+  ---
+  title: -v x
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"<time>\"
+  ---
+.
+" TREE=
+;
+s" quick-add-verbatim" ' QUICK-ADD-VERBATIM DOT-CASE
 
 : ADD-USAGE ( -- )
    s" add" RUN
@@ -541,16 +581,32 @@ f .dots/config
 ;
 s" slugify-extra-argument" ' SLUGIFY-EXTRA-ARGUMENT DOT-CASE
 
+\ init refuses an absent import file before it creates anything.
 : INIT-ABSENT-JSONL ( -- )
+   s" ../.dots" RM-DIR
    s" init|--from-jsonl|absent.jsonl" RUN
-   0 RC=
+   1 RC=
    s" " OUT=
-   s" " ERR=
-   s" d .dots
-d .dots/archive
-" TREE=
+   s\" File not found: absent.jsonl\n" ERR=
+   s" " TREE=
 ;
 s" init-absent-jsonl" ' INIT-ABSENT-JSONL DOT-CASE
+
+\ init reports an import path it cannot inspect, under a directory it may not
+\ search, as an I/O error before it creates anything. `.dots/../p` needs
+\ `.dots`, so p's mode is set through MODE first and restored through its path.
+: INIT-JSONL-UNREADABLE-DIR ( -- )
+   s" p" FILE$ MAKE-DIRS
+   s" ../p" 0 MODE
+   s" ../.dots" RM-DIR
+   s" init|--from-jsonl|p/x.jsonl" RUN
+   s" p" FILE$ FS-MUT-MODE-DIR CHMOD-MODE
+   1 RC=
+   s" " OUT=
+   s\" I/O error\n" ERR=
+   s" " TREE=
+;
+s" init-jsonl-unreadable-dir" ' INIT-JSONL-UNREADABLE-DIR DOT-CASE
 
 : UPDATE-INVALID-STATUS-FIRST ( -- )
    s" update|absent|--status|mystery" RUN

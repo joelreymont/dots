@@ -659,7 +659,7 @@ DYNAMIC-BUFFER SORT-BUF n
 : ARG= ( ptr u8 n ptr u8 n -- bool ) STR= ;
 : USAGE ( -- )
    s\" dots - Connect the dots\n\nUsage: dot [command] [options]\n\nCommands:\n  dot \"title\"                  Quick add a dot\n  dot add \"title\" [options]    Add a dot (-p priority, -d desc, -P parent, -a after)\n  dot ls [--status S] [--json] List dots\n  dot on <id>                  Start working (turn it on!)\n  dot off <id> [-r reason]     Complete (\"cross it off\")\n  dot rm <id>                  Remove a dot\n  dot show <id>                Show dot details\n  dot ready [--json]           Show unblocked dots\n  dot tree [id]                Show hierarchy (with id: includes closed children)\n  dot fix                      Repair missing parents\n  dot find \"query\"             Search all dots (open first, then archived)\n  dot purge                    Delete archived dots\n  dot init                     Initialize .dots directory\n\nExamples:\n  dot \"Fix the bug\"\n  dot add \"Design API\" -p 1 -d \"REST endpoints\"\n  dot add \"Implement\" -P dots-1 -a dots-2\n  dot on dots-3\n  dot off dots-3 -r \"shipped\"\n" DOT-IO:PRINT ;
-: VERSION ( -- ) s" dots 0.6.4 (f107d016)" DOT-IO:PRINTLN ;
+: VERSION ( -- ) s" dots 0.6.4" DOT-IO:PRINTLN ;
 : FIND-USAGE ( -- )
    s\" Usage: dot find <query>\n\nSearch all dots (open first, then archived).\n\nSearches: title, description, close-reason, created-at, closed-at\n\nExamples:\n  dot find \"auth\"      Search for dots mentioning auth\n  dot find \"2026-01\"   Find dots from January 2026\n" DOT-IO:PRINT ;
 : PARSE-LIST-ARGS ( n -- )
@@ -769,6 +769,7 @@ variable OUT-U
    else 2drop then ;
 PROCESS-SYMBOLS
 FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
+2 constant FS-NO-ENTRY
 13 constant FS-ACCESS-DENIED
 : FS-DIR-NOT-EMPTY ( -- n ) HB-TARGET-MACOS? if 66 else 39 then ;
 : ?FS-MUTATION-ERROR ( n -- )
@@ -812,16 +813,16 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
 : REMOVE-ISSUE-DIR ( ptr u8 n -- )
    FS-PATHZ RMDIR-CALL FS-CAUSE ?FS-MUTATION-ERROR ;
 PROCESS-SYMBOLS
-FUNCTION: ACCESS-WRITE access ( ptr u8 n -- i32 ) ;FUNCTION
+FUNCTION: ACCESS-CALL access ( ptr u8 n -- i32 ) ;FUNCTION
 : PARENT-WRITABLE? ( ptr u8 n -- bool )
    {: path:ptr pu:n :}
    pu begin dup 0 > while
       dup 1- path + c@ 47 = if
-         1- path swap FS-PATHZ 2 ACCESS-WRITE 0= exit
+         1- path swap FS-PATHZ 2 ACCESS-CALL 0= exit
       then
       1-
    repeat drop
-   s" ." FS-PATHZ 2 ACCESS-WRITE 0= ;
+   s" ." FS-PATHZ 2 ACCESS-CALL 0= ;
 PTR-VARIABLE RESERVED-TEMP
 variable RESERVED-U
 variable RESERVED-FD
@@ -1104,9 +1105,11 @@ variable PARENT-IDX
    a PATH-TWO u BYTE-COPY u PATH-TWO-U ! ;
 : PATH-ONE$ ( -- ptr u8 n ) PATH-ONE PATH-ONE-U @ ;
 : PATH-TWO$ ( -- ptr u8 n ) PATH-TWO PATH-TWO-U @ ;
+\ Whether an argument after the first is the text: quick add's first argument
+\ is its title, whatever it reads.
 : ARG-AT? ( ptr u8 n -- bool )
    {: a:ptr u:n :}
-   script-argc 0 ?do i script-argv$ a u STR= if true unloop exit then loop false ;
+   script-argc 1 ?do i script-argv$ a u STR= if true unloop exit then loop false ;
 : NEXT-ARG? ( -- bool ) ARG-I @ 1+ script-argc < ;
 : TAKE-ARG ( -- ptr u8 n )
    1 ARG-I +! ARG-I @ script-argv$ ;
@@ -1231,10 +1234,8 @@ variable PARENT-IDX
       then then then then then
       1 ARG-I +!
    repeat ;
-: ADD-COMMAND ( n -- )
-   {: first:n :}
-   script-argc first = s" Usage: dot add <title> [options]" ?FAIL
-   first PARSE-ADD
+\ Add the task whose title and options PARSE-ADD read.
+: ADD-TASK ( -- )
    TITLE-U @ 0= s" Error: title required" ?FAIL
    PARENT-SET @ 0<> AFTER-SET @ 0<> and if
       PARENT-A @ PARENT-U @ AFTER-A @ AFTER-U @ STR=
@@ -1292,6 +1293,13 @@ variable PARENT-IDX
       idx JSON-ISSUE dup JSON-WRITE:$ DOT-IO:PRINTLN JSON-WRITE:CLOSE
       JSON-OUT-BUF BUF:DISPOSE
    else idx F-ID FIELD$ DOT-IO:PRINTLN then ;
+: ADD-COMMAND ( -- )
+   script-argc 1 = s" Usage: dot add <title> [options]" ?FAIL
+   1 PARSE-ADD ADD-TASK ;
+\ Quick add takes its first argument verbatim as the title, over any PARSE-ADD
+\ found, and the rest as add's options.
+: QUICK-ADD ( -- )
+   1 PARSE-ADD 0 script-argv$ TITLE-U ! TITLE-A ! ADD-TASK ;
 
 PTR-VARIABLE REASON-A
 variable REASON-U
@@ -2295,7 +2303,7 @@ create GIT-EXEC-ROW PATH-CAP allot
 : GIT-ADD-DOTS ( -- )
    s" .git" EXISTS? 0= if exit then
    s" git" >LEN GIT-EXEC-ROW FIND-EXECUTABLE MATCH option
-      none OF s" Missing issue file or directory in .dots" FAIL ENDOF
+      none OF s\" Warning: git not found; .dots not staged\n" 2 -rot STDERR-WRITE drop ENDOF
       some OF {: path-u:len :}
          PROC-ARGV-RESET
          s" add" >LEN PROC-ARGV+
@@ -2682,19 +2690,29 @@ variable CYCLE-TAIL
    then
    IMPORT-SKIPPED-N @ s"  issues due to errors" WARN-IMPORT-NUM
    DEP-SKIPPED-N @ s"  dependencies due to errors" WARN-IMPORT-NUM ;
-\ Import skips a path that is not a regular file.
-: IMPORT-JSONL-FILE ( ptr u8 n -- )
+\ An import path must name a regular file: an absent one is not found, and any
+\ other failure to reach it is an I/O error.
+: CHECK-JSONL-PATH ( ptr u8 n -- )
    {: path:ptr pu:n :}
-   path pu FILE? if path pu IMPORT-JSONL then ;
-: INIT-FULL-COMMAND ( -- )
-   INIT-EMPTY
+   path pu FILE? if exit then
+   path pu FS-PATHZ 0 ACCESS-CALL 0= s" Not a file: " path pu ?ISSUE-ERROR
+   FFI:ERRNO FS-NO-ENTRY = s" File not found: " path pu ?ISSUE-ERROR
+   s" I/O error" FAIL ;
+\ Run the word on the path each `--from-jsonl` names.
+: EACH-JSONL ( [ ptr u8 n -- ] -- )
+   {: q :}
    1 ARG-I !
    begin ARG-I @ script-argc < while
       ARG-I @ script-argv$ s" --from-jsonl" STR= NEXT-ARG? and if
-         TAKE-ARG IMPORT-JSONL-FILE
+         TAKE-ARG q execute
       then
       1 ARG-I +!
-   repeat
+   repeat ;
+\ init checks every import path before it creates anything.
+: INIT-FULL-COMMAND ( -- )
+   [: CHECK-JSONL-PATH ;] EACH-JSONL
+   INIT-EMPTY
+   [: IMPORT-JSONL ;] EACH-JSONL
    GIT-ADD-DOTS ;
 \ Dispatch codes: a command's group position in COMMAND-TABLE. The read-only
 \ commands, which run without the writer lock, come first.
@@ -2705,22 +2723,21 @@ variable CYCLE-TAIL
 4 constant CMD-FIND
 5 constant CMD-HELP
 6 constant CMD-VERSION
-7 constant CMD-HOOK
-8 constant CMD-ADD
-9 constant CMD-ON
-10 constant CMD-OFF
-11 constant CMD-UPDATE
-12 constant CMD-INIT
-13 constant CMD-PURGE
-14 constant CMD-RM
-15 constant CMD-FIX
-16 constant CMD-SLUGIFY
+7 constant CMD-ADD
+8 constant CMD-ON
+9 constant CMD-OFF
+10 constant CMD-UPDATE
+11 constant CMD-INIT
+12 constant CMD-PURGE
+13 constant CMD-RM
+14 constant CMD-FIX
+15 constant CMD-SLUGIFY
 32 constant GROUP-SEP
 124 constant ALIAS-SEP
 \ Command names grouped by dispatch code: GROUP-SEP ends a group and
 \ ALIAS-SEP separates the aliases within one.
 : COMMAND-TABLE ( -- ptr u8 n )
-   s" tree ls|list ready show find help|-h|--help --version|-v hook add|create on|it off|done|close update init purge rm|delete fix slugify" ;
+   s" tree ls|list ready show find help|-h|--help --version|-v add|create on|it off|done|close update init purge rm|delete fix slugify" ;
 \ Whether arg is one of the aliases in group.
 : ALIAS? ( ptr u8 n ptr u8 n -- bool )
    {: arg:ptr au:n grp:ptr gu:n :}
@@ -2753,7 +2770,7 @@ variable CYCLE-TAIL
          1 script-argv$ QUERY-U ! QUERY-A !
          true LOAD-ISSUES PRINT-FIND
       endof
-      CMD-ADD of 1 ADD-COMMAND endof
+      CMD-ADD of ADD-COMMAND endof
       CMD-ON of 1 STATUS-MULTI endof
       CMD-OFF of 2 STATUS-MULTI endof
       CMD-UPDATE of UPDATE-COMMAND endof
@@ -2762,7 +2779,7 @@ variable CYCLE-TAIL
       CMD-RM of RM-COMMAND endof
       CMD-FIX of FIX-COMMAND endof
       CMD-SLUGIFY of SLUGIFY-COMMAND endof
-      0 ADD-COMMAND
+      QUICK-ADD
    endcase ;
 public
 \ Whether the command with this dispatch code runs without the writer lock.
@@ -2775,7 +2792,6 @@ public
    case
       CMD-HELP of USAGE endof
       CMD-VERSION of VERSION endof
-      CMD-HOOK of s" Unknown command: hook" FAIL endof
       dup READ-ONLY-COMMAND? 0= if DOT-LOCK:ACQUIRE then
       dup RUN-COMMAND
    endcase ;

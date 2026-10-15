@@ -992,5 +992,33 @@ f .dots/p-normal-title-12345678.md
 ;
 s" git-index" ' GIT-INDEX DOT-CASE
 
+\ Beside a .git with no git on PATH slugify renames and warns that .dots is
+\ not staged.
+: SLUG-NO-GIT ( -- )
+   PUT-PREFIX
+   s" legacy-12345678.md" s" Normal title" s" open" 2 PUT-ISSUE
+   s" .git" FILE$ MAKE-DIRS
+   s" slugify" RUN-NO-GIT
+   0 RC=
+   s\" legacy-12345678 -> p-normal-title-12345678\nSlugified 1 issue(s)\n" OUT=
+   s\" Warning: git not found; .dots not staged\n" ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/config
+  prefix=p
+.
+f .dots/p-normal-title-12345678.md
+  ---
+  title: Normal title
+  status: open
+  priority: 2
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" slug-no-git" ' SLUG-NO-GIT DOT-CASE
+
 ;package
 ;using

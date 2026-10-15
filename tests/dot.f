@@ -48,6 +48,8 @@
 \ to a destination ending `.dots/new.md` with EACCES once `.dots/old.md`, a
 \ path from the store, has moved. RUN-PINNED runs dot as RUN does with the
 \ probe preloaded and its random bytes pinned, so add's id ends `-5eed1d00`.
+\ RUN-NO-GIT runs dot as RUN does with PATH the empty directory `no-git`
+\ beside `.dots`, so dot finds no git.
 \ GIT runs git in the store as RUN runs dot, so RC=, OUT= and ERR= check git's
 \ rc and output. RUN-HB runs `hb --load <script> -- <main.f>`
 \ as RUN runs bin/dot, for a probe script that loads dot's source to reach a
@@ -418,11 +420,11 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
 : CLOSE ( n -- )
    FS-ATOMIC:CLOSE-FD 0<> if E-FS-IO throw then ;
 
-\ Start the program in the store with the argv PROC-ARGV+ built and the fd as
-\ its stdout, which LAUNCH closes once the child holds it; -1 gives the child
-\ the harness's own. stdin is /dev/null and stderr the `err` file.
-: LAUNCH ( ptr u8 n n -- pid ) {: prog:ptr progu:n out:n :}
-   s" PATH" ENV-COPY
+\ Start the program in the store with the argv and PATH PROC-ARGV+ and PROC-ENV+
+\ built and the fd as its stdout, which LAUNCH-PATHED closes once the child
+\ holds it; -1 gives the child the harness's own. stdin is /dev/null and
+\ stderr the `err` file.
+: LAUNCH-PATHED ( ptr u8 n n -- pid ) {: prog:ptr progu:n out:n :}
    s" HOME" ENV-COPY
    s" TZ" >LEN s" UTC" >LEN PROC-ENV+
    OPEN-NULL {: in:n :}
@@ -432,6 +434,10 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
    in CLOSE err CLOSE
    out 0 >= if out CLOSE then
    pid ;
+
+\ LAUNCH-PATHED with the parent's PATH.
+: LAUNCH ( ptr u8 n n -- pid )
+   s" PATH" ENV-COPY LAUNCH-PATHED ;
 
 \ Make dot's argv the |-separated arguments; answers bin/dot for LAUNCH.
 : DOT-ARGV ( ptr u8 n -- ptr u8 n )
@@ -617,6 +623,13 @@ EXPORT FILE$
    PRELOAD
    s" DOTS_PROBE_RANDOM" >LEN s" 5eed1d00" >LEN PROC-ENV+
    prog progu s" out" OPEN-OUT LAUNCH WAIT ;
+
+\ RUN with PATH the empty directory `no-git` beside `.dots`: dot finds no git.
+: RUN-NO-GIT ( ptr u8 n -- )
+   DOT-ARGV {: prog:ptr progu:n :}
+   s" no-git" FILE$ MAKE-DIRS
+   s" PATH" >LEN s" no-git" FILE$ >LEN PROC-ENV+
+   prog progu s" out" OPEN-OUT LAUNCH-PATHED WAIT ;
 
 \ Run git in the store with the |-separated arguments as RUN runs dot.
 : GIT ( ptr u8 n -- ) {: a:ptr u:n :}
