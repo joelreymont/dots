@@ -102,6 +102,50 @@ d .dots/archive
 ;
 s" malformed-line" ' MALFORMED-LINE DOT-CASE
 
+\ Write rows a and b, b blocking a.
+: ROWS-EDGE ( -- )
+   s\" {\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+{\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"a\",\"type\":\"blocks\"}]}
+" JSONL ;
+
+\ The tree ROWS-EDGE leaves when a later line ends the import: b keeps its edge.
+: EDGE-TREE= ( -- )
+   s\" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+d .dots/archive
+f .dots/b.md
+  ---
+  title: B
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  blocks:
+    - a
+  ---
+.
+" TREE= ;
+
+\ A malformed line ends the import; the edges accepted before it are written.
+: MALFORMED-LINE-EDGE ( -- )
+   ROWS-EDGE
+   s" import.jsonl" FILE$ s\" not json\n" APPEND-FILE
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Invalid JSONL file\n" ERR=
+   EDGE-TREE=
+;
+s" malformed-line-edge" ' MALFORMED-LINE-EDGE DOT-CASE
+
 \ A row still waiting for its parent's row when a malformed line ends the
 \ import stays too, in the folder named after its parent.
 : MALFORMED-LINE-WAITING ( -- )
@@ -589,6 +633,19 @@ d .dots/archive
 " TREE=
 ;
 s" line-over-limit" ' LINE-OVER-LIMIT DOT-CASE
+
+\ A line over the limit ends the import; the edges accepted before it are
+\ written.
+: LINE-OVER-LIMIT-EDGE ( -- )
+   ROWS-EDGE
+   ROW-A 1048576 1 PADDED
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" JSONL line too long\n" ERR=
+   EDGE-TREE=
+;
+s" line-over-limit-edge" ' LINE-OVER-LIMIT-EDGE DOT-CASE
 
 \ A 32 MiB stream repeating one id imports it once.
 : STREAM-DUPLICATES ( -- )

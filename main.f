@@ -21,7 +21,6 @@ package DOT-READ
 1048576 constant ISSUE-MAX
 65536 constant CONFIG-MAX
 512 constant MAX-DEPTH
-31 constant REC-CELLS
 
 0 constant F-ID
 1 constant F-TITLE
@@ -43,6 +42,14 @@ package DOT-READ
 28 constant F-ASSIGNEE-PRESENT
 29 constant F-CLOSED-PRESENT
 30 constant F-PARENT-PRESENT
+\ The out-edge list, first and last edge by E-OUT, -1 for none, is the record's
+\ blocks during an import; the arena field equals it except for a stale record,
+\ whose field lags since its last write, and for the unplaced last record, whose
+\ field holds the raw requests until IMPORT-TAKE-DEPS empties it.
+31 constant F-EDGES
+32 constant F-EDGES-TAIL
+33 constant F-STALE
+34 constant REC-CELLS
 
 DYNAMIC-BUFFER RECORDS n
 DYNAMIC-BUFFER ARENA u8
@@ -396,6 +403,9 @@ variable ID-BUCKETS
    archived if 1 else 0 then CURRENT @ F-ARCHIVED REC-CELL !
    child if 1 else 0 then CURRENT @ F-CHILD REC-CELL !
    1 CURRENT @ F-ERROR REC-CELL !
+   -1 CURRENT @ F-EDGES REC-CELL !
+   -1 CURRENT @ F-EDGES-TAIL REC-CELL !
+   0 CURRENT @ F-STALE REC-CELL !
    ISSUE-N @ 1+ ISSUE-N !
    CURRENT @ ID-LINK
    SCAN-KEYED @ 0= if CURRENT @ PARSE-RECORD then ;
@@ -1259,6 +1269,9 @@ variable PARENT-IDX
    0 idx F-ARCHIVED REC-CELL !
    0 idx F-ERROR REC-CELL !
    0 idx F-CHILD REC-CELL !
+   -1 idx F-EDGES REC-CELL !
+   -1 idx F-EDGES-TAIL REC-CELL !
+   0 idx F-STALE REC-CELL !
    idx ;
 \ A parent's own folder, built in SB: the one it has, else D/p beside its file
 \ D/p.md, D being a partition root or the own folder of p's parent.
@@ -3137,21 +3150,22 @@ variable HELD-N
    else edge at W-HELD-TAIL WAIT-CELL @ H-NEXT HELD-CELL ! then
    edge at W-HELD-TAIL WAIT-CELL !
    1 HELD-N +! ;
-\ Who blocks on an id: the inverse of the blocks fields of records
-\ 0..ISSUE-N-1 during an import, one node per id named, keyed by arena bytes
-\ equal to the id as FIND-EXACT resolves it, in chained hash buckets as the id
-\ nodes. BLOCKED-HEADS holds each bucket's first node and BD-NEXT the node
-\ after each; BD-EDGES is a node's first edge and E-NEXT the edge after each,
-\ each -1 for none; E-SRC is the record whose blocks field names the id. Nodes
-\ and edges are bump-allocated and released together by IMPORT-JSONL's reset.
-\ No blocks field written during an import escapes the index: the load's,
-\ PARSE-RECORD and PARSE-FILE, come before BLOCKED-BUILD indexes them;
-\ NEW-RECORD's is empty; JSONL-PARSE-LINE's are the raw requests of the
-\ unplaced last record, which IMPORT-TAKE-DEPS empties before any search; and
-\ IMPORT-ADD-BLOCK indexes its entry. No key goes stale: FIELD! only appends,
-\ ids do not change during an import, and IMPORT-PROCESS-LINE rewinds the arena
-\ only for a line that placed nothing, while edges are written only after a
-\ placement in the line.
+\ The blocks of records 0..ISSUE-N-1 during an import, as edges: one node per
+\ id named, keyed by arena bytes equal to the id as FIND-EXACT resolves it, in
+\ chained hash buckets as the id nodes, and one edge per entry. BLOCKED-HEADS
+\ holds each bucket's first node and BD-NEXT the node after each; BD-EDGES is a
+\ node's first edge and E-NEXT the next edge into that node. E-SRC is the
+\ record whose blocks hold the entry and E-NODE the id it names; E-OUT is the
+\ next edge out of that record, from its F-EDGES to its F-EDGES-TAIL in entry
+\ order; E-LINK is the next edge in its EDGE-HEADS bucket, keyed by node and
+\ source. Each link is -1 for none. Every entry is an edge: the load's fields,
+\ from PARSE-RECORD and PARSE-FILE, are indexed by BLOCKED-BUILD; NEW-RECORD's
+\ list is empty; the raw requests JSONL-PARSE-LINE leaves in the unplaced last
+\ record's field are no edges, and IMPORT-TAKE-DEPS empties that field; and
+\ IMPORT-ADD-BLOCK adds the edge it accepts. No key goes stale: FIELD! only
+\ appends, ids do not change during an import, and IMPORT-PROCESS-LINE rewinds
+\ the arena only for a line that placed nothing, while edges are added only
+\ after a placement in the line.
 DYNAMIC-BUFFER BLOCKED n
 0 constant BD-NEXT
 1 constant BD-KEY
@@ -3167,11 +3181,16 @@ variable BLOCKED-BUCKETS
 DYNAMIC-BUFFER EDGE n
 0 constant E-SRC
 1 constant E-NEXT
-2 constant EDGE-CELLS
+2 constant E-NODE
+3 constant E-OUT
+4 constant E-LINK
+5 constant EDGE-CELLS
 : EDGE-CELL ( n n -- ptr n )
    {: edge:n field:n :}
    edge EDGE-CELLS * field + EDGE ;
 variable EDGE-N
+DYNAMIC-BUFFER EDGE-HEADS n
+variable EDGE-BUCKETS
 : BLOCKED-KEY$ ( n -- ptr u8 n )
    {: node:n :}
    node BD-KEY BLOCKED-CELL @ ARENA node BD-KEY-U BLOCKED-CELL @ ;
@@ -3208,35 +3227,68 @@ variable EDGE-N
    1 BLOCKED-N +!
    BLOCKED-N @ BLOCKED-BUCKETS @ > if BLOCKED-REBUILD else node BLOCKED-CHAIN then
    node ;
-\ Index the edge from the record at the source index to the id at the arena
-\ offset and length.
-: EDGE-ADD ( n n n -- )
-   {: off:n u:n src:n :}
-   off u BLOCKED-FOR {: node:n :}
+\ An edge's bucket key: its node and source, folded as STR-HASH folds bytes.
+: EDGE-HASH ( n n -- n )
+   swap $100000001B3 * xor dup 32 rshift xor ;
+\ The edge from the source to the node, or -1.
+: EDGE-FIND ( n n -- n )
+   {: node:n src:n :}
+   EDGE-BUCKETS @ 0= if -1 exit then
+   node src EDGE-HASH EDGE-BUCKETS @ BUCKET EDGE-HEADS @
+   begin dup -1 <> while
+      dup E-NODE EDGE-CELL @ node = over E-SRC EDGE-CELL @ src = and if exit then
+      E-LINK EDGE-CELL @
+   repeat ;
+: EDGE-CHAIN ( n -- )
+   {: edge:n :}
+   edge E-NODE EDGE-CELL @ edge E-SRC EDGE-CELL @ EDGE-HASH
+   EDGE-BUCKETS @ BUCKET {: b:n :}
+   b EDGE-HEADS @ edge E-LINK EDGE-CELL !
+   edge b EDGE-HEADS ! ;
+: EDGE-REBUILD ( -- )
+   EDGE-BUCKETS @ EDGE-HEADS-RESERVE
+   EDGE-BUCKETS @ 0 ?do -1 i EDGE-HEADS ! loop
+   EDGE-N @ 0 ?do i EDGE-CHAIN loop ;
+\ Add the edge from the record at the source index to the node, last in the
+\ record's out-list and first in the node's in-list. The buckets double from 64
+\ when the edge would outnumber them.
+: EDGE-ADD ( n n -- )
+   {: node:n src:n :}
    EDGE-N @ {: edge:n :}
+   edge 1+ EDGE-BUCKETS @ > if
+      EDGE-BUCKETS @ 2 * 64 max EDGE-BUCKETS ! EDGE-REBUILD
+   then
    edge 1+ EDGE-CELLS * EDGE-RESERVE
    src edge E-SRC EDGE-CELL !
    node BD-EDGES BLOCKED-CELL @ edge E-NEXT EDGE-CELL !
+   node edge E-NODE EDGE-CELL !
+   -1 edge E-OUT EDGE-CELL !
    edge node BD-EDGES BLOCKED-CELL !
+   src F-EDGES-TAIL REC-CELL @ {: tail:n :}
+   tail -1 = if edge src F-EDGES REC-CELL ! else edge tail E-OUT EDGE-CELL ! then
+   edge src F-EDGES-TAIL REC-CELL !
+   edge EDGE-CHAIN
    1 EDGE-N +! ;
-\ Index the blocks fields of the records loaded.
+\ Index the blocks fields of the records loaded, each entry in field order, so
+\ every out-list equals its loaded field. Nodes, edges and buckets are
+\ bump-allocated and released by IMPORT-JSONL's reset.
 : BLOCKED-BUILD ( -- )
-   0 BLOCKED-N ! 0 BLOCKED-BUCKETS ! 0 EDGE-N !
+   0 BLOCKED-N ! 0 BLOCKED-BUCKETS ! 0 EDGE-N ! 0 EDGE-BUCKETS !
    ISSUE-N @ 0 ?do
       i F-BLOCKS FIELD$ {: blocks:ptr bu:n :}
       i F-BLOCKS 2 * REC-CELL @ {: base:n :}
       0 begin dup bu < while
          {: at:n :}
          blocks bu at NEXT-LINE drop rot drop {: sz:n next:n :}
-         base at + sz i EDGE-ADD
+         base at + sz BLOCKED-FOR i EDGE-ADD
          next
       repeat drop
    loop ;
 \ Whether the record at the target reaches the one at the source over the
-\ blocks fields, entries resolved as FIND-EXACT resolves them. A forward search
-\ from the target over the blocks fields and a backward one from the source
-\ over BLOCKED advance one record each in turn: a record both reach is a path,
-\ and either running out is none. A row's held edges are written before its own
+\ blocks, entries resolved as FIND-EXACT resolves them. A forward search from
+\ the target over the out-lists and a backward one from the source over the
+\ in-lists advance one record each in turn: a record both reach is a path,
+\ and either running out is none. A row's held edges are added before its own
 \ and its own after its placement: the forward search for a held edge finds no
 \ edge out of its row, and the backward one for an edge from a row just placed
 \ finds no edge into it but those just held and any loaded entry naming its id,
@@ -3279,16 +3331,17 @@ variable CYCLE-BTAIL
    CYCLE-GEN @ idx CYCLE-BWD !
    idx CYCLE-BTAIL @ CYCLE-BACK ! 1 CYCLE-BTAIL +!
    false ;
-\ Follow the edges out of the next record the target reached.
+\ Follow the edges out of the next record the target reached: its out-list, not
+\ its blocks field, which for a stale record lacks the edges added since its
+\ last write.
 : FWD-STEP ( -- bool )
    CYCLE-HEAD @ CYCLE-QUEUE @ {: idx:n :}
    1 CYCLE-HEAD +!
-   idx F-BLOCKS FIELD$ {: blocks:ptr bu:n :}
-   0 begin dup bu < while
-      {: at:n :}
-      blocks bu at NEXT-LINE drop {: block:ptr sz:n next:n :}
-      block sz FIND-EXACT dup -1 <> if FWD-PUSH if true exit then else drop then
-      next
+   idx F-EDGES REC-CELL @
+   begin dup -1 <> while
+      dup E-NODE EDGE-CELL @ BLOCKED-KEY$ FIND-EXACT
+      dup -1 <> if FWD-PUSH if drop true exit then else drop then
+      E-OUT EDGE-CELL @
    repeat drop false ;
 \ Follow the edges into the next record the source reached.
 : BWD-STEP ( -- bool )
@@ -3316,7 +3369,10 @@ variable CYCLE-BTAIL
       BWD-STEP if true exit then
    repeat false ;
 \ Give the row at the source index an edge to the row with the id; one to a
-\ waiting row is held until that row is placed.
+\ waiting row is held until that row is placed. The target's id bytes are the
+\ entry: FIND-EXACT matched them exactly, and BLOCKED-BUILD indexed every
+\ loaded entry, so EDGE-FIND is the byte-equal duplicate scan of the source's
+\ blocks. The edge leaves the source stale until IMPORT-SETTLE writes it.
 : IMPORT-ADD-BLOCK ( ptr u8 n n -- )
    {: block:ptr bu:n src:n :}
    block bu VALID-ID? 0= if 1 DEP-SKIPPED-N +! exit then
@@ -3327,20 +3383,11 @@ variable CYCLE-BTAIL
    {: target:n :}
    target RECORD-PATH? 0= if 1 DEP-SKIPPED-N +! exit then
    target src WOULD-CYCLE? if 1 DEP-SKIPPED-N +! exit then
-   src F-BLOCKS FIELD$ {: old:ptr ou:n :}
-   0 BLOCK-U ! 0 VALID !
-   0 begin dup ou < while
-      {: at:n :}
-      old ou at NEXT-LINE drop {: item:ptr iu:n next:n :}
-      item iu block bu STR= if 1 VALID ! then
-      item iu BLOCK-ADD
-      next
-   repeat drop
-   VALID @ 0<> if exit then
-   block bu BLOCK-ADD
-   0 BLOCK-BUF BLOCK-U @ src F-BLOCKS FIELD!
-   target F-ID 2 * REC-CELL @ target F-ID 2 * 1+ REC-CELL @ src EDGE-ADD
-   src SAVE-RECORD ;
+   target F-ID 2 * REC-CELL @ target F-ID 2 * 1+ REC-CELL @ BLOCKED-FOR
+   {: node:n :}
+   node src EDGE-FIND -1 <> if exit then
+   node src EDGE-ADD
+   1 src F-STALE REC-CELL ! ;
 : IMPORT-ADD-DEPENDENCIES ( -- )
    0 begin dup IMPORT-DEP-U @ < while
       {: at:n :}
@@ -3639,23 +3686,46 @@ variable SKIP-BUCKETS
    IMPORT-HAS-PARENT? if IMPORT-PARENT -1 = if PEND exit then then
    IMPORT-PLACE
    IMPORT-IDX @ PLACE-WAITING ;
-\ A malformed line ends the import after the rows waiting on a parent are placed.
-\ A line that leaves no row placed or waiting, its row skipped or dropped as a
-\ duplicate, gives back the arena bytes it took.
+\ Write the record's out-list into its blocks field. BLOCK-ADD ends each entry
+\ with LF as PARSE-RECORD does, so the bytes equal a field grown one entry at a
+\ time.
+: BLOCKS-SYNC ( n -- )
+   {: idx:n :}
+   0 BLOCK-U !
+   idx F-EDGES REC-CELL @
+   begin dup -1 <> while
+      dup E-NODE EDGE-CELL @ BLOCKED-KEY$ BLOCK-ADD
+      E-OUT EDGE-CELL @
+   repeat drop
+   0 BLOCK-BUF BLOCK-U @ idx F-BLOCKS FIELD!
+   0 idx F-STALE REC-CELL ! ;
+: WRITE-STALE ( -- )
+   ISSUE-N @ 0 ?do
+      i F-STALE REC-CELL @ 0<> if i BLOCKS-SYNC i SAVE-RECORD then
+   loop ;
+\ The import's exits place the rows still waiting, then write every record
+\ whose edges changed since its placement write; it runs before each message
+\ that ends the import and before the archive pass, which renames files. A
+\ failure placing a row ends the import without it, so rows written before
+\ lack the edges accepted since.
+: IMPORT-SETTLE ( -- ) PLACE-PENDING WRITE-STALE ;
+\ A malformed line ends the import after IMPORT-SETTLE. A line that leaves no
+\ row placed or waiting, its row skipped or dropped as a duplicate, gives back
+\ the arena bytes it took.
 : IMPORT-PROCESS-LINE ( -- )
    ISSUE-N @ {: before:n :}
    PENDING-N @ {: waiting:n :}
    ARENA-U @ {: floor:n :}
    [: JSONL-PARSE-LINE ;] catch 0<> if
       begin ISSUE-N @ before > while POP-RECORD repeat
-      PLACE-PENDING s" Invalid JSONL file" FAIL
+      IMPORT-SETTLE s" Invalid JSONL file" FAIL
    then
    IMPORT-ROW
    ISSUE-N @ before = PENDING-N @ waiting = and if floor ARENA-U ! then ;
-\ The reader's failure code, nonzero, ends the import after the rows waiting on
-\ a parent are placed: a line too long is the limit error.
+\ The reader's failure code, nonzero, ends the import after IMPORT-SETTLE: a
+\ line too long is the limit error.
 : IMPORT-READ-FAIL ( n -- )
-   PLACE-PENDING
+   IMPORT-SETTLE
    dup JSONL:E-LIMIT = s" JSONL line too long" ?FAIL
    throw ;
 \ A line holds at most 1048575 bytes before its LF: the 1 MiB line limit is
@@ -3676,7 +3746,7 @@ variable SKIP-BUCKETS
    0 PENDING-SLOTS ! 0 PENDING-N ! 0 PENDING-FIRST ! 0 NODE-N ! 0 NODE-BUCKETS !
    0 ROOTS-N ! 0 SKIP-BUCKETS !
    path pu IMPORT-LINES
-   PLACE-PENDING
+   IMPORT-SETTLE
    IMPORT-ARCHIVE-CLOSED
    IMPORTED-N @ 0 > if
       s" Imported " DOT-IO:PRINT IMPORTED-N @ DOT-IO:INT
