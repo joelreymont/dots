@@ -951,6 +951,14 @@ variable FAILED-PATH-U
       reason FS-ACCESS-DENIED = if E-ISSUE-PERMISSION throw then
       E-FS-IO throw
    then ;
+\ MAKE-DIRS, a folder refused for lack of permission named as dot names one.
+\ Habu's mkdir leaves its errno for FFI:ERRNO after the E-FS-IO it throws.
+: MAKE-ISSUE-DIRS ( ptr u8 n -- )
+   [: 2dup MAKE-DIRS ;] catch {: code:n :}
+   2drop
+   code 0= if exit then
+   code E-FS-IO = FFI:ERRNO FS-ACCESS-DENIED = and if E-ISSUE-PERMISSION throw then
+   code throw ;
 \ Whether code is a failure of Habu's filesystem or directory listing words.
 : FS-FAILURE? ( n -- bool )
    {: code:n :}
@@ -1306,7 +1314,7 @@ variable PARENT-IDX
    parent OWN-FOLDER$ PATH-ONE!
    SB-RESET PATH-ONE$ SB-APPEND 47 SB-APPEND-C
    parent F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$ PATH-TWO!
-   PATH-ONE$ MAKE-DIRS
+   PATH-ONE$ MAKE-ISSUE-DIRS
    parent F-PATH FIELD$ PATH-TWO$ RENAME-ISSUE-NOREPLACE
    PATH-TWO$ parent F-PATH FIELD! ;
 : PARSE-ADD ( n -- )
@@ -1389,7 +1397,7 @@ variable PARENT-IDX
    nest if 47 SB-APPEND-C idx F-ID FIELD$ SB-APPEND then
    s" .md" SB-APPEND SB$ FS-TRY-LSTAT s" Issue already exists" ?FAIL
    SB$ idx F-PATH FIELD!
-   s" .dots" MAKE-DIRS SAVE-CONFIG
+   s" .dots" MAKE-ISSUE-DIRS SAVE-CONFIG
    PARENT-IDX @ -1 <> if
       PARENT-IDX @ ENSURE-OWN-FOLDER
       PARENT-IDX @ F-ID FIELD$ idx F-PARENT FIELD!
@@ -1514,7 +1522,7 @@ variable CLOSED-TIME-U
       1+
    repeat drop
    path parent-u SYMLINK? s" Unsafe archive symlink" ?FAIL
-   path parent-u MAKE-DIRS ;
+   path parent-u MAKE-ISSUE-DIRS ;
 \ Move a top-level record's file or own folder between the partitions, leaving
 \ the paths in PATH-ONE and PATH-TWO. Whether it moved: not when the record is
 \ a child or already in the target partition.
@@ -1848,7 +1856,7 @@ variable REOPEN-PARENT-KEEP-U
    repeat drop
    path parent-u SYMLINK? s" Unsafe active symlink" ?FAIL
    path parent-u DIR? if parent-u REOPEN-PARENT-KEEP-U ! then
-   path parent-u MAKE-DIRS ;
+   path parent-u MAKE-ISSUE-DIRS ;
 : REOPEN-CLEAN-NEW-PARENTS ( -- )
    REOPEN-DEST$ {: path:ptr pu:n :}
    path pu STATUS-DIR-U
@@ -2110,7 +2118,7 @@ variable STATUS-SAVE-IDX
    LOAD-STATUS-ISSUES 1 RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
    STATUS-MODE @ STATUS-CHANGE ;
 : INIT-EMPTY ( -- )
-   s" .dots/archive" MAKE-DIRS ;
+   s" .dots/archive" MAKE-ISSUE-DIRS ;
 : REMOVE-DEEP-TREE ( n n -- )
    {: depth:n plen:n :}
    depth MAX-DEPTH 1- >= s" I/O error" ?FAIL
@@ -2137,9 +2145,9 @@ variable STATUS-SAVE-IDX
    path 0 PATH-AT pu BYTE-COPY
    0 pu REMOVE-DEEP-TREE ;
 : PURGE-COMMAND ( -- )
-   s" .dots/archive" SYMLINK? 0= if s" .dots/archive" MAKE-DIRS then
+   s" .dots/archive" SYMLINK? 0= if s" .dots/archive" MAKE-ISSUE-DIRS then
    s" .dots/archive" REMOVE-ISSUE-TREE
-   s" .dots/archive" MAKE-DIRS
+   s" .dots/archive" MAKE-ISSUE-DIRS
    s" Archive purged" DOT-IO:PRINTLN ;
 \ Drops every family id from a remaining task's blocks, archived ones too.
 : STRIP-FAMILY-REFERENCES ( n -- )
@@ -3615,7 +3623,7 @@ variable SKIP-BUCKETS
          idx F-PARENT FIELD$ SKIPPED? if IMPORT-SKIP exit then
          SB-RESET s" .dots/" SB-APPEND idx F-PARENT FIELD$ SB-APPEND SB$ PATH-ONE!
          PATH-ONE$ FS-TRY-LSTAT-MODE MATCH option
-            none OF PATH-ONE$ MAKE-DIRS false ENDOF
+            none OF PATH-ONE$ MAKE-ISSUE-DIRS false ENDOF
             some OF S-IFMT and S-IFDIR <> ENDOF
          ;MATCH if IMPORT-SKIP exit then
          SB-RESET PATH-ONE$ SB-APPEND

@@ -510,7 +510,8 @@ l .dots/p -> ../outside
 ;
 s" parent-path-is-symlink" ' PARENT-PATH-IS-SYMLINK DOT-CASE
 
-\ A failure making a parent's folder ends the import, the waiting row unplaced.
+\ A parent's folder refused for lack of permission ends the import, the
+\ waiting row unplaced.
 : PARENT-FOLDER-FAILS ( -- )
    s" x/x.md" s" X" s" open" 1 PUT-ISSUE
    s" x/p.md" s" P" s" open" 1 PUT-ISSUE
@@ -522,7 +523,7 @@ s" parent-path-is-symlink" ' PARENT-PATH-IS-SYMLINK DOT-CASE
    s" x" WRITABLE MODE
    1 RC=
    s" " OUT=
-   s\" I/O error\n" ERR=
+   s\" Permission denied\n" ERR=
    s" d .dots
 d .dots/archive
 d .dots/x
