@@ -1439,12 +1439,19 @@ variable CLOSED-TIME-U
    archived 0= if false exit then
    s" .dots/" nip {: active-u:n :}
    cp active-u + cpu active-u - parent F-ID FIELD$ STATUS-UNDER? ;
+: ARCHIVE-PATH? ( ptr u8 n -- bool )
+   {: p:ptr u:n :} u 14 >= if p 14 s" .dots/archive/" STR= else false then ;
+\ i is a descendant of idx that is error-free and not closed.
+: OPEN-DESCENDANT? ( n n -- bool )
+   {: i:n idx:n :}
+   i idx STATUS-DESCENDANT? i F-ERROR REC-CELL @ 0= and
+   i F-STATUS REC-CELL @ 2 <> and ;
+: CHECK-DESCENDANT ( n n -- )
+   {: i:n idx:n :} i idx STATUS-DESCENDANT? if i CHECK-ERROR then ;
 : STATUS-CHILDREN-OPEN? ( n -- bool )
    {: idx:n :}
    ISSUE-N @ 0 ?do
-      i idx STATUS-DESCENDANT? i F-ERROR REC-CELL @ 0= and if
-         i F-STATUS REC-CELL @ 2 <> if true unloop exit then
-      then
+      i idx OPEN-DESCENDANT? if true unloop exit then
    loop false ;
 \ Fails with <prefix><id>: children are not all closed.
 : CHILDREN-OPEN-FAIL ( ptr u8 n ptr u8 n -- )
@@ -1453,27 +1460,23 @@ variable CLOSED-TIME-U
    s" : children are not all closed" SB-APPEND SB$ FAIL ;
 : VALIDATE-STATUS-DESCENDANTS ( n -- )
    {: idx:n :}
-   ISSUE-N @ 0 ?do
-      i idx STATUS-DESCENDANT? if
-         i CHECK-ERROR
-      then
-   loop ;
+   ISSUE-N @ 0 ?do i idx CHECK-DESCENDANT loop ;
 : STATUS-IN-SUBTREE? ( ptr u8 n ptr u8 n -- bool )
    {: path:ptr pu:n root:ptr ru:n :}
    path pu root ru STR= if true exit then
    path pu root ru STATUS-UNDER? ;
+\ Move a record in the subtree at the old path to the new one, archived when
+\ the new path is.
+: REBASE-RECORD ( n ptr u8 n ptr u8 n bool -- )
+   {: i:n old:ptr ou:n new:ptr nu:n archived:bool :}
+   i F-PATH FIELD$ {: path:ptr pu:n :}
+   path pu old ou STATUS-IN-SUBTREE? 0= if exit then
+   SB-RESET new nu SB-APPEND path ou + pu ou - SB-APPEND SB$ i F-PATH FIELD!
+   archived if 1 else 0 then i F-ARCHIVED REC-CELL ! ;
 : REBASE-STATUS-SUBTREE ( ptr u8 n ptr u8 n -- )
    {: old:ptr ou:n new:ptr nu:n :}
-   nu 14 >= if new 14 s" .dots/archive/" STR= else false then
-   {: archived:bool :}
-   ISSUE-N @ 0 ?do
-      i F-PATH FIELD$ {: path:ptr pu:n :}
-      path pu old ou STATUS-IN-SUBTREE? if
-         SB-RESET new nu SB-APPEND path ou + pu ou - SB-APPEND SB$
-         i F-PATH FIELD!
-         archived if 1 else 0 then i F-ARCHIVED REC-CELL !
-      then
-   loop ;
+   new nu ARCHIVE-PATH? {: archived:bool :}
+   ISSUE-N @ 0 ?do i old ou new nu archived REBASE-RECORD loop ;
 : REBASE-STATUS-MOVED ( -- ) PATH-ONE$ PATH-TWO$ REBASE-STATUS-SUBTREE ;
 : ASSERT-ARCHIVE-REAL ( -- )
    s" .dots/archive" SYMLINK? s" Unsafe archive symlink" ?FAIL ;
@@ -1499,15 +1502,18 @@ variable CLOSED-TIME-U
    repeat drop
    path parent-u SYMLINK? s" Unsafe archive symlink" ?FAIL
    path parent-u MAKE-DIRS ;
-: MOVE-STATUS-PATH ( n bool -- )
+\ Move a top-level record's file or own folder between the partitions, leaving
+\ the paths in PATH-ONE and PATH-TWO. Whether it moved: not when the record is
+\ a child or already in the target partition.
+: STATUS-RENAME ( n bool -- bool )
    {: idx:n to-archive:bool :}
    idx F-ARCHIVED REC-CELL @ 0<> {: from-archive:bool :}
    from-archive if
-      to-archive if exit then
+      to-archive if false exit then
    else
-      to-archive 0= if exit then
+      to-archive 0= if false exit then
    then
-   idx F-CHILD REC-CELL @ 0<> if exit then
+   idx F-CHILD REC-CELL @ 0<> if false exit then
    ASSERT-ARCHIVE-REAL
    idx F-PATH FIELD$ {: path:ptr pu:n :}
    path pu STATUS-DIR-U {: dir-u:n :}
@@ -1521,8 +1527,8 @@ variable CLOSED-TIME-U
    su from-archive if 14 else 6 then - SB-APPEND
    SB$ PATH-TWO!
    to-archive if PATH-TWO$ STATUS-ENSURE-ARCHIVE-PARENT then
-   PATH-ONE$ PATH-TWO$ RENAME-ISSUE-NOREPLACE
-   REBASE-STATUS-MOVED ;
+   PATH-ONE$ PATH-TWO$ RENAME-ISSUE-NOREPLACE true ;
+: MOVE-STATUS-PATH ( n bool -- ) STATUS-RENAME if REBASE-STATUS-MOVED then ;
 : ARCHIVE-STATUS-UNCHECKED ( n -- ) true MOVE-STATUS-PATH ;
 : ARCHIVE-STATUS ( n -- )
    {: idx:n :}
@@ -3045,11 +3051,86 @@ variable CYCLE-TAIL
       else at 4 * idx HELD-NAMES? if at UNHOLD at
       else at 1+ then then
    repeat drop ;
+\ The import's top-folder groups: every record 0..ISSUE-N-1 is in the group
+\ named by the first component of its path below its partition, each group's
+\ members in ascending record order. Import links a record as the last step of
+\ placing it and its moves keep that component, so the groups stay current. A
+\ group's key is re-read from its first member's path, since arena growth
+\ remaps: no key pointer is kept.
+DYNAMIC-BUFFER TOP-HEADS n   \ bucket -> first group, -1
+DYNAMIC-BUFFER TOP-CHAIN n   \ group -> next group in its bucket
+DYNAMIC-BUFFER TOP-FIRST n   \ group -> first member
+DYNAMIC-BUFFER TOP-LAST n    \ group -> last member
+DYNAMIC-BUFFER TOP-NEXT n    \ record -> next member, -1
+variable TOP-N
+variable TOP-BUCKETS
+\ .dots/X.md, .dots/X/... and .dots/archive/X/... name X.
+: TOP-NAME ( n -- ptr u8 n )
+   F-PATH FIELD$ {: path:ptr pu:n :}
+   path pu ARCHIVE-PATH? if 14 else 6 then {: start:n :}
+   start begin dup pu < while
+      dup path + c@ 47 = if path start + swap start - exit then
+      1+
+   repeat drop path start + pu start - 3 - ;
+: TOP-KEY ( n -- ptr u8 n ) TOP-FIRST @ TOP-NAME ;
+\ The group with the name, or -1.
+: TOP-FIND ( ptr u8 n -- n )
+   {: a:ptr u:n :}
+   a u STR-HASH TOP-BUCKETS @ BUCKET TOP-HEADS @
+   begin dup -1 <> while dup TOP-KEY a u STR= if exit then TOP-CHAIN @ repeat ;
+\ Push the group at the head of its bucket.
+: TOP-CHAIN! ( n -- )
+   {: g:n :}
+   g TOP-KEY STR-HASH TOP-BUCKETS @ BUCKET {: b:n :}
+   b TOP-HEADS @ g TOP-CHAIN ! g b TOP-HEADS ! ;
+\ Rechain every group into the bucket count.
+: TOP-REHASH ( n -- )
+   dup TOP-BUCKETS ! dup TOP-HEADS-RESERVE 0 ?do -1 i TOP-HEADS ! loop
+   TOP-N @ 0 ?do i TOP-CHAIN! loop ;
+\ Append the record to its group, creating the group.
+: TOP-LINK ( n -- )
+   {: idx:n :}
+   idx 1+ TOP-NEXT-RESERVE -1 idx TOP-NEXT !
+   idx TOP-NAME TOP-FIND {: found:n :}
+   found -1 <> if idx found TOP-LAST @ TOP-NEXT ! idx found TOP-LAST ! exit then
+   TOP-N @ {: g:n :}
+   g 1+ dup TOP-FIRST-RESERVE dup TOP-LAST-RESERVE TOP-CHAIN-RESERVE
+   idx g TOP-FIRST ! idx g TOP-LAST ! g 1+ TOP-N !
+   g TOP-BUCKETS @ >= if TOP-BUCKETS @ 2 * TOP-REHASH else g TOP-CHAIN! then ;
+: TOP-REBUILD ( -- ) 0 TOP-N ! 64 TOP-REHASH ISSUE-N @ 0 ?do i TOP-LINK loop ;
+\ The first member of the record's group.
+: TOP-MEMBERS ( n -- n ) TOP-NAME TOP-FIND TOP-FIRST @ ;
+\ The archive pass handles top-level records (F-CHILD = 0), whose
+\ descendants and subtree all lie in their own group.
+: TOP-CHILDREN-OPEN? ( n -- bool )
+   {: idx:n :}
+   idx TOP-MEMBERS begin dup -1 <> while
+      dup idx OPEN-DESCENDANT? if drop true exit then
+      TOP-NEXT @
+   repeat drop false ;
+: TOP-VALIDATE ( n -- )
+   {: idx:n :}
+   idx TOP-MEMBERS begin dup -1 <> while
+      dup idx CHECK-DESCENDANT
+      TOP-NEXT @
+   repeat drop ;
+: TOP-REBASE-SUBTREE ( n ptr u8 n ptr u8 n -- )
+   {: idx:n old:ptr ou:n new:ptr nu:n :}
+   new nu ARCHIVE-PATH? {: archived:bool :}
+   idx TOP-MEMBERS begin dup -1 <> while
+      dup old ou new nu archived REBASE-RECORD
+      TOP-NEXT @
+   repeat drop ;
+: TOP-ARCHIVE ( n -- )
+   {: idx:n :}
+   idx TOP-VALIDATE
+   idx true STATUS-RENAME if idx PATH-ONE$ PATH-TWO$ TOP-REBASE-SUBTREE then ;
 : IMPORT-ARCHIVE-CLOSED ( -- )
    ISSUE-N @ 0 ?do
-      i F-ERROR REC-CELL @ 0= i F-ARCHIVED REC-CELL @ 0= and if
+      i F-ERROR REC-CELL @ 0= i F-ARCHIVED REC-CELL @ 0= and
+      i F-CHILD REC-CELL @ 0= and if
          i F-STATUS REC-CELL @ 2 = if
-            i STATUS-CHILDREN-OPEN? 0= if i ARCHIVE-STATUS then
+            i TOP-CHILDREN-OPEN? 0= if i TOP-ARCHIVE then
          then
       then
    loop ;
@@ -3150,7 +3231,7 @@ variable ARENA-FLOOR
    idx SAVE-RECORD
    idx IMPORT-ADD-HELD
    IMPORT-ADD-DEPENDENCIES
-   1 IMPORTED-N +! ;
+   1 IMPORTED-N +! idx TOP-LINK ;
 \ Place the row at IMPORT-IDX, skipping it when that fails.
 : IMPORT-PLACE-ROW ( -- )
    [: IMPORT-PLACE ;] catch 0<> if IMPORT-SKIP then ;
@@ -3213,7 +3294,7 @@ variable ARENA-FLOOR
 \ Imports the JSONL at a path: a failed open or read is an I/O error, not EOF.
 : IMPORT-JSONL ( ptr u8 n -- )
    {: path:ptr pu:n :}
-   true LOAD-ISSUES
+   true LOAD-ISSUES TOP-REBUILD
    0 IMPORTED-N ! 0 IMPORT-SKIPPED-N ! 0 DEP-SKIPPED-N ! 0 HELD-N !
    path pu [: 2dup IMPORT-LINES ;] catch
    PLACE-PENDING
