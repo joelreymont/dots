@@ -102,6 +102,31 @@ d .dots/archive
 ;
 s" malformed-line" ' MALFORMED-LINE DOT-CASE
 
+\ A closed row before a malformed line is already in the archive: placement
+\ writes it there and the archive pass never runs on a failure exit.
+: MALFORMED-LINE-CLOSED ( -- )
+   s\" {\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+not json
+" JSONL
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Invalid JSONL file\n" ERR=
+   s\" d .dots
+d .dots/archive
+f .dots/archive/p.md
+  ---
+  title: P
+  status: closed
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" malformed-line-closed" ' MALFORMED-LINE-CLOSED DOT-CASE
+
 \ Write rows a and b, b blocking a.
 : ROWS-EDGE ( -- )
    s\" {\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
@@ -861,6 +886,25 @@ f external/p.md
 " DIR=
 ;
 s" archived-parent-symlink" ' ARCHIVED-PARENT-SYMLINK DOT-CASE
+
+\ A closed parentless row is refused before its write when the archive is a
+\ symlink: nothing is written.
+: CLOSED-ROW-ARCHIVE-SYMLINK ( -- )
+   s" external" FILE$ MAKE-DIRS
+   s" archive" RM-DIR
+   s" ../external" s" archive" LINK
+   s\" {\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   1 RC=
+   s" " OUT=
+   s\" Unsafe archive symlink\n" ERR=
+   s" d .dots
+l .dots/archive -> ../external
+" TREE=
+   s" external" s\" d external\n" DIR=
+;
+s" closed-row-archive-symlink" ' CLOSED-ROW-ARCHIVE-SYMLINK DOT-CASE
 
 \ Rows naming a nested parent: the child goes in the parent's own folder, made
 \ where the parent lives, and the blocker gets its edge.

@@ -3481,7 +3481,10 @@ variable TOP-BUCKETS
 \ The first member of the record's group.
 : TOP-MEMBERS ( n -- n ) TOP-NAME TOP-FIND TOP-FIRST @ ;
 \ The archive pass handles top-level records (F-CHILD = 0), whose
-\ descendants and subtree all lie in their own group.
+\ descendants and subtree all lie in their own group. Those still in the active
+\ partition are the records loaded before the import and the parentless rows
+\ placed in a folder named after them; IMPORT-ROOT$ writes the other closed
+\ rows in the archive.
 : TOP-CHILDREN-OPEN? ( n -- bool )
    {: idx:n :}
    idx TOP-MEMBERS begin dup -1 <> while
@@ -3604,6 +3607,16 @@ variable SKIP-BUCKETS
    du IMPORT-DEP-BUF-RESERVE
    deps 0 IMPORT-DEP-BUF du BYTE-COPY
    IMPORT-IDX @ F-BLOCKS FIELD-EMPTY ;
+\ The partition root, with its slash, of a parentless row no folder is named
+\ after: the archive for a closed row, where the archive pass would move it,
+\ since only closed rows go under a closed parent and no record lies under a
+\ folder the row lacks. init made .dots/archive; a link there is refused.
+: IMPORT-ROOT$ ( n -- ptr u8 n )
+   {: idx:n :}
+   idx F-STATUS REC-CELL @ 2 <> if s" .dots/" exit then
+   ASSERT-ARCHIVE-REAL
+   1 idx F-ARCHIVED REC-CELL !
+   s" .dots/archive/" ;
 \ Write the row at IMPORT-IDX where add -P would: in its parent's own folder,
 \ made first, wherever the parent lives, the archive included, the row taking
 \ the parent's partition. The folder and the row's file in it are checked as
@@ -3611,10 +3624,10 @@ variable SKIP-BUCKETS
 \ row whose parent is no task or placed row goes in the folder named after that
 \ parent at the top of .dots, made when absent; it is skipped when that
 \ parent's row was, or when that path holds anything but a directory, a link
-\ included. A parentless row goes at the top of .dots, in a folder named after
-\ it if one exists; it is skipped when a link names that folder, as add refuses
-\ it. A row is skipped only before its first write: a failure after that ends
-\ the import at once.
+\ included. A parentless row goes in the folder named after it at the top of
+\ .dots if one exists, skipped when a link names that folder, as add refuses
+\ it; else at the top of the partition IMPORT-ROOT$ names. A row is skipped
+\ only before its first write: a failure after that ends the import at once.
 : IMPORT-PLACE ( -- )
    IMPORT-IDX @ {: idx:n :}
    IMPORT-HAS-PARENT? if
@@ -3643,7 +3656,7 @@ variable SKIP-BUCKETS
       SB$ DIR? if
          SB$ SYMLINK? if IMPORT-SKIP exit then
          47 SB-APPEND-C
-      else SB-RESET s" .dots/" SB-APPEND then
+      else SB-RESET idx IMPORT-ROOT$ SB-APPEND then
    then
    idx F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$ idx F-PATH FIELD!
    IMPORT-TAKE-DEPS
