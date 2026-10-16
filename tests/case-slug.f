@@ -9,8 +9,6 @@ require dot.f
 using DOT-T
 package DOT-SLUG
 
-$16D constant READ-ONLY-DIR             \ r-xr-xr-x
-
 : PUT-PREFIX ( -- ) s" config" s\" prefix=p\n" PUT ;
 
 \ An old id `old-12345678` titled Target, whose new id the case occupies.
@@ -853,9 +851,9 @@ f .dots/old-12345678.md
 \ The archived dependent cannot be rewritten.
 : UNWRITABLE-ARCHIVE ( -- )
    PUT-DEPENDENT
-   s" archive" READ-ONLY-DIR MODE
+   s" archive" READ-ONLY MODE
    s" slugify" RUN
-   s" archive" FS-MUT-MODE-DIR MODE
+   s" archive" WRITABLE MODE
    DEPENDENT-KEPT
 ;
 s" unwritable-archive" ' UNWRITABLE-ARCHIVE DOT-CASE

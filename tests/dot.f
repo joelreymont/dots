@@ -551,6 +551,11 @@ public
 : PUT-FIFO ( ptr u8 n -- )
    DOTS$ FS-PATHZ FIFO-MODE MKFIFO-CALL 0<> if E-FS-IO throw then ;
 
+\ Bits for MODE: READ-ONLY refuses new entries in a directory, WRITABLE
+\ restores it.
+$16D constant READ-ONLY                 \ r-xr-xr-x
+$1ED constant WRITABLE                  \ rwxr-xr-x
+
 \ Set the permission bits of `.dots/<path>`; `.` is `.dots` itself.
 : MODE ( ptr u8 n n -- ) {: path:ptr pathu:n mode:n :}
    path pathu DOTS$ mode CHMOD-MODE ;

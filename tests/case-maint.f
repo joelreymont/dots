@@ -7,9 +7,6 @@ require dot.f
 using DOT-T
 package DOT-MAINT
 
-365 constant RO-MODE                    \ 0555: `.dots` refuses new entries
-493 constant RW-MODE                    \ 0755: restored before the checks
-
 s" maint" SECTION
 
 \ ---- rm -------------------------------------------------------------------------
@@ -328,9 +325,9 @@ s" rm-later-missing" ' RM-LATER-MISSING DOT-CASE
 
 : RM-READ-ONLY ( -- )
    s" a.md" s" A" s" open" 2 PUT-ISSUE
-   s" ." RO-MODE MODE
+   s" ." READ-ONLY MODE
    s" rm|a" RUN
-   s" ." RW-MODE MODE
+   s" ." WRITABLE MODE
    1 RC=
    s" " OUT=
    s\" Permission denied\n" ERR=
@@ -350,9 +347,9 @@ s" rm-read-only" ' RM-READ-ONLY DOT-CASE
 
 : UPDATE-READ-ONLY ( -- )
    s" a.md" s" A" s" open" 2 PUT-ISSUE
-   s" ." RO-MODE MODE
+   s" ." READ-ONLY MODE
    s" update|a|--status|done" RUN
-   s" ." RW-MODE MODE
+   s" ." WRITABLE MODE
    1 RC=
    s" " OUT=
    s\" Permission denied\n" ERR=
@@ -431,9 +428,9 @@ s" purge-deep" ' PURGE-DEEP DOT-CASE
 \ stays, empty.
 : PURGE-READ-ONLY ( -- )
    s" archive/a.md" s" A" s" closed" 2 PUT-ISSUE
-   s" ." RO-MODE MODE
+   s" ." READ-ONLY MODE
    s" purge" RUN
-   s" ." RW-MODE MODE
+   s" ." WRITABLE MODE
    1 RC=
    s" " OUT=
    s\" Permission denied\n" ERR=
@@ -1174,9 +1171,9 @@ s" fix-commit-per-folder" ' FIX-COMMIT-PER-FOLDER DOT-CASE
 
 : FIX-READ-ONLY ( -- )
    s" orphan/x.md" s" X" s" open" 2 PUT-ISSUE
-   s" ." RO-MODE MODE
+   s" ." READ-ONLY MODE
    s" fix" RUN
-   s" ." RW-MODE MODE
+   s" ." WRITABLE MODE
    1 RC=
    s" " OUT=
    s\" Permission denied\n" ERR=

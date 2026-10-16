@@ -3041,15 +3041,13 @@ variable CYCLE-TAIL
          at UNHOLD at
       else at 1+ then
    repeat drop ;
-\ Drop the edges held for or from the row at the index: each held for it counts
-\ as a skipped dependency.
+\ Drop the edges held for the row at the index, each a skipped dependency.
 : DROP-HELD ( n -- )
    {: idx:n :}
    0 begin dup HELD-N @ < while
       {: at:n :}
       at 4 * 2 + idx HELD-NAMES? if 1 DEP-SKIPPED-N +! at UNHOLD at
-      else at 4 * idx HELD-NAMES? if at UNHOLD at
-      else at 1+ then then
+      else at 1+ then
    repeat drop ;
 \ The import's top-folder groups: every record 0..ISSUE-N-1 is in the group
 \ named by the first component of its path below its partition, each group's
@@ -3159,7 +3157,7 @@ variable TOP-BUCKETS
 DYNAMIC-BUFFER SKIPPED-BYTES u8
 DYNAMIC-BUFFER SKIPPED-ENDS n
 \ Drop the row at IMPORT-IDX, the last record, and count it skipped, with the
-\ edges held for or from it.
+\ edges held for it.
 : IMPORT-SKIP ( -- )
    IMPORT-IDX @ F-ID FIELD$ {: id:ptr iu:n :}
    IMPORT-SKIPPED-N @ {: k:n :}
@@ -3189,18 +3187,17 @@ DYNAMIC-BUFFER SKIPPED-ENDS n
    du IMPORT-DEP-BUF-RESERVE
    deps 0 IMPORT-DEP-BUF du BYTE-COPY
    IMPORT-IDX @ F-BLOCKS FIELD-EMPTY ;
-\ The arena's use before the line being imported, raised past each write a
-\ skipped row must not undo: a line that leaves no row placed or waiting
-\ rewinds the arena to it.
-variable ARENA-FLOOR
 \ Write the row at IMPORT-IDX where add -P would: in its parent's own folder,
 \ made first, wherever the parent lives, the archive included, the row taking
 \ the parent's partition. The folder and the row's file in it are checked as
 \ add -P checks them, before the first write, and a refusal ends the import. A
-\ row whose parent is no task or placed row is skipped when that parent's row
-\ was, else it goes in the folder named after that parent at the top of .dots.
-\ A parentless row goes at the top of .dots, in a folder named after it if one
-\ exists.
+\ row whose parent is no task or placed row goes in the folder named after that
+\ parent at the top of .dots, made when absent; it is skipped when that
+\ parent's row was, or when that path holds anything but a directory, a link
+\ included. A parentless row goes at the top of .dots, in a folder named after
+\ it if one exists; it is skipped when a link names that folder, as add refuses
+\ it. A row is skipped only before its first write: a failure after that ends
+\ the import at once.
 : IMPORT-PLACE ( -- )
    IMPORT-IDX @ {: idx:n :}
    IMPORT-HAS-PARENT? if
@@ -3208,7 +3205,10 @@ variable ARENA-FLOOR
       parent -1 = if
          idx F-PARENT FIELD$ SKIPPED? if IMPORT-SKIP exit then
          SB-RESET s" .dots/" SB-APPEND idx F-PARENT FIELD$ SB-APPEND SB$ PATH-ONE!
-         PATH-ONE$ MAKE-DIRS
+         PATH-ONE$ FS-TRY-LSTAT-MODE MATCH option
+            none OF PATH-ONE$ MAKE-DIRS false ENDOF
+            some OF S-IFMT and S-IFDIR <> ENDOF
+         ;MATCH if IMPORT-SKIP exit then
          SB-RESET PATH-ONE$ SB-APPEND
       else
          parent IMPORT-PARENT-OK? 0= if IMPORT-SKIP exit then
@@ -3216,7 +3216,6 @@ variable ARENA-FLOOR
          parent CHECK-OWN-FOLDER
          SB$ nip idx CHECK-FILE-FITS
          parent ENSURE-OWN-FOLDER
-         ARENA-U @ ARENA-FLOOR !
          parent F-ARCHIVED REC-CELL @ idx F-ARCHIVED REC-CELL !
          SB-RESET parent F-PATH FIELD$ drop parent OWN-FOLDER-U SB-APPEND
       then
@@ -3224,7 +3223,10 @@ variable ARENA-FLOOR
       1 idx F-CHILD REC-CELL !
    else
       SB-RESET s" .dots/" SB-APPEND idx F-ID FIELD$ SB-APPEND
-      SB$ DIR? if 47 SB-APPEND-C else SB-RESET s" .dots/" SB-APPEND then
+      SB$ DIR? if
+         SB$ SYMLINK? if IMPORT-SKIP exit then
+         47 SB-APPEND-C
+      else SB-RESET s" .dots/" SB-APPEND then
    then
    idx F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$ idx F-PATH FIELD!
    IMPORT-TAKE-DEPS
@@ -3232,15 +3234,12 @@ variable ARENA-FLOOR
    idx IMPORT-ADD-HELD
    IMPORT-ADD-DEPENDENCIES
    1 IMPORTED-N +! idx TOP-LINK ;
-\ Place the row at IMPORT-IDX, skipping it when that fails.
-: IMPORT-PLACE-ROW ( -- )
-   [: IMPORT-PLACE ;] catch 0<> if IMPORT-SKIP then ;
 \ Place the rows waiting on each record from the index on, in row order: every
 \ record a placement appends queues behind it.
 : PLACE-WAITING ( n -- )
    begin dup ISSUE-N @ < while
       begin dup F-ID FIELD$ PENDING-CHILD dup -1 <> while
-         UNPEND IMPORT-PLACE-ROW
+         UNPEND IMPORT-PLACE
       repeat drop
       1+
    repeat drop ;
@@ -3253,7 +3252,7 @@ variable ARENA-FLOOR
    loop 0 ;
 : PLACE-PENDING ( -- )
    begin PENDING-N @ 0 > while
-      PENDING-ROOT UNPEND IMPORT-PLACE-ROW
+      PENDING-ROOT UNPEND IMPORT-PLACE
       IMPORT-IDX @ PLACE-WAITING
    repeat ;
 \ Whether a row with the id at IMPORT-IDX was already read: a task, a placed
@@ -3270,7 +3269,7 @@ variable ARENA-FLOOR
    then
    IMPORT-DUPLICATE? if POP-RECORD exit then
    IMPORT-HAS-PARENT? if IMPORT-PARENT -1 = if PEND exit then then
-   IMPORT-PLACE-ROW
+   IMPORT-PLACE
    IMPORT-IDX @ PLACE-WAITING ;
 \ A malformed line ends the import after the rows waiting on a parent are placed.
 \ A line that leaves no row placed or waiting, its row skipped or dropped as a
@@ -3278,28 +3277,36 @@ variable ARENA-FLOOR
 : IMPORT-PROCESS-LINE ( -- )
    ISSUE-N @ {: before:n :}
    PENDING-N @ {: waiting:n :}
-   ARENA-U @ ARENA-FLOOR !
+   ARENA-U @ {: floor:n :}
    [: JSONL-PARSE-LINE ;] catch 0<> if
       begin ISSUE-N @ before > while POP-RECORD repeat
       PLACE-PENDING s" Invalid JSONL file" FAIL
    then
    IMPORT-ROW
-   ISSUE-N @ before = PENDING-N @ waiting = and if ARENA-FLOOR @ ARENA-U ! then ;
+   ISSUE-N @ before = PENDING-N @ waiting = and if floor ARENA-U ! then ;
+\ The reader's failure code, nonzero, ends the import after the rows waiting on
+\ a parent are placed: a line too long is the limit error.
+: IMPORT-READ-FAIL ( n -- )
+   PLACE-PENDING
+   dup JSONL:E-LIMIT = s" JSONL line too long" ?FAIL
+   throw ;
 \ A line holds at most 1048575 bytes before its LF: the 1 MiB line limit is
-\ exclusive.
+\ exclusive. Only the reader's failures place the waiting rows; a failure
+\ placing a row ends the import at once.
 : IMPORT-LINES ( ptr u8 n -- )
-   {: path:ptr pu:n :}
-   JSONL-CURSOR path pu 1048575 BUF:N>BLEN JSONL:OPEN
-   begin JSONL-CURSOR JSONL:NEXT while IMPORT-PROCESS-LINE repeat ;
+   [: 2dup JSONL-CURSOR -rot 1048575 BUF:N>BLEN JSONL:OPEN ;] catch
+   dup 0<> if IMPORT-READ-FAIL then drop 2drop
+   begin
+      false [: drop JSONL-CURSOR JSONL:NEXT ;] catch
+      dup 0<> if IMPORT-READ-FAIL then drop
+   while IMPORT-PROCESS-LINE repeat ;
 \ Imports the JSONL at a path: a failed open or read is an I/O error, not EOF.
 : IMPORT-JSONL ( ptr u8 n -- )
    {: path:ptr pu:n :}
    true LOAD-ISSUES TOP-REBUILD
    0 IMPORTED-N ! 0 IMPORT-SKIPPED-N ! 0 DEP-SKIPPED-N ! 0 HELD-N !
-   path pu [: 2dup IMPORT-LINES ;] catch
+   path pu IMPORT-LINES
    PLACE-PENDING
-   dup JSONL:E-LIMIT = s" JSONL line too long" ?FAIL
-   dup 0<> if throw then drop 2drop
    IMPORT-ARCHIVE-CLOSED
    IMPORTED-N @ 0 > if
       s" Imported " DOT-IO:PRINT IMPORTED-N @ DOT-IO:INT

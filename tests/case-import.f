@@ -448,6 +448,79 @@ f .dots/p
 ;
 s" parent-path-is-file" ' PARENT-PATH-IS-FILE DOT-CASE
 
+\ A row whose parent folder is a link is skipped and counted, nothing written.
+: PARENT-PATH-IS-SYMLINK ( -- )
+   s" outside" FILE$ MAKE-DIRS
+   s" ../outside" s" p" LINK
+   s\" {\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   0 RC=
+   s" " OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   s" d .dots
+d .dots/archive
+l .dots/p -> ../outside
+" TREE=
+   s" outside" s\" d outside\n" DIR=
+;
+s" parent-path-is-symlink" ' PARENT-PATH-IS-SYMLINK DOT-CASE
+
+\ A failure making a parent's folder ends the import, the waiting row unplaced.
+: PARENT-FOLDER-FAILS ( -- )
+   s" x/x.md" s" X" s" open" 1 PUT-ISSUE
+   s" x/p.md" s" P" s" open" 1 PUT-ISSUE
+   s" x" READ-ONLY MODE
+   s\" {\"id\":\"b\",\"title\":\"B\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"q\",\"type\":\"parent-child\"}]}
+{\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   s" x" WRITABLE MODE
+   1 RC=
+   s" " OUT=
+   s\" I/O error\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/x
+f .dots/x/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+f .dots/x/x.md
+  ---
+  title: X
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" parent-folder-fails" ' PARENT-FOLDER-FAILS DOT-CASE
+
+\ A parentless row whose folder is a link is skipped and counted, as add refuses
+\ it.
+: OWN-PATH-IS-SYMLINK ( -- )
+   s" outside" FILE$ MAKE-DIRS
+   s" ../outside" s" a" LINK
+   s\" {\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s" " OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   s" d .dots
+l .dots/a -> ../outside
+d .dots/archive
+" TREE=
+   s" outside" s\" d outside\n" DIR=
+;
+s" own-path-is-symlink" ' OWN-PATH-IS-SYMLINK DOT-CASE
+
 \ A child row after its parent nests both in the parent's folder.
 : PARENT-NESTS ( -- )
    s\" {\"id\":\"p\",\"title\":\"P\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}

@@ -6,8 +6,6 @@ require dot.f
 using DOT-T
 package DOT-STATUS
 
-$16D constant READ-ONLY                 \ r-xr-xr-x
-$1ED constant WRITABLE                  \ rwxr-xr-x
 $180 constant OWNER-ONLY                \ rw-------
 $1A4 constant SHARED-READ               \ rw-r--r--
 
