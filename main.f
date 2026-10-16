@@ -840,6 +840,7 @@ PROCESS-SYMBOLS
 FUNCTION: FSYNC-CALL fsync ( n -- i32 ) ;FUNCTION
 2 constant FS-NO-ENTRY
 13 constant FS-ACCESS-DENIED
+17 constant FS-EXISTS
 : FS-DIR-NOT-EMPTY ( -- n ) HB-TARGET-MACOS? if 66 else 39 then ;
 \ The errno a mutation of path failed with: a non-empty directory where it
 \ needs an empty one is named, any other cause is an I/O error.
@@ -880,7 +881,7 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
 : RENAME-ISSUE-NOREPLACE ( ptr u8 n ptr u8 n -- )
    {: src:ptr su:n dst:ptr du:n :}
    src su dst du RENAME-NOREPLACE-CAUSE
-   dup 17 = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
+   dup FS-EXISTS = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
    dst du ?FS-MUTATION-ERROR ;
 : REMOVE-ISSUE-FILE ( ptr u8 n -- )
    {: path:ptr pu:n :}
@@ -933,7 +934,8 @@ variable FAILED-PATH-U
       then
    then
    code throw ;
-: WRITE-ATOMIC-THROW ( ptr u8 n ptr u8 n -- )
+\ Write src to a new temp beside path, synced and closed: the temp's path.
+: WRITE-TEMP ( ptr u8 n ptr u8 n -- ptr u8 n )
    {: path:ptr pu:n src:ptr su:n :}
    path pu RESERVE-ISSUE-SIBLING {: temp:ptr tu:n fd:n :}
    0 begin dup su < while
@@ -944,13 +946,28 @@ variable FAILED-PATH-U
    repeat drop
    fd FSYNC-CALL 0<> if fd temp tu E-FS-IO TEMP-THROW then
    fd close
+   temp tu ;
+\ A rename of the temp to path that failed for a nonzero reason removes the
+\ temp and throws the failure dot names.
+: ?RENAME-THROW ( ptr u8 n ptr u8 n n -- )
+   {: temp:ptr tu:n path:ptr pu:n reason:n :}
+   reason 0= if exit then
+   temp tu REMOVE-FILE
+   path pu DIR? if path pu E-ISSUE-ISDIR PATH-THROW then
+   reason FS-ACCESS-DENIED = if E-ISSUE-PERMISSION throw then
+   E-FS-IO throw ;
+: WRITE-ATOMIC-THROW ( ptr u8 n ptr u8 n -- )
+   {: path:ptr pu:n src:ptr su:n :}
+   path pu src su WRITE-TEMP {: temp:ptr tu:n :}
    temp tu path pu RENAME-CAUSE {: reason:n :}
-   reason 0<> if
-      temp tu REMOVE-FILE
-      path pu DIR? if path pu E-ISSUE-ISDIR PATH-THROW then
-      reason FS-ACCESS-DENIED = if E-ISSUE-PERMISSION throw then
-      E-FS-IO throw
-   then ;
+   temp tu path pu reason ?RENAME-THROW ;
+\ WRITE-ATOMIC-THROW for a file it creates: an entry at path ends dot.
+: CREATE-ATOMIC-THROW ( ptr u8 n ptr u8 n -- )
+   {: path:ptr pu:n src:ptr su:n :}
+   path pu src su WRITE-TEMP {: temp:ptr tu:n :}
+   temp tu path pu RENAME-NOREPLACE-CAUSE {: reason:n :}
+   reason FS-EXISTS = if temp tu REMOVE-FILE s" Issue already exists" FAIL then
+   temp tu path pu reason ?RENAME-THROW ;
 \ MAKE-DIRS, a folder refused for lack of permission named as dot names one.
 \ Habu's mkdir leaves its errno for FFI:ERRNO after the E-FS-IO it throws.
 : MAKE-ISSUE-DIRS ( ptr u8 n -- )
@@ -995,6 +1012,12 @@ variable WRITE-SRC-U
    {: idx:n :}
    idx SERIALIZE
    idx F-PATH FIELD$ OUT$ WRITE-ATOMIC ;
+\ Write a new record's file as SAVE-RECORD does: it never replaces an entry.
+: CREATE-RECORD ( n -- )
+   dup SERIALIZE
+   [: dup F-PATH FIELD$ OUT$ CREATE-ATOMIC-THROW ;] catch {: code:n :}
+   drop
+   code 0<> if code REPORT-FAILURE then ;
 
 \ Times are local; a new id ends in a secure 32-bit random suffix.
 PROCESS-SYMBOLS
@@ -1972,7 +1995,7 @@ variable REOPEN-PARENT-KEEP-U
    REOPEN-SOURCE$ REOPEN-DEST$ RENAME-NOREPLACE-CAUSE
    dup 0<> if
       REOPEN-CLEAN-NEW-PARENTS
-      dup 17 = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
+      dup FS-EXISTS = over FS-DIR-NOT-EMPTY = or s" Issue already exists" ?FAIL
       REOPEN-DEST$ ?FS-MUTATION-ERROR
    else drop then
    [: REOPEN-FINISH ;] catch {: code:n :}
@@ -2567,7 +2590,7 @@ variable SLUG-PATH-U
    loop ;
 : SLUG-RENAME-NOREPLACE-THROW ( ptr u8 n ptr u8 n -- )
    RENAME-NOREPLACE-CAUSE
-   dup 17 = if drop E-SLUG-COLLISION throw then
+   dup FS-EXISTS = if drop E-SLUG-COLLISION throw then
    dup FS-DIR-NOT-EMPTY = if drop E-SLUG-COLLISION throw then
    dup FS-ACCESS-DENIED = if drop E-ISSUE-PERMISSION throw then
    dup 0<> if drop E-FS-IO throw else drop then ;
@@ -3617,17 +3640,26 @@ variable SKIP-BUCKETS
    ASSERT-ARCHIVE-REAL
    1 idx F-ARCHIVED REC-CELL !
    s" .dots/archive/" ;
+\ Whether any entry holds the row's file, named after it in the folder SB
+\ holds with its slash, which add refuses; else the row's path is set to it.
+: IMPORT-TAKEN? ( n -- bool )
+   {: idx:n :}
+   idx F-ID FIELD$ SB-APPEND s" .md" SB-APPEND
+   SB$ FS-TRY-LSTAT if true exit then
+   SB$ idx F-PATH FIELD! false ;
 \ Write the row at IMPORT-IDX where add -P would: in its parent's own folder,
 \ made first, wherever the parent lives, the archive included, the row taking
 \ the parent's partition. The folder and the row's file in it are checked as
-\ add -P checks them, before the first write, and a refusal ends the import. A
-\ row whose parent is no task or placed row goes in the folder named after that
-\ parent at the top of .dots, made when absent; it is skipped when that
-\ parent's row was, or when that path holds anything but a directory, a link
-\ included. A parentless row goes in the folder named after it at the top of
-\ .dots if one exists, skipped when a link names that folder, as add refuses
-\ it; else at the top of the partition IMPORT-ROOT$ names. A row is skipped
-\ only before its first write: a failure after that ends the import at once.
+\ add -P checks them, before the first write: a refusal ends the import and a
+\ taken file skips the row. A row whose parent is no task or placed row goes in
+\ the folder named after that parent at the top of .dots, made when absent; it
+\ is skipped when that parent's row was, or when that path holds anything but
+\ a directory, a link included. A parentless row goes in the folder named
+\ after it at the top of .dots if one exists, skipped when a link names that
+\ folder, as add refuses it; else at the top of the partition IMPORT-ROOT$
+\ names. In every branch IMPORT-TAKEN? skips the row before its first write; a
+\ folder just made holds nothing, so the orphan branch's check after it never
+\ skips. A failure after the first write ends the import at once.
 : IMPORT-PLACE ( -- )
    IMPORT-IDX @ {: idx:n :}
    IMPORT-HAS-PARENT? if
@@ -3639,17 +3671,18 @@ variable SKIP-BUCKETS
             none OF PATH-ONE$ MAKE-ISSUE-DIRS false ENDOF
             some OF S-IFMT and S-IFDIR <> ENDOF
          ;MATCH if IMPORT-SKIP exit then
-         SB-RESET PATH-ONE$ SB-APPEND
+         SB-RESET PATH-ONE$ SB-APPEND 47 SB-APPEND-C
+         idx IMPORT-TAKEN? if IMPORT-SKIP exit then
       else
          parent IMPORT-PARENT-OK? 0= if IMPORT-SKIP exit then
          parent F-ARCHIVED REC-CELL @ 0<> if ASSERT-ARCHIVE-REAL then
          parent CHECK-OWN-FOLDER
          SB$ nip idx CHECK-FILE-FITS
+         47 SB-APPEND-C
+         idx IMPORT-TAKEN? if IMPORT-SKIP exit then
          parent ENSURE-OWN-FOLDER
          parent F-ARCHIVED REC-CELL @ idx F-ARCHIVED REC-CELL !
-         SB-RESET parent F-PATH FIELD$ drop parent OWN-FOLDER-U SB-APPEND
       then
-      47 SB-APPEND-C
       1 idx F-CHILD REC-CELL !
    else
       SB-RESET s" .dots/" SB-APPEND idx F-ID FIELD$ SB-APPEND
@@ -3657,10 +3690,10 @@ variable SKIP-BUCKETS
          SB$ SYMLINK? if IMPORT-SKIP exit then
          47 SB-APPEND-C
       else SB-RESET idx IMPORT-ROOT$ SB-APPEND then
+      idx IMPORT-TAKEN? if IMPORT-SKIP exit then
    then
-   idx F-ID FIELD$ SB-APPEND s" .md" SB-APPEND SB$ idx F-PATH FIELD!
    IMPORT-TAKE-DEPS
-   idx SAVE-RECORD
+   idx CREATE-RECORD
    idx IMPORT-ADD-HELD
    IMPORT-ADD-DEPENDENCIES
    1 IMPORTED-N +! idx TOP-LINK ;

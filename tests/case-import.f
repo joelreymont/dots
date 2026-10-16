@@ -591,6 +591,51 @@ d .dots/archive
 ;
 s" own-path-is-symlink" ' OWN-PATH-IS-SYMLINK DOT-CASE
 
+\ A row whose file in its parent's folder is taken by a link is skipped and
+\ counted before the parent nests: nothing is written.
+: CHILD-FILE-TAKEN ( -- )
+   s" p.md" s" P" s" open" 1 PUT-ISSUE
+   s" ../../ext/c.md" s" p/c.md" LINK
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   0 RC=
+   s" " OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+l .dots/p/c.md -> ../../ext/c.md
+f .dots/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  created-at: 2026-01-01T00:00:00Z
+  ---
+.
+" TREE=
+;
+s" child-file-taken" ' CHILD-FILE-TAKEN DOT-CASE
+
+\ A row whose file in the folder named after its absent parent is taken by a
+\ link is skipped and counted, nothing written.
+: ORPHAN-FILE-TAKEN ( -- )
+   s" ../../ext/c.md" s" p/c.md" LINK
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   0 RC=
+   s" " OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   s" d .dots
+d .dots/archive
+d .dots/p
+l .dots/p/c.md -> ../../ext/c.md
+" TREE=
+;
+s" orphan-file-taken" ' ORPHAN-FILE-TAKEN DOT-CASE
+
 \ A child row after its parent nests both in the parent's folder.
 : PARENT-NESTS ( -- )
    s\" {\"id\":\"p\",\"title\":\"P\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
@@ -905,6 +950,33 @@ l .dots/archive -> ../external
    s" external" s\" d external\n" DIR=
 ;
 s" closed-row-archive-symlink" ' CLOSED-ROW-ARCHIVE-SYMLINK DOT-CASE
+
+\ A closed parentless row whose archive file is taken by a pipe is skipped and
+\ counted, never opened or written; the row after it is placed as usual.
+: ARCHIVE-FILE-TAKEN ( -- )
+   s" archive/p.md" PUT-FIFO
+   s\" {\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+{\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 1 issues from import.jsonl\n" OUT=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
+   s\" d .dots
+f .dots/a.md
+  ---
+  title: A
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+d .dots/archive
+p .dots/archive/p.md
+" TREE=
+;
+s" archive-file-taken" ' ARCHIVE-FILE-TAKEN DOT-CASE
 
 \ Rows naming a nested parent: the child goes in the parent's own folder, made
 \ where the parent lives, and the blocker gets its edge.
@@ -1646,17 +1718,30 @@ s" unreadable-file" ' UNREADABLE-FILE DOT-CASE
 ;
 s" not-a-file" ' NOT-A-FILE DOT-CASE
 
-\ A row whose task path is taken by a directory is refused.
+\ A row whose file path is taken by a directory is skipped and counted, as add
+\ refuses it.
 : IMPORT-OVER-TASK-DIR ( -- )
    s" .dots/a.md" FILE$ MAKE-DIRS
    ROW-A JSONL
    IMPORT
-   1 RC=
+   0 RC=
    s" " OUT=
-   s\" Not a file: .dots/a.md\n" ERR=
+   s\" Warning: skipped 1 issues due to errors\n" ERR=
    s\" d .dots\nd .dots/a.md\nd .dots/archive\n" TREE=
 ;
 s" import-over-task-dir" ' IMPORT-OVER-TASK-DIR DOT-CASE
+
+\ import creates a row's file with a no-replace rename, which the probe fails:
+\ the temp is removed and nothing is written.
+: IMPORT-CREATE-NOREPLACE ( -- )
+   ROW-A JSONL
+   s" init|--from-jsonl|import.jsonl" s" .dots/a.md" s" .dots/never" RUN-PROBE
+   1 RC=
+   s" " OUT=
+   s\" Permission denied\n" ERR=
+   s\" d .dots\nd .dots/archive\n" TREE=
+;
+s" import-create-noreplace" ' IMPORT-CREATE-NOREPLACE DOT-CASE
 
 \ A read that fails after the open is an I/O error, never the end of input.
 : READ-FAILURE ( -- )
