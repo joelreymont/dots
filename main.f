@@ -133,6 +133,50 @@ DYNAMIC-BUFFER SORT-BUF n
    {: idx:n field:n :}
    ARENA-U @ idx field 2 * REC-CELL !
    0 idx field 2 * 1+ REC-CELL ! ;
+\ The record id index: chained hash buckets of record numbers. It holds
+\ exactly the records 0..ISSUE-N-1, keyed by their current F-ID. It keeps no
+\ key pointer, since arena growth remaps and the import rewinds the arena:
+\ lookup re-reads each candidate's id through FIELD$. ID-HEADS holds the first
+\ record of each bucket and ID-NEXT the record after each, -1 for none.
+DYNAMIC-BUFFER ID-HEADS n
+DYNAMIC-BUFFER ID-NEXT n
+variable ID-BUCKETS
+\ FNV-1a, its high half folded onto the low bits a power-of-two table masks.
+: STR-HASH ( ptr u8 n -- n )
+   {: a:ptr u:n :}
+   $CBF29CE484222325 u 0 ?do a i + c@ xor $100000001B3 * loop
+   dup 32 rshift xor ;
+: BUCKET ( n n -- n ) 1- and ;   \ hash, bucket count (a power of two)
+: ID-CHAIN ( n -- )
+   {: idx:n :}
+   idx F-ID FIELD$ STR-HASH ID-BUCKETS @ BUCKET {: b:n :}
+   b ID-HEADS @ idx ID-NEXT !
+   idx b ID-HEADS ! ;
+\ At least 64 buckets, doubled until no fewer than the records.
+: ID-REBUILD ( -- )
+   ID-BUCKETS @ 64 max begin dup ISSUE-N @ < while 2 * repeat {: count:n :}
+   count ID-BUCKETS !
+   count ID-HEADS-RESERVE
+   count 0 ?do -1 i ID-HEADS ! loop
+   ISSUE-N @ ID-NEXT-RESERVE
+   ISSUE-N @ 0 ?do i ID-CHAIN loop ;
+\ Index a record whose F-ID is written, below ISSUE-N.
+: ID-LINK ( n -- )
+   ISSUE-N @ ID-BUCKETS @ > if drop ID-REBUILD exit then
+   ISSUE-N @ ID-NEXT-RESERVE ID-CHAIN ;
+: ID-UNLINK ( n -- )
+   {: idx:n :}
+   idx F-ID FIELD$ STR-HASH ID-BUCKETS @ BUCKET {: b:n :}
+   b ID-HEADS @ idx = if idx ID-NEXT @ b ID-HEADS ! exit then
+   b ID-HEADS @ begin dup ID-NEXT @ idx <> while ID-NEXT @ repeat
+   {: prev:n :}
+   idx ID-NEXT @ prev ID-NEXT ! ;
+\ The only writer of an existing record's id.
+: ID! ( ptr u8 n n -- )
+   {: a:ptr u:n idx:n :}
+   idx ID-UNLINK a u idx F-ID FIELD! idx ID-LINK ;
+\ Drop the last record.
+: POP-RECORD ( -- ) ISSUE-N @ 1- dup ID-UNLINK ISSUE-N ! ;
 : PATH-AT ( n -- ptr u8 ) FS-PATH-CAP * PATHS + ;
 : PATH-JOIN ( ptr u8 n ptr u8 n ptr u8 -- n ) JOIN-PATH ;
 \ A record's own folder is the directory of its path when that directory lies
@@ -353,6 +397,7 @@ DYNAMIC-BUFFER SORT-BUF n
    child if 1 else 0 then CURRENT @ F-CHILD REC-CELL !
    1 CURRENT @ F-ERROR REC-CELL !
    ISSUE-N @ 1+ ISSUE-N !
+   CURRENT @ ID-LINK
    SCAN-KEYED @ 0= if CURRENT @ PARSE-RECORD then ;
 : FILE-ENTRY? ( ptr u8 n -- bool )
    {: name:ptr u:n :}
@@ -453,7 +498,7 @@ DYNAMIC-BUFFER SORT-BUF n
 : STORE? ( -- bool ) s" .dots" FS-TRY-LSTAT ;
 : LOAD-ISSUES ( bool -- )
    {: include-archive:bool :}
-   0 ISSUE-N ! 0 ARENA-U ! 0 SCAN-NAMES-U !
+   0 ISSUE-N ! 0 ID-BUCKETS ! 0 ARENA-U ! 0 SCAN-NAMES-U !
    STORE? 0= if exit then
    s" .dots" 0 PATH-AT swap BYTE-COPY
    0 s" .dots" nip false false SCAN-DIR
@@ -1175,11 +1220,18 @@ variable PARENT-IDX
          MATCH-I @ -1 <> if -2 MATCH-I ! else i MATCH-I ! then
       then
    loop MATCH-I @ ;
+\ The lowest record with the id, or -1. Filesystem ids may repeat and ID!
+\ reorders a chain, so the walk keeps the least match.
 : FIND-EXACT ( ptr u8 n -- n )
    {: a:ptr u:n :}
-   ISSUE-N @ 0 ?do
-      i F-ID FIELD$ a u STR= if i unloop exit then
-   loop -1 ;
+   ID-BUCKETS @ 0= if -1 exit then
+   -1 a u STR-HASH ID-BUCKETS @ BUCKET ID-HEADS @
+   begin dup -1 <> while
+      {: best:n at:n :}
+      at F-ID FIELD$ a u STR= best -1 = at best < or and
+      if at else best then
+      at ID-NEXT @
+   repeat drop ;
 : RESOLVE-LABELED ( ptr u8 n ptr u8 n -- n )
    {: a:ptr u:n label:ptr lu:n :}
    a u FIND-PREFIX
@@ -1191,6 +1243,7 @@ variable PARENT-IDX
    ISSUE-N @ {: idx:n :}
    ISSUE-N @ 1+ ISSUE-N !
    id iu idx F-ID FIELD!
+   idx ID-LINK
    idx F-DESC FIELD-EMPTY
    idx F-CLOSED FIELD-EMPTY
    idx F-REASON FIELD-EMPTY
@@ -2147,11 +2200,6 @@ DYNAMIC-BUFFER TREE-SLOT n
 variable TREE-CAP
 0 constant PATH-KEYS
 1 constant ID-KEYS
-\ FNV-1a, its high half folded onto the low bits TREE-FIND masks.
-: TREE-HASH ( ptr u8 n -- n )
-   {: a:ptr u:n :}
-   $CBF29CE484222325 u 0 ?do a i + c@ xor $100000001B3 * loop
-   dup 32 rshift xor ;
 : TREE-FIELD ( n -- n ) PATH-KEYS = if F-PATH else F-ID then ;
 \ The slot of table holding key, or the empty slot where key belongs. The
 \ capacity exceeds the record count, so an empty slot ends every probe.
@@ -2159,7 +2207,7 @@ variable TREE-CAP
    {: key:ptr ku:n table:n :}
    table TREE-FIELD {: field:n :}
    TREE-CAP @ 1- {: mask:n :}
-   key ku TREE-HASH mask and begin
+   key ku STR-HASH mask and begin
       {: at:n :}
       at 2 * table + {: slot:n :}
       slot TREE-SLOT @ {: rec:n :}
@@ -2460,7 +2508,7 @@ variable SLUG-PATH-U
       1 idx 7 SLUG-CELL !
    then ;
 : SLUG-PREPARE ( -- )
-   RENAMED-ID$ SLUG-IDX @ F-ID FIELD!
+   RENAMED-ID$ SLUG-IDX @ ID!
    SLUG-CHILD-FOLDER @ 0<> if
       SLUG-CHILD-FROM$ SLUG-CHILD-TO$ SLUG-REBASE-RECORDS
    then
@@ -2711,14 +2759,19 @@ variable JSONL-BYTE-U
    then
    JR:T-ARR = if JSONL-BYTE-ARRAY exit then
    E-JR-MALFORMED throw ;
-: JSONL-STRING-FIELD ( ptr u8 n n -- bool )
-   {: key:ptr ku:n field:n :}
-   key ku JSONL-FIND if
-      JR:TOKEN JR:T-NULL = if JR:CLOSE false exit then
+\ The decoded string under the key, in JSONL-DECODE-BUF, and true; or an
+\ empty span and false when the key is absent or null. The reader stays open.
+: JSONL-STRING? ( ptr u8 n -- JR:reader ptr u8 n bool )
+   JSONL-FIND if
+      JR:TOKEN JR:T-NULL = if s" " false exit then
       JSONL-STRING-VALUE {: size:n :}
-      JSONL-DECODE-BUF size IMPORT-IDX @ field FIELD!
-      JR:CLOSE true exit
-   then JR:CLOSE false ;
+      JSONL-DECODE-BUF size true exit
+   then s" " false ;
+: JSONL-STRING-FIELD ( ptr u8 n n -- bool )
+   {: field:n :}
+   JSONL-STRING? {: present:bool :}
+   present if IMPORT-IDX @ field FIELD! else 2drop then
+   JR:CLOSE present ;
 : JSONL-REQUIRED-STRING ( ptr u8 n n -- )
    JSONL-STRING-FIELD 0= if E-JR-MALFORMED throw then ;
 : JSONL-PRIORITY ( -- )
@@ -2812,7 +2865,8 @@ variable JSONL-BYTE-U
    JSONL-VALIDATE
    s" " NEW-RECORD IMPORT-IDX !
    0 IMPORT-DEP-U !
-   s" id" F-ID JSONL-REQUIRED-STRING
+   s" id" JSONL-STRING? 0= if 2drop JR:CLOSE E-JR-MALFORMED throw then
+   IMPORT-IDX @ ID! JR:CLOSE
    s" title" F-TITLE JSONL-REQUIRED-STRING
    s" description" F-DESC JSONL-STRING-FIELD drop
    JSONL-STATUS JSONL-PRIORITY
@@ -2863,7 +2917,7 @@ variable PENDING-N
    PENDING-N @ 1+ REC-CELLS * PENDING-RESERVE
    REC-CELLS 0 ?do IMPORT-IDX @ i REC-CELL @ PENDING-N @ i PENDING-CELL ! loop
    1 PENDING-N +!
-   ISSUE-N @ 1- ISSUE-N ! ;
+   POP-RECORD ;
 \ Make the waiting row at the index the last record, at IMPORT-IDX.
 : UNPEND ( n -- )
    {: at:n :}
@@ -2871,6 +2925,7 @@ variable PENDING-N
    ISSUE-N @ IMPORT-IDX !
    1 ISSUE-N +!
    REC-CELLS 0 ?do at i PENDING-CELL @ IMPORT-IDX @ i REC-CELL ! loop
+   IMPORT-IDX @ ID-LINK
    PENDING-N @ 1- REC-CELLS * at REC-CELLS * ?do
       i REC-CELLS + PENDING @ i PENDING !
    loop
@@ -3034,7 +3089,7 @@ DYNAMIC-BUFFER SKIPPED-ENDS n
    start iu + k SKIPPED-ENDS !
    1 IMPORT-SKIPPED-N +!
    IMPORT-IDX @ DROP-HELD
-   ISSUE-N @ 1- ISSUE-N ! ;
+   POP-RECORD ;
 \ Whether a row skipped from this file had the id.
 : SKIPPED? ( ptr u8 n -- bool )
    {: id:ptr iu:n :}
@@ -3124,9 +3179,7 @@ variable ARENA-FLOOR
 \ row or a waiting one.
 : IMPORT-DUPLICATE? ( -- bool )
    IMPORT-IDX @ F-ID FIELD$ PENDING-FIND -1 <> if true exit then
-   IMPORT-IDX @ 0 ?do
-      i F-ID FIELD$ IMPORT-IDX @ F-ID FIELD$ STR= if true unloop exit then
-   loop false ;
+   IMPORT-IDX @ F-ID FIELD$ FIND-EXACT IMPORT-IDX @ <> ;
 \ Admit the row the line parsed into the last record, at IMPORT-IDX: place it
 \ and the rows waiting on it, or set it aside until its parent's row comes.
 : IMPORT-ROW ( -- )
@@ -3134,7 +3187,7 @@ variable ARENA-FLOOR
    IMPORT-HAS-PARENT? if
       IMPORT-IDX @ F-PARENT FIELD$ CREATABLE-ID? 0= if IMPORT-SKIP exit then
    then
-   IMPORT-DUPLICATE? if ISSUE-N @ 1- ISSUE-N ! exit then
+   IMPORT-DUPLICATE? if POP-RECORD exit then
    IMPORT-HAS-PARENT? if IMPORT-PARENT -1 = if PEND exit then then
    IMPORT-PLACE-ROW
    IMPORT-IDX @ PLACE-WAITING ;
@@ -3146,7 +3199,8 @@ variable ARENA-FLOOR
    PENDING-N @ {: waiting:n :}
    ARENA-U @ ARENA-FLOOR !
    [: JSONL-PARSE-LINE ;] catch 0<> if
-      before ISSUE-N ! PLACE-PENDING s" Invalid JSONL file" FAIL
+      begin ISSUE-N @ before > while POP-RECORD repeat
+      PLACE-PENDING s" Invalid JSONL file" FAIL
    then
    IMPORT-ROW
    ISSUE-N @ before = PENDING-N @ waiting = and if ARENA-FLOOR @ ARENA-U ! then ;
