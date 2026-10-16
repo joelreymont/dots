@@ -986,6 +986,54 @@ f .dots/p/p.md
 ;
 s" child-before-parent" ' CHILD-BEFORE-PARENT DOT-CASE
 
+\ Rows waiting only on each other, a parent cycle, start from the first live
+\ row when the stream ends: c, blocked on the waiting p, goes first, then p,
+\ and q follows into p's own folder.
+: WAITING-PARENT-CYCLE ( -- )
+   s\" {\"id\":\"c\",\"title\":\"C\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+{\"id\":\"p\",\"title\":\"P\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"q\",\"type\":\"parent-child\"}]}
+{\"id\":\"q\",\"title\":\"Q\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
+" JSONL
+   IMPORT
+   0 RC=
+   s\" Imported 3 issues from import.jsonl\n" OUT=
+   s" " ERR=
+   s\" d .dots
+d .dots/archive
+d .dots/p
+f .dots/p/c.md
+  ---
+  title: C
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+d .dots/q
+d .dots/q/p
+f .dots/q/p/p.md
+  ---
+  title: P
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+f .dots/q/p/q.md
+  ---
+  title: Q
+  status: open
+  priority: 1
+  issue-type: task
+  created-at: \"2026-01-01T00:00:00Z\"
+  ---
+.
+" TREE=
+;
+s" waiting-parent-cycle" ' WAITING-PARENT-CYCLE DOT-CASE
+
 \ A row whose parent row was skipped is skipped, at any depth.
 : SKIPPED-FAMILY ( -- )
    s\" {\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}

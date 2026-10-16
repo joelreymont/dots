@@ -2895,36 +2895,188 @@ variable JSONL-BYTE-U
       0 IMPORT-DEP-BUF IMPORT-DEP-U @ IMPORT-IDX @ F-BLOCKS FIELD!
    then ;
 
-\ A row whose parent is neither a task nor a placed row waits aside, in row
-\ order, holding its record's cells, until that parent's row is placed or the
-\ stream ends.
+\ A row whose parent is neither a task nor a placed row waits aside, holding
+\ its record's cells in PENDING, until that parent's row is placed or the
+\ stream ends. A waiting row keeps its slot for the whole import, never shifted
+\ or reused, so slot order is row order; PENDING-N counts the live ones and
+\ PENDING-SLOTS every slot taken. WAIT holds each slot's own id node (W-NODE,
+\ -1 once the row left), its parent's id node (W-PARENT) and the next slot
+\ waiting on that parent (W-NEXT, -1 for none). No live slot is below
+\ PENDING-FIRST.
 DYNAMIC-BUFFER PENDING n
 variable PENDING-N
+variable PENDING-SLOTS
+variable PENDING-FIRST
 : PENDING-CELL ( n n -- ptr n )
    {: at:n field:n :}
    at REC-CELLS * field + PENDING ;
 : PENDING$ ( n n -- ptr u8 n )
    {: at:n field:n :}
    at field 2 * PENDING-CELL @ ARENA at field 2 * 1+ PENDING-CELL @ ;
+DYNAMIC-BUFFER WAIT n
+0 constant W-NODE
+1 constant W-PARENT
+2 constant W-NEXT
+3 constant WAIT-CELLS
+: WAIT-CELL ( n n -- ptr n )
+   {: at:n field:n :}
+   at WAIT-CELLS * field + WAIT ;
+\ The id nodes, one per id that is waiting or waited on, in chained hash
+\ buckets as the record id index: NODE-HEADS holds the first node of each
+\ bucket and N-NEXT the node after each, -1 for none. N-ROW is the live slot
+\ with the id, N-HEAD and N-TAIL the first and last live slots waiting on the
+\ id as their parent, linked in slot order through W-NEXT; each is -1 for
+\ none. A node is unblocked while N-ROW is -1. Nodes are bump-allocated:
+\ NODE-N only grows during an import, no node is released on its own, and
+\ IMPORT-JSONL's reset releases them all together.
+\ A node's key, N-KEY and N-KEY-U, is the arena offset and length of the id
+\ that made it, copied from a waiting slot's F-ID or F-PARENT cells as HOLD
+\ copies ids into HELD. The cells cannot go stale: FIELD! only appends, and
+\ IMPORT-PROCESS-LINE rewinds the arena only for a line that left no row
+\ placed or waiting, so a waiting row's bytes stay for the whole import.
+DYNAMIC-BUFFER NODE n
+0 constant N-NEXT
+1 constant N-ROW
+2 constant N-HEAD
+3 constant N-TAIL
+4 constant N-KEY
+5 constant N-KEY-U
+6 constant NODE-CELLS
+: NODE-CELL ( n n -- ptr n )
+   {: node:n field:n :}
+   node NODE-CELLS * field + NODE ;
+DYNAMIC-BUFFER NODE-HEADS n
+variable NODE-N
+variable NODE-BUCKETS
+: NODE-KEY$ ( n -- ptr u8 n )
+   {: node:n :}
+   node N-KEY NODE-CELL @ ARENA node N-KEY-U NODE-CELL @ ;
+: NODE-CHAIN ( n -- )
+   {: node:n :}
+   node NODE-KEY$ STR-HASH NODE-BUCKETS @ BUCKET {: b:n :}
+   b NODE-HEADS @ node N-NEXT NODE-CELL !
+   node b NODE-HEADS ! ;
+\ At least 64 buckets, doubled until no fewer than the nodes.
+: NODE-REBUILD ( -- )
+   NODE-BUCKETS @ 64 max begin dup NODE-N @ < while 2 * repeat {: count:n :}
+   count NODE-BUCKETS !
+   count NODE-HEADS-RESERVE
+   count 0 ?do -1 i NODE-HEADS ! loop
+   NODE-N @ 0 ?do i NODE-CHAIN loop ;
+\ The node with the id, or -1.
+: NODE-FIND ( ptr u8 n -- n )
+   {: key:ptr ku:n :}
+   NODE-BUCKETS @ 0= if -1 exit then
+   key ku STR-HASH NODE-BUCKETS @ BUCKET NODE-HEADS @
+   begin dup -1 <> while
+      dup NODE-KEY$ key ku STR= if exit then
+      N-NEXT NODE-CELL @
+   repeat ;
+\ The node of the waiting slot's F-ID or F-PARENT, made when it is new.
+: NODE-FOR ( n n -- n )
+   {: at:n field:n :}
+   at field PENDING$ NODE-FIND dup -1 <> if exit then drop
+   NODE-N @ {: node:n :}
+   node 1+ NODE-CELLS * NODE-RESERVE
+   -1 node N-ROW NODE-CELL !
+   -1 node N-HEAD NODE-CELL !
+   -1 node N-TAIL NODE-CELL !
+   at field 2 * PENDING-CELL @ node N-KEY NODE-CELL !
+   at field 2 * 1+ PENDING-CELL @ node N-KEY-U NODE-CELL !
+   1 NODE-N +!
+   NODE-N @ NODE-BUCKETS @ > if NODE-REBUILD else node NODE-CHAIN then
+   node ;
+\ The root heap: entries of a slot and a node, two cells each, in a binary
+\ min-heap by slot. An entry is current while its node is unblocked and the
+\ slot is still the node's head: a slot leaves its FIFO once and nodes are
+\ never reused, so an entry whose slot left never matches again. Invariant:
+\ every live slot whose parent is not waiting is in the FIFO of an unblocked
+\ node, and that node has a current entry, so the least current entry is the
+\ first live slot whose parent is not waiting. An entry dropped while its node
+\ is blocked is not lost: the UNPEND that unblocks the node offers it again.
+DYNAMIC-BUFFER ROOTS n
+variable ROOTS-N
+: ROOT-SLOT ( n -- n ) 2 * ROOTS @ ;
+\ Exchange the entries at the two heap positions.
+: ROOT-SWAP ( n n -- )
+   {: a:n b:n :}
+   a 2 * ROOTS @ {: slot:n :}
+   a 2 * 1+ ROOTS @ {: node:n :}
+   b 2 * ROOTS @ a 2 * ROOTS !
+   b 2 * 1+ ROOTS @ a 2 * 1+ ROOTS !
+   slot b 2 * ROOTS !
+   node b 2 * 1+ ROOTS ! ;
+: ROOT-PUSH ( n n -- )
+   {: slot:n node:n :}
+   ROOTS-N @ 1+ 2 * ROOTS-RESERVE
+   ROOTS-N @ {: at:n :}
+   slot at 2 * ROOTS !
+   node at 2 * 1+ ROOTS !
+   1 ROOTS-N +!
+   at begin dup 0 > while
+      {: pos:n :}
+      pos 1- 2 / {: up:n :}
+      up ROOT-SLOT pos ROOT-SLOT <= if exit then
+      up pos ROOT-SWAP up
+   repeat drop ;
+\ Take the entry with the least slot.
+: ROOT-POP ( -- n n )
+   0 ROOTS @ 1 ROOTS @
+   -1 ROOTS-N +!
+   ROOTS-N @ 2 * ROOTS @ 0 ROOTS !
+   ROOTS-N @ 2 * 1+ ROOTS @ 1 ROOTS !
+   0 begin
+      {: pos:n :}
+      pos 2 * 1+ {: left:n :}
+      left ROOTS-N @ >= if exit then
+      left 1+ ROOTS-N @ < if left 1+ ROOT-SLOT left ROOT-SLOT < else false then
+      if left 1+ else left then {: least:n :}
+      pos ROOT-SLOT least ROOT-SLOT <= if exit then
+      pos least ROOT-SWAP least
+   again ;
+\ Whether the entry of the slot and node is current.
+: ROOT-CURRENT? ( n n -- bool )
+   {: slot:n node:n :}
+   node N-ROW NODE-CELL @ -1 = node N-HEAD NODE-CELL @ slot = and ;
+\ Push the node with its head when it is unblocked and has one.
+: ROOT-OFFER ( n -- )
+   {: node:n :}
+   node N-ROW NODE-CELL @ -1 = node N-HEAD NODE-CELL @ -1 <> and if
+      node N-HEAD NODE-CELL @ node ROOT-PUSH
+   then ;
 \ The waiting row with the id, or -1.
 : PENDING-FIND ( ptr u8 n -- n )
-   {: id:ptr iu:n :}
-   PENDING-N @ 0 ?do
-      i F-ID PENDING$ id iu STR= if i unloop exit then
-   loop -1 ;
+   NODE-FIND dup -1 <> if N-ROW NODE-CELL @ then ;
 \ The first waiting row whose parent has the id, or -1.
 : PENDING-CHILD ( ptr u8 n -- n )
-   {: id:ptr iu:n :}
-   PENDING-N @ 0 ?do
-      i F-PARENT PENDING$ id iu STR= if i unloop exit then
-   loop -1 ;
-\ Set the row at IMPORT-IDX, the last record, aside.
+   NODE-FIND dup -1 <> if N-HEAD NODE-CELL @ then ;
+\ Set the row at IMPORT-IDX, the last record, aside in a new slot, at the tail
+\ of its parent's FIFO. A row that names itself as its parent waits on its own
+\ node, so it is blocked.
 : PEND ( -- )
-   PENDING-N @ 1+ REC-CELLS * PENDING-RESERVE
-   REC-CELLS 0 ?do IMPORT-IDX @ i REC-CELL @ PENDING-N @ i PENDING-CELL ! loop
+   PENDING-SLOTS @ {: at:n :}
+   at 1+ REC-CELLS * PENDING-RESERVE
+   at 1+ WAIT-CELLS * WAIT-RESERVE
+   REC-CELLS 0 ?do IMPORT-IDX @ i REC-CELL @ at i PENDING-CELL ! loop
+   at F-ID NODE-FOR {: own:n :}
+   at own N-ROW NODE-CELL !
+   at F-PARENT NODE-FOR {: up:n :}
+   up N-HEAD NODE-CELL @ -1 = {: empty:bool :}
+   -1 at W-NEXT WAIT-CELL !
+   empty if at up N-HEAD NODE-CELL !
+   else at up N-TAIL NODE-CELL @ W-NEXT WAIT-CELL ! then
+   at up N-TAIL NODE-CELL !
+   own at W-NODE WAIT-CELL !
+   up at W-PARENT WAIT-CELL !
+   empty if up ROOT-OFFER then
+   1 PENDING-SLOTS +!
    1 PENDING-N +!
    POP-RECORD ;
-\ Make the waiting row at the index the last record, at IMPORT-IDX.
+\ Make the waiting row at the slot the last record, at IMPORT-IDX. The slot
+\ heads its parent's FIFO, as every caller's does: PENDING-CHILD returns the
+\ node's N-HEAD, a current heap entry is its node's N-HEAD, and the fallback
+\ returns the lowest live slot, which heads its FIFO since each FIFO is in slot
+\ order.
 : UNPEND ( n -- )
    {: at:n :}
    ISSUE-N @ 1+ REC-CELLS * RECORDS-RESERVE
@@ -2932,9 +3084,15 @@ variable PENDING-N
    1 ISSUE-N +!
    REC-CELLS 0 ?do at i PENDING-CELL @ IMPORT-IDX @ i REC-CELL ! loop
    IMPORT-IDX @ ID-LINK
-   PENDING-N @ 1- REC-CELLS * at REC-CELLS * ?do
-      i REC-CELLS + PENDING @ i PENDING !
-   loop
+   at W-NODE WAIT-CELL @ {: own:n :}
+   at W-PARENT WAIT-CELL @ {: up:n :}
+   at W-NEXT WAIT-CELL @ {: next:n :}
+   next up N-HEAD NODE-CELL !
+   next -1 = if -1 up N-TAIL NODE-CELL ! then
+   -1 own N-ROW NODE-CELL !
+   own ROOT-OFFER
+   up own <> if up ROOT-OFFER then
+   -1 at W-NODE WAIT-CELL !
    -1 PENDING-N +! ;
 \ Edges to a waiting row, held until that row is placed or skipped, in the
 \ order read: four cells each, the arena offset and length of the blocking
@@ -3156,28 +3314,63 @@ variable TOP-BUCKETS
 \ IMPORT-SKIPPED-N of them.
 DYNAMIC-BUFFER SKIPPED-BYTES u8
 DYNAMIC-BUFFER SKIPPED-ENDS n
+\ The offset in SKIPPED-BYTES where the entry starts.
+: SKIPPED-START ( n -- n ) dup 0 > if 1- SKIPPED-ENDS @ else drop 0 then ;
+\ The id of the entry.
+: SKIPPED$ ( n -- ptr u8 n )
+   {: k:n :}
+   k SKIPPED-START {: start:n :}
+   start SKIPPED-BYTES k SKIPPED-ENDS @ start - ;
+\ The skipped id index: chained hash buckets of entry numbers, as the record
+\ id index holds record numbers, over the entries 0..IMPORT-SKIPPED-N-1.
+\ Lookup re-reads each candidate's id through SKIPPED$. SKIP-HEADS holds the
+\ first entry of each bucket and SKIP-NEXT the entry after each, -1 for none.
+DYNAMIC-BUFFER SKIP-HEADS n
+DYNAMIC-BUFFER SKIP-NEXT n
+variable SKIP-BUCKETS
+: SKIP-CHAIN ( n -- )
+   {: k:n :}
+   k SKIPPED$ STR-HASH SKIP-BUCKETS @ BUCKET {: b:n :}
+   b SKIP-HEADS @ k SKIP-NEXT !
+   k b SKIP-HEADS ! ;
+\ Chain the first count entries over at least 64 buckets, doubled until no
+\ fewer than the entries.
+: SKIP-REBUILD ( n -- )
+   {: entries:n :}
+   SKIP-BUCKETS @ 64 max begin dup entries < while 2 * repeat {: count:n :}
+   count SKIP-BUCKETS !
+   count SKIP-HEADS-RESERVE
+   count 0 ?do -1 i SKIP-HEADS ! loop
+   entries SKIP-NEXT-RESERVE
+   entries 0 ?do i SKIP-CHAIN loop ;
+\ Index the entry written after the first ones.
+: SKIP-LINK ( n -- )
+   {: k:n :}
+   k 1+ SKIP-BUCKETS @ > if k 1+ SKIP-REBUILD exit then
+   k 1+ SKIP-NEXT-RESERVE k SKIP-CHAIN ;
 \ Drop the row at IMPORT-IDX, the last record, and count it skipped, with the
 \ edges held for it.
 : IMPORT-SKIP ( -- )
    IMPORT-IDX @ F-ID FIELD$ {: id:ptr iu:n :}
    IMPORT-SKIPPED-N @ {: k:n :}
-   k 0 > if k 1- SKIPPED-ENDS @ else 0 then {: start:n :}
+   k SKIPPED-START {: start:n :}
    start iu + 1+ SKIPPED-BYTES-RESERVE
    id start SKIPPED-BYTES iu BYTE-COPY
    k 1+ SKIPPED-ENDS-RESERVE
    start iu + k SKIPPED-ENDS !
+   k SKIP-LINK
    1 IMPORT-SKIPPED-N +!
    IMPORT-IDX @ DROP-HELD
    POP-RECORD ;
 \ Whether a row skipped from this file had the id.
 : SKIPPED? ( ptr u8 n -- bool )
    {: id:ptr iu:n :}
-   0 IMPORT-SKIPPED-N @ 0 ?do
-      {: start:n :}
-      i SKIPPED-ENDS @ {: end:n :}
-      id iu start SKIPPED-BYTES end start - STR= if true unloop exit then
-      end
-   loop drop false ;
+   SKIP-BUCKETS @ 0= if false exit then
+   id iu STR-HASH SKIP-BUCKETS @ BUCKET SKIP-HEADS @
+   begin dup -1 <> while
+      dup SKIPPED$ id iu STR= if drop true exit then
+      SKIP-NEXT @
+   repeat drop false ;
 \ Move the row's requested blockers out of its blocks field: each becomes an
 \ edge only when IMPORT-ADD-DEPENDENCIES accepts it.
 : IMPORT-TAKE-DEPS ( -- )
@@ -3246,10 +3439,15 @@ DYNAMIC-BUFFER SKIPPED-ENDS n
 \ When the stream ends the waiting rows' parents never came. The first row
 \ whose parent is not itself waiting goes first and the rows waiting on it
 \ follow; rows waiting only on each other, a parent cycle, start from the first.
+\ The root heap's least current entry is that first row; with none, every
+\ waiting row's parent is waiting and the first live slot is the first row.
 : PENDING-ROOT ( -- n )
-   PENDING-N @ 0 ?do
-      i F-PARENT PENDING$ PENDING-FIND -1 = if i unloop exit then
-   loop 0 ;
+   begin ROOTS-N @ 0 > while
+      ROOT-POP {: slot:n node:n :}
+      slot node ROOT-CURRENT? if slot exit then
+   repeat
+   begin PENDING-FIRST @ W-NODE WAIT-CELL @ -1 = while 1 PENDING-FIRST +! repeat
+   PENDING-FIRST @ ;
 : PLACE-PENDING ( -- )
    begin PENDING-N @ 0 > while
       PENDING-ROOT UNPEND IMPORT-PLACE
@@ -3305,6 +3503,8 @@ DYNAMIC-BUFFER SKIPPED-ENDS n
    {: path:ptr pu:n :}
    true LOAD-ISSUES TOP-REBUILD
    0 IMPORTED-N ! 0 IMPORT-SKIPPED-N ! 0 DEP-SKIPPED-N ! 0 HELD-N !
+   0 PENDING-SLOTS ! 0 PENDING-N ! 0 PENDING-FIRST ! 0 NODE-N ! 0 NODE-BUCKETS !
+   0 ROOTS-N ! 0 SKIP-BUCKETS !
    path pu IMPORT-LINES
    PLACE-PENDING
    IMPORT-ARCHIVE-CLOSED
