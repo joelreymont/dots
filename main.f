@@ -2900,8 +2900,9 @@ variable JSONL-BYTE-U
 \ stream ends. A waiting row keeps its slot for the whole import, never shifted
 \ or reused, so slot order is row order; PENDING-N counts the live ones and
 \ PENDING-SLOTS every slot taken. WAIT holds each slot's own id node (W-NODE,
-\ -1 once the row left), its parent's id node (W-PARENT) and the next slot
-\ waiting on that parent (W-NEXT, -1 for none). No live slot is below
+\ -1 once the row left), its parent's id node (W-PARENT), the next slot
+\ waiting on that parent (W-NEXT) and the first and last edges held for the
+\ slot (W-HELD, W-HELD-TAIL), each -1 for none. No live slot is below
 \ PENDING-FIRST.
 DYNAMIC-BUFFER PENDING n
 variable PENDING-N
@@ -2917,10 +2918,15 @@ DYNAMIC-BUFFER WAIT n
 0 constant W-NODE
 1 constant W-PARENT
 2 constant W-NEXT
-3 constant WAIT-CELLS
+3 constant W-HELD
+4 constant W-HELD-TAIL
+5 constant WAIT-CELLS
 : WAIT-CELL ( n n -- ptr n )
    {: at:n field:n :}
    at WAIT-CELLS * field + WAIT ;
+\ The waiting slot the row at IMPORT-IDX came from, -1 for a row read straight
+\ from its line: UNPEND sets it to the slot, and IMPORT-ROW sets -1 on entry.
+variable IMPORT-SLOT
 \ The id nodes, one per id that is waiting or waited on, in chained hash
 \ buckets as the record id index: NODE-HEADS holds the first node of each
 \ bucket and N-NEXT the node after each, -1 for none. N-ROW is the live slot
@@ -3068,6 +3074,8 @@ variable ROOTS-N
    at up N-TAIL NODE-CELL !
    own at W-NODE WAIT-CELL !
    up at W-PARENT WAIT-CELL !
+   -1 at W-HELD WAIT-CELL !
+   -1 at W-HELD-TAIL WAIT-CELL !
    empty if up ROOT-OFFER then
    1 PENDING-SLOTS +!
    1 PENDING-N +!
@@ -3093,68 +3101,219 @@ variable ROOTS-N
    own ROOT-OFFER
    up own <> if up ROOT-OFFER then
    -1 at W-NODE WAIT-CELL !
+   at IMPORT-SLOT !
    -1 PENDING-N +! ;
-\ Edges to a waiting row, held until that row is placed or skipped, in the
-\ order read: four cells each, the arena offset and length of the blocking
-\ row's id, then those of the waiting row's id. Offsets, not pointers: growth
-\ moves the arena.
+\ Edges to a waiting row, held until that row is placed or skipped: three
+\ cells each, the arena offset and length of the blocking row's id (H-KEY,
+\ H-KEY-U) and the next edge held for the same waiting slot (H-NEXT, -1 for
+\ none), each slot's edges linked in the order read from its W-HELD to its
+\ W-HELD-TAIL. Offsets, not pointers: growth moves the arena. Edges are
+\ bump-allocated: HELD-N only grows during an import, and IMPORT-JSONL's reset
+\ releases them all.
 DYNAMIC-BUFFER HELD n
+0 constant H-KEY
+1 constant H-KEY-U
+2 constant H-NEXT
+3 constant HELD-CELLS
+: HELD-CELL ( n n -- ptr n )
+   {: edge:n field:n :}
+   edge HELD-CELLS * field + HELD ;
 variable HELD-N
-: HELD$ ( n -- ptr u8 n )
-   {: cell:n :}
-   cell HELD @ ARENA cell 1+ HELD @ ;
-: HELD-BLOCKER$ ( n -- ptr u8 n ) 4 * HELD$ ;
-: HELD-TARGET$ ( n -- ptr u8 n ) 4 * 2 + HELD$ ;
-\ Whether the id cells at the cell index name the row at the index. An entry
-\ names a row by its id's arena cells, which only that row has, so a duplicate
-\ id skipped for its parent names none of the live row's edges.
-: HELD-NAMES? ( n n -- bool )
-   {: cell:n idx:n :}
-   cell HELD @ idx F-ID 2 * REC-CELL @ =
-   cell 1+ HELD @ idx F-ID 2 * 1+ REC-CELL @ = and ;
-\ Hold an edge from the row at the source index to the waiting row at the
-\ index.
+: HELD-BLOCKER$ ( n -- ptr u8 n )
+   {: edge:n :}
+   edge H-KEY HELD-CELL @ ARENA edge H-KEY-U HELD-CELL @ ;
+\ Hold an edge from the row at the source index to the waiting row at the slot,
+\ at the tail of the slot's edges. Every hold runs after its source row's
+\ SAVE-RECORD, so that row stays placed and no line's arena rewind reaches its
+\ id bytes.
 : HOLD ( n n -- )
    {: src:n at:n :}
-   HELD-N @ 1+ 4 * HELD-RESERVE
-   HELD-N @ 4 * {: cell:n :}
-   src F-ID 2 * REC-CELL @ cell HELD !
-   src F-ID 2 * 1+ REC-CELL @ cell 1+ HELD !
-   at F-ID 2 * PENDING-CELL @ cell 2 + HELD !
-   at F-ID 2 * 1+ PENDING-CELL @ cell 3 + HELD !
+   HELD-N @ {: edge:n :}
+   edge 1+ HELD-CELLS * HELD-RESERVE
+   src F-ID 2 * REC-CELL @ edge H-KEY HELD-CELL !
+   src F-ID 2 * 1+ REC-CELL @ edge H-KEY-U HELD-CELL !
+   -1 edge H-NEXT HELD-CELL !
+   at W-HELD WAIT-CELL @ -1 = if edge at W-HELD WAIT-CELL !
+   else edge at W-HELD-TAIL WAIT-CELL @ H-NEXT HELD-CELL ! then
+   edge at W-HELD-TAIL WAIT-CELL !
    1 HELD-N +! ;
-\ Remove the held edge at the index, keeping the others in order.
-: UNHOLD ( n -- )
-   {: at:n :}
-   HELD-N @ 1- 4 * at 4 * ?do i 4 + HELD @ i HELD ! loop
-   -1 HELD-N +! ;
-DYNAMIC-BUFFER CYCLE-SEEN n
+\ Who blocks on an id: the inverse of the blocks fields of records
+\ 0..ISSUE-N-1 during an import, one node per id named, keyed by arena bytes
+\ equal to the id as FIND-EXACT resolves it, in chained hash buckets as the id
+\ nodes. BLOCKED-HEADS holds each bucket's first node and BD-NEXT the node
+\ after each; BD-EDGES is a node's first edge and E-NEXT the edge after each,
+\ each -1 for none; E-SRC is the record whose blocks field names the id. Nodes
+\ and edges are bump-allocated and released together by IMPORT-JSONL's reset.
+\ No blocks field written during an import escapes the index: the load's,
+\ PARSE-RECORD and PARSE-FILE, come before BLOCKED-BUILD indexes them;
+\ NEW-RECORD's is empty; JSONL-PARSE-LINE's are the raw requests of the
+\ unplaced last record, which IMPORT-TAKE-DEPS empties before any search; and
+\ IMPORT-ADD-BLOCK indexes its entry. No key goes stale: FIELD! only appends,
+\ ids do not change during an import, and IMPORT-PROCESS-LINE rewinds the arena
+\ only for a line that placed nothing, while edges are written only after a
+\ placement in the line.
+DYNAMIC-BUFFER BLOCKED n
+0 constant BD-NEXT
+1 constant BD-KEY
+2 constant BD-KEY-U
+3 constant BD-EDGES
+4 constant BLOCKED-CELLS
+: BLOCKED-CELL ( n n -- ptr n )
+   {: node:n field:n :}
+   node BLOCKED-CELLS * field + BLOCKED ;
+DYNAMIC-BUFFER BLOCKED-HEADS n
+variable BLOCKED-N
+variable BLOCKED-BUCKETS
+DYNAMIC-BUFFER EDGE n
+0 constant E-SRC
+1 constant E-NEXT
+2 constant EDGE-CELLS
+: EDGE-CELL ( n n -- ptr n )
+   {: edge:n field:n :}
+   edge EDGE-CELLS * field + EDGE ;
+variable EDGE-N
+: BLOCKED-KEY$ ( n -- ptr u8 n )
+   {: node:n :}
+   node BD-KEY BLOCKED-CELL @ ARENA node BD-KEY-U BLOCKED-CELL @ ;
+: BLOCKED-CHAIN ( n -- )
+   {: node:n :}
+   node BLOCKED-KEY$ STR-HASH BLOCKED-BUCKETS @ BUCKET {: b:n :}
+   b BLOCKED-HEADS @ node BD-NEXT BLOCKED-CELL !
+   node b BLOCKED-HEADS ! ;
+\ At least 64 buckets, doubled until no fewer than the nodes.
+: BLOCKED-REBUILD ( -- )
+   BLOCKED-BUCKETS @ 64 max begin dup BLOCKED-N @ < while 2 * repeat {: count:n :}
+   count BLOCKED-BUCKETS !
+   count BLOCKED-HEADS-RESERVE
+   count 0 ?do -1 i BLOCKED-HEADS ! loop
+   BLOCKED-N @ 0 ?do i BLOCKED-CHAIN loop ;
+\ The node with the id, or -1.
+: BLOCKED-FIND ( ptr u8 n -- n )
+   {: key:ptr ku:n :}
+   BLOCKED-BUCKETS @ 0= if -1 exit then
+   key ku STR-HASH BLOCKED-BUCKETS @ BUCKET BLOCKED-HEADS @
+   begin dup -1 <> while
+      dup BLOCKED-KEY$ key ku STR= if exit then
+      BD-NEXT BLOCKED-CELL @
+   repeat ;
+\ The node of the id at the arena offset and length, made when it is new.
+: BLOCKED-FOR ( n n -- n )
+   {: off:n u:n :}
+   off ARENA u BLOCKED-FIND dup -1 <> if exit then drop
+   BLOCKED-N @ {: node:n :}
+   node 1+ BLOCKED-CELLS * BLOCKED-RESERVE
+   off node BD-KEY BLOCKED-CELL !
+   u node BD-KEY-U BLOCKED-CELL !
+   -1 node BD-EDGES BLOCKED-CELL !
+   1 BLOCKED-N +!
+   BLOCKED-N @ BLOCKED-BUCKETS @ > if BLOCKED-REBUILD else node BLOCKED-CHAIN then
+   node ;
+\ Index the edge from the record at the source index to the id at the arena
+\ offset and length.
+: EDGE-ADD ( n n n -- )
+   {: off:n u:n src:n :}
+   off u BLOCKED-FOR {: node:n :}
+   EDGE-N @ {: edge:n :}
+   edge 1+ EDGE-CELLS * EDGE-RESERVE
+   src edge E-SRC EDGE-CELL !
+   node BD-EDGES BLOCKED-CELL @ edge E-NEXT EDGE-CELL !
+   edge node BD-EDGES BLOCKED-CELL !
+   1 EDGE-N +! ;
+\ Index the blocks fields of the records loaded.
+: BLOCKED-BUILD ( -- )
+   0 BLOCKED-N ! 0 BLOCKED-BUCKETS ! 0 EDGE-N !
+   ISSUE-N @ 0 ?do
+      i F-BLOCKS FIELD$ {: blocks:ptr bu:n :}
+      i F-BLOCKS 2 * REC-CELL @ {: base:n :}
+      0 begin dup bu < while
+         {: at:n :}
+         blocks bu at NEXT-LINE drop rot drop {: sz:n next:n :}
+         base at + sz i EDGE-ADD
+         next
+      repeat drop
+   loop ;
+\ Whether the record at the target reaches the one at the source over the
+\ blocks fields, entries resolved as FIND-EXACT resolves them. A forward search
+\ from the target over the blocks fields and a backward one from the source
+\ over BLOCKED advance one record each in turn: a record both reach is a path,
+\ and either running out is none. A row's held edges are written before its own
+\ and its own after its placement: the forward search for a held edge finds no
+\ edge out of its row, and the backward one for an edge from a row just placed
+\ finds no edge into it but those just held and any loaded entry naming its id,
+\ so an import's edge costs about one record's degree. A stamp equal to CYCLE-GEN marks a record reached by this
+\ search; stamps are never reset, since older ones are older generations.
+DYNAMIC-BUFFER CYCLE-FWD n
+DYNAMIC-BUFFER CYCLE-BWD n
+variable CYCLE-SEEN-N
+variable CYCLE-GEN
 DYNAMIC-BUFFER CYCLE-QUEUE n
 variable CYCLE-HEAD
 variable CYCLE-TAIL
+DYNAMIC-BUFFER CYCLE-BACK n
+variable CYCLE-BHEAD
+variable CYCLE-BTAIL
+\ Stamps and queue room for every record: a search queues a record at most once
+\ on each side. The stamps it exposes are zeroed, older than any search.
+: CYCLE-GROW ( -- )
+   ISSUE-N @ CYCLE-SEEN-N @ > if
+      ISSUE-N @ CYCLE-FWD-RESERVE
+      ISSUE-N @ CYCLE-BWD-RESERVE
+      ISSUE-N @ CYCLE-QUEUE-RESERVE
+      ISSUE-N @ CYCLE-BACK-RESERVE
+      ISSUE-N @ CYCLE-SEEN-N @ ?do 0 i CYCLE-FWD ! 0 i CYCLE-BWD ! loop
+      ISSUE-N @ CYCLE-SEEN-N !
+   then ;
+\ Reach the record from the target: true when the source's side reached it.
+: FWD-PUSH ( n -- bool )
+   {: idx:n :}
+   idx CYCLE-FWD @ CYCLE-GEN @ = if false exit then
+   idx CYCLE-BWD @ CYCLE-GEN @ = if true exit then
+   CYCLE-GEN @ idx CYCLE-FWD !
+   idx CYCLE-TAIL @ CYCLE-QUEUE ! 1 CYCLE-TAIL +!
+   false ;
+\ Reach the record from the source: true when the target's side reached it.
+: BWD-PUSH ( n -- bool )
+   {: idx:n :}
+   idx CYCLE-BWD @ CYCLE-GEN @ = if false exit then
+   idx CYCLE-FWD @ CYCLE-GEN @ = if true exit then
+   CYCLE-GEN @ idx CYCLE-BWD !
+   idx CYCLE-BTAIL @ CYCLE-BACK ! 1 CYCLE-BTAIL +!
+   false ;
+\ Follow the edges out of the next record the target reached.
+: FWD-STEP ( -- bool )
+   CYCLE-HEAD @ CYCLE-QUEUE @ {: idx:n :}
+   1 CYCLE-HEAD +!
+   idx F-BLOCKS FIELD$ {: blocks:ptr bu:n :}
+   0 begin dup bu < while
+      {: at:n :}
+      blocks bu at NEXT-LINE drop {: block:ptr sz:n next:n :}
+      block sz FIND-EXACT dup -1 <> if FWD-PUSH if true exit then else drop then
+      next
+   repeat drop false ;
+\ Follow the edges into the next record the source reached.
+: BWD-STEP ( -- bool )
+   CYCLE-BHEAD @ CYCLE-BACK @ {: idx:n :}
+   1 CYCLE-BHEAD +!
+   idx F-ID FIELD$
+   \ Only the record FIND-EXACT resolves the id to has edges in: filesystem
+   \ duplicates are real.
+   2dup FIND-EXACT idx <> if 2drop false exit then
+   BLOCKED-FIND dup -1 = if drop false exit then
+   BD-EDGES BLOCKED-CELL @
+   begin dup -1 <> while
+      dup E-SRC EDGE-CELL @ BWD-PUSH if drop true exit then
+      E-NEXT EDGE-CELL @
+   repeat drop false ;
 : WOULD-CYCLE? ( n n -- bool )
    {: target:n src:n :}
-   ISSUE-N @ CYCLE-SEEN-RESERVE
-   ISSUE-N @ 0 ?do 0 i CYCLE-SEEN ! loop
-   0 CYCLE-HEAD ! 1 CYCLE-TAIL !
-   1 CYCLE-QUEUE-RESERVE target 0 CYCLE-QUEUE !
+   CYCLE-GROW 1 CYCLE-GEN +!
+   0 CYCLE-HEAD ! 0 CYCLE-TAIL ! 0 CYCLE-BHEAD ! 0 CYCLE-BTAIL !
+   target FWD-PUSH drop
+   src BWD-PUSH if true exit then   \ a row naming itself
    begin CYCLE-HEAD @ CYCLE-TAIL @ < while
-      CYCLE-HEAD @ CYCLE-QUEUE @ {: idx:n :}
-      1 CYCLE-HEAD +!
-      idx src = if true exit then
-      idx CYCLE-SEEN @ 0= if
-         1 idx CYCLE-SEEN !
-         idx F-BLOCKS FIELD$ {: blocks:ptr bu:n :}
-         0 begin dup bu < while
-            {: at:n :}
-            blocks bu at NEXT-LINE drop {: block:ptr sz:n next:n :}
-            block sz FIND-EXACT dup -1 <> if
-               CYCLE-TAIL @ 1+ CYCLE-QUEUE-RESERVE
-               CYCLE-TAIL @ CYCLE-QUEUE ! 1 CYCLE-TAIL +!
-            else drop then
-            next
-         repeat drop
-      then
+      FWD-STEP if true exit then
+      CYCLE-BHEAD @ CYCLE-BTAIL @ < 0= if false exit then
+      BWD-STEP if true exit then
    repeat false ;
 \ Give the row at the source index an edge to the row with the id; one to a
 \ waiting row is held until that row is placed.
@@ -3180,6 +3339,7 @@ variable CYCLE-TAIL
    VALID @ 0<> if exit then
    block bu BLOCK-ADD
    0 BLOCK-BUF BLOCK-U @ src F-BLOCKS FIELD!
+   target F-ID 2 * REC-CELL @ target F-ID 2 * 1+ REC-CELL @ src EDGE-ADD
    src SAVE-RECORD ;
 : IMPORT-ADD-DEPENDENCIES ( -- )
    0 begin dup IMPORT-DEP-U @ < while
@@ -3189,24 +3349,33 @@ variable CYCLE-TAIL
       block bu IMPORT-IDX @ IMPORT-ADD-BLOCK
       next
    repeat drop ;
-\ Write the edges held for the row placed at the index, in the order read.
+\ Write the edges held for the row placed at the index from IMPORT-SLOT, in the
+\ order read. The row's id cells are the slot's, the bytes each edge was held
+\ for.
 : IMPORT-ADD-HELD ( n -- )
    {: idx:n :}
-   0 begin dup HELD-N @ < while
-      {: at:n :}
-      at 4 * 2 + idx HELD-NAMES? if
-         at HELD-TARGET$ at HELD-BLOCKER$ FIND-EXACT IMPORT-ADD-BLOCK
-         at UNHOLD at
-      else at 1+ then
-   repeat drop ;
-\ Drop the edges held for the row at the index, each a skipped dependency.
-: DROP-HELD ( n -- )
-   {: idx:n :}
-   0 begin dup HELD-N @ < while
-      {: at:n :}
-      at 4 * 2 + idx HELD-NAMES? if 1 DEP-SKIPPED-N +! at UNHOLD at
-      else at 1+ then
-   repeat drop ;
+   IMPORT-SLOT @ {: at:n :}
+   at -1 = if exit then
+   at W-HELD WAIT-CELL @
+   begin dup -1 <> while
+      {: edge:n :}
+      idx F-ID FIELD$ edge HELD-BLOCKER$ FIND-EXACT IMPORT-ADD-BLOCK
+      edge H-NEXT HELD-CELL @
+   repeat drop
+   -1 at W-HELD WAIT-CELL !
+   -1 at W-HELD-TAIL WAIT-CELL ! ;
+\ Drop the edges held for the row at IMPORT-IDX, taken from IMPORT-SLOT, each a
+\ skipped dependency.
+: DROP-HELD ( -- )
+   IMPORT-SLOT @ {: at:n :}
+   at -1 = if exit then
+   at W-HELD WAIT-CELL @
+   begin dup -1 <> while
+      1 DEP-SKIPPED-N +!
+      H-NEXT HELD-CELL @
+   repeat drop
+   -1 at W-HELD WAIT-CELL !
+   -1 at W-HELD-TAIL WAIT-CELL ! ;
 \ The import's top-folder groups: every record 0..ISSUE-N-1 is in the group
 \ named by the first component of its path below its partition, each group's
 \ members in ascending record order. Import links a record as the last step of
@@ -3360,7 +3529,7 @@ variable SKIP-BUCKETS
    start iu + k SKIPPED-ENDS !
    k SKIP-LINK
    1 IMPORT-SKIPPED-N +!
-   IMPORT-IDX @ DROP-HELD
+   DROP-HELD
    POP-RECORD ;
 \ Whether a row skipped from this file had the id.
 : SKIPPED? ( ptr u8 n -- bool )
@@ -3461,6 +3630,7 @@ variable SKIP-BUCKETS
 \ Admit the row the line parsed into the last record, at IMPORT-IDX: place it
 \ and the rows waiting on it, or set it aside until its parent's row comes.
 : IMPORT-ROW ( -- )
+   -1 IMPORT-SLOT !
    IMPORT-IDX @ F-ID FIELD$ CREATABLE-ID? 0= if IMPORT-SKIP exit then
    IMPORT-HAS-PARENT? if
       IMPORT-IDX @ F-PARENT FIELD$ CREATABLE-ID? 0= if IMPORT-SKIP exit then
@@ -3501,7 +3671,7 @@ variable SKIP-BUCKETS
 \ Imports the JSONL at a path: a failed open or read is an I/O error, not EOF.
 : IMPORT-JSONL ( ptr u8 n -- )
    {: path:ptr pu:n :}
-   true LOAD-ISSUES TOP-REBUILD
+   true LOAD-ISSUES BLOCKED-BUILD TOP-REBUILD
    0 IMPORTED-N ! 0 IMPORT-SKIPPED-N ! 0 DEP-SKIPPED-N ! 0 HELD-N !
    0 PENDING-SLOTS ! 0 PENDING-N ! 0 PENDING-FIRST ! 0 NODE-N ! 0 NODE-BUCKETS !
    0 ROOTS-N ! 0 SKIP-BUCKETS !
