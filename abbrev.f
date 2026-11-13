@@ -1,7 +1,7 @@
 \ Upstream abbreviation map used by slugify. ABBREV-ROWS compiles each
 \ word and its abbreviation into ABBREV-TAB as two counted strings; the table
 \ ends with a zero length byte.
-require src/lib/errors.f
+require src/lib/error.f
 require src/lib/string.f
 package DOT-READ
 : ABBREV-STR, ( ptr u8 n -- )

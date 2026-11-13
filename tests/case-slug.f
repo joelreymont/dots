@@ -1019,7 +1019,7 @@ s" git-index" ' GIT-INDEX DOT-CASE
 : SLUG-NO-GIT ( -- )
    PUT-PREFIX
    s" legacy-12345678.md" s" Normal title" s" open" 2 PUT-ISSUE
-   s" .git" FILE$ MAKE-DIRS
+   s" .git" FILE$ FS:MAKE-DIRS
    s" slugify" RUN-NO-GIT
    0 RC=
    s\" legacy-12345678 -> p-normal-title-12345678\nSlugified 1 issue(s)\n" OUT=
@@ -1045,7 +1045,7 @@ s" slug-no-git" ' SLUG-NO-GIT DOT-CASE
 \ Beside a .git with no `.dots` slugify renames nothing and stages nothing.
 : SLUG-NO-STORE-GIT ( -- )
    s" ../.dots" RM-DIR
-   s" .git" FILE$ MAKE-DIRS
+   s" .git" FILE$ FS:MAKE-DIRS
    s" slugify" RUN
    0 RC=
    s\" Slugified 0 issue(s)\n" OUT=

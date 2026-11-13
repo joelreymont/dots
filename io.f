@@ -1,5 +1,5 @@
 \ Checked CLI output: partial writes continue; failed writes are fatal.
-require src/lib/process.f
+require src/lib/fd.f
 require src/lib/fmt.f
 
 package DOT-IO
@@ -9,7 +9,7 @@ variable OUTPUT-READY
    s" I/O error" 1 die ;
 : INIT-OUTPUT ( -- )
    OUTPUT-READY @ if exit then
-   [: 1 >FD FD-NOSIGPIPE! ;] catch 0<> if WRITE-FAIL then
+   [: 1 >FD FD:FD-NOSIGPIPE! ;] catch 0<> if WRITE-FAIL then
    1 OUTPUT-READY ! ;
 public
 : PRINT ( ptr u8 n -- )

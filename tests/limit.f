@@ -6,11 +6,11 @@
 \ pipes, which the limit does not reach. Once dot exits the launcher restores
 \ its limit, copies dot's output to its own stdout and stderr, and exits with
 \ dot's rc. Only this process carries the limit, never the harness.
-require src/lib/errors.f
+require src/lib/error.f
 require src/lib/string.f
 require src/lib/process.f
 require src/lib/process-argv.f
-require src/lib/fd-io.f
+require src/lib/fd.f
 
 package DOT-LIMIT
 
@@ -53,11 +53,11 @@ public
    SCRIPT-ARGC 1 ?do i SCRIPT-ARGV$ >LEN PROC-ARGV+ loop
    LOWER
    0 SCRIPT-ARGV$ >LEN OUT CAP >LEN ERR CAP >LEN RUN-MS >MS
-   RUN-ARGV-CAPTURE-OUTCOME {: outu:len erru:len o:outcome :}
+   RUN-ARGV-CAPTURE-OUTCOME {: outu:len erru:len o:PROCESS:ending :}
    SAVED LIMIT!
-   1 >FD OUT outu LEN>N FD-IO:WRITE-FULL
-   2 >FD ERR erru LEN>N FD-IO:WRITE-FULL
-   o PROC-OUTCOME>DEADLINE-RC RC>N {: rc:n :}
+   1 >FD OUT outu LEN>N FD:WRITE-FULL
+   2 >FD ERR erru LEN>N FD:WRITE-FULL
+   o PROCESS:ENDING>DEADLINE-RC RC>N {: rc:n :}
    rc 0<> if s" " rc die then ;
 
 ;package

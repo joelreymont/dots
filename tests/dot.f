@@ -65,7 +65,7 @@
 \ Beside RC=, OUT=, ERR= and TREE=, MODE= checks a path's permission bits,
 \ SAME-LINE that two files hold the same line under a prefix, unmasked, and
 \ DIR= a directory beside `.dots` in TREE$'s form.
-require src/lib/errors.f
+require src/lib/error.f
 require src/lib/string.f
 require src/lib/byte-buffer.f
 require src/lib/fs.f
@@ -92,25 +92,25 @@ package DOT-T
 $12 constant UMASK                      \ 022: dot creates files rw-r--r--
 $1FF constant PERMISSIONS               \ a mode's rwxrwxrwx bits
 
-create DOT-BUF FS-PATH-CAP allot        \ bin/dot, absolute
+create DOT-BUF PATH-CAP allot        \ bin/dot, absolute
 variable DOT-U
-create LIMIT-BUF FS-PATH-CAP allot      \ tests/limit.f, absolute
+create LIMIT-BUF PATH-CAP allot      \ tests/limit.f, absolute
 variable LIMIT-U
-create PROBE-BUF FS-PATH-CAP allot      \ the library cc builds from tests/probe.c
+create PROBE-BUF PATH-CAP allot      \ the library cc builds from tests/probe.c
 variable PROBE-U
-create CC-BUF FS-PATH-CAP allot         \ cc, resolved on PATH
-create GIT-BUF FS-PATH-CAP allot        \ git, resolved on PATH
-create STORE-BUF FS-PATH-CAP allot      \ the current case's store
+create CC-BUF PATH-CAP allot         \ cc, resolved on PATH
+create GIT-BUF PATH-CAP allot        \ git, resolved on PATH
+create STORE-BUF PATH-CAP allot      \ the current case's store
 variable STORE-U
-create FILE-BUF FS-PATH-CAP allot       \ a path inside the store
+create FILE-BUF PATH-CAP allot       \ a path inside the store
 variable FILE-U
-create REPO-BUF FS-PATH-CAP allot       \ a path inside the repository
+create REPO-BUF PATH-CAP allot       \ a path inside the repository
 variable REPO-U
-create HB-BUF FS-PATH-CAP allot         \ the installed hb, absolute
-create WALK-BUF FS-PATH-CAP allot       \ the entry TREE$ visits
+create HB-BUF PATH-CAP allot         \ the installed hb, absolute
+create WALK-BUF PATH-CAP allot       \ the entry TREE$ visits
 variable WALK-U
 variable REL-AT                         \ where WALK-BUF's store-relative path starts
-FS-PATH-CAP SPAN-BUFFER: LINK-BUF
+PATH-CAP SPAN-BUFFER: LINK-BUF
 create SECTION-BUF NAME-CAP allot
 variable SECTION-U
 create CASE-BUF NAME-CAP allot
@@ -148,7 +148,7 @@ variable NAMES-U
    u lenp ! ;
 
 : JOIN! ( ptr u8 n ptr u8 n ptr u8 ptr n -- ) {: a:ptr u:n b:ptr v:n dst:ptr lenp:ptr :}
-   a u b v dst JOIN-PATH lenp ! ;
+   a u b v dst FS:JOIN-PATH lenp ! ;
 
 : STORE$ ( -- ptr u8 n ) STORE-BUF STORE-U @ ;
 
@@ -169,13 +169,13 @@ variable NAMES-U
 \ Make the directories above the path.
 : PARENTS ( ptr u8 n -- ) {: f:ptr fu:n :}
    fu begin dup 0 > while
-      dup 1- f + c@ [char] / = if 1- f swap MAKE-DIRS 0 else 1- then
+      dup 1- f + c@ [char] / = if 1- f swap FS:MAKE-DIRS 0 else 1- then
    repeat drop ;
 
 : READ-FILE ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
-   a u FILE-SIZE {: size:n :}
+   a u FS:FILE-SIZE {: size:n :}
    size 1+ RAW-RESERVE
-   a u 0 RAW size READ-ALL {: got:n :}
+   a u 0 RAW size FS:READ-ALL {: got:n :}
    0 RAW got ;
 
 \ ---- ids and masking ------------------------------------------------------------
@@ -282,7 +282,7 @@ variable NAMES-U
 \ Step into a child of the visited entry; the old length steps back out.
 : WALK-PUSH ( ptr u8 n -- n ) {: a:ptr u:n :}
    WALK-U @ {: old:n :}
-   old u + 1+ FS-PATH-CAP > if E-FS-CAPACITY throw then
+   old u + 1+ PATH-CAP > if E-FS-CAPACITY throw then
    [char] / WALK-BUF old + c!
    a WALK-BUF old + 1+ u BYTE-COPY
    old u + 1+ WALK-U !
@@ -303,6 +303,21 @@ variable NAMES-U
       a u + 1- c@ 10 <> if s\" \\\n" SNAP B+ then
    then
    s\" .\n" SNAP B+ ;
+
+PROCESS-SYMBOLS
+FUNCTION: READLINK-CALL readlink ( ptr u8 ptr u8 n -- n )
+   1 2 WRITES-ARG
+;FUNCTION
+
+\ The symlink's target into dst, its length answered. A link that would not
+\ fit is E-FS-CAPACITY, not silently truncated.
+: READ-LINK ( ptr u8 n SPAN:span<u8> -- n ) {: pa:ptr pu dst :}
+   pa pu FS:TRY-LSTAT 0= if E-FS-STAT throw then
+   FS:STAT-MODE@ FS:S-IFMT and FS-ABI:S-IFLNK <> if E-FS-STAT throw then
+   FS:STAT-SIZE@ dst SPAN:LEN > if E-FS-CAPACITY throw then
+   pa pu FS:>PATHZ dst SPAN:$ READLINK-CALL {: n :}
+   n 0 < if E-FS-IO throw then
+   n ;
 
 : SNAP-LINK ( -- )
    s" l" ENTRY s"  -> " SNAP B+
@@ -346,9 +361,9 @@ variable BEST
    BEST @ ;
 
 : SNAP-ENTRY ( -- )
-   WALK$ SYMLINK? if SNAP-LINK exit then
-   WALK$ FILE? if SNAP-FILE exit then
-   WALK$ DIR? 0= if s" p" ENTRY 10 SNAP BUF:APPEND-BYTE exit then
+   WALK$ FS:SYMLINK? if SNAP-LINK exit then
+   WALK$ FS:FILE? if SNAP-FILE exit then
+   WALK$ FS:DIR? 0= if s" p" ENTRY 10 SNAP BUF:APPEND-BYTE exit then
    s" d" ENTRY 10 SNAP BUF:APPEND-BYTE
    LIST {: at:n end:n :}
    -1 begin at end rot NEXT-NAME dup 0 >= while {: name:n :}
@@ -362,10 +377,10 @@ variable BEST
 : SNAP$ ( ptr u8 n -- ptr u8 n ) {: a:ptr u:n :}
    SNAP BUF:CLEAR
    0 NAMES-U !
-   STORE$ WALK-BUF FS-PATH-CAP WALK-U COPY!
+   STORE$ WALK-BUF PATH-CAP WALK-U COPY!
    WALK-U @ 1+ REL-AT !
    a u WALK-PUSH drop
-   WALK$ SYMLINK? WALK$ EXISTS? or if SNAP-ENTRY then
+   WALK$ FS:SYMLINK? WALK$ FS:EXISTS? or if SNAP-ENTRY then
    SNAP B$ ;
 
 : TREE$ ( -- ptr u8 n ) s" .dots" SNAP$ ;
@@ -410,16 +425,16 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
    SB$ FILE$ ;
 
 : OPEN-OUT ( ptr u8 n -- n ) {: a:ptr u:n :}
-   a u STREAM$ s" " WRITE-ALL
-   a u STREAM$ OPEN-APPEND-FD ;
+   a u STREAM$ s" " FS:WRITE-ALL
+   a u STREAM$ FS:OPEN-APPEND-FD ;
 
 : OPEN-NULL ( -- n )
-   s" /dev/null" FS-PATHZ open-rd {: fd:n :}
+   s" /dev/null" FS:>PATHZ open-rd {: fd:n :}
    fd 0 < if E-FS-OPEN throw then
    fd ;
 
 : CLOSE ( n -- )
-   FS-ATOMIC:CLOSE-FD 0<> if E-FS-IO throw then ;
+   FS:CLOSE-FD 0<> if E-FS-IO throw then ;
 
 \ Start the program in the store with the argv and PATH PROC-ARGV+ and PROC-ENV+
 \ built and the fd as its stdout, which LAUNCH-PATHED closes once the child
@@ -513,13 +528,13 @@ public
    s" dots" GT-START
    0 SCRIPT-ARGV$ {: a:ptr u:n :}
    u 0 > a c@ [char] / = and if
-      a u DOT-BUF FS-PATH-CAP DOT-U COPY!
+      a u DOT-BUF PATH-CAP DOT-U COPY!
    else
       SOURCE-ROOT:CWD$ a u DOT-BUF DOT-U JOIN!
    then
-   DOT-BUF DOT-U @ FILE? 0= if s" tests/run.f: no dot binary at the argument" 2 die then
+   DOT-BUF DOT-U @ FS:FILE? 0= if s" tests/run.f: no dot binary at the argument" 2 die then
    SOURCE-ROOT:CURRENT$ s" limit.f" LIMIT-BUF LIMIT-U JOIN!
-   LIMIT-BUF LIMIT-U @ FILE? 0= if s" tests/run.f: no tests/limit.f beside it" 2 die then
+   LIMIT-BUF LIMIT-U @ FS:FILE? 0= if s" tests/run.f: no tests/limit.f beside it" 2 die then
    BUILD-PROBE
    UMASK SET-UMASK drop
    TEXT 256 BUF:N>BLEN BUF:INIT
@@ -529,7 +544,7 @@ public
 \ The report: exit 0 when every case passed, else 2 keeping the root.
 : FINISH ( -- )
    GT-FAILURES 0<> if
-      GT-ROOT CLEANUP-FORGET
+      GT-ROOT FS:CLEANUP-FORGET
       s" stores kept in " type GT-ROOT type cr
    then
    GT-REPORT ;
@@ -540,16 +555,16 @@ public
 \ Seed `.dots/<path>` with the bytes.
 : PUT ( ptr u8 n ptr u8 n -- ) {: path:ptr pathu:n a:ptr u:n :}
    path pathu DOTS$ PARENTS
-   path pathu DOTS$ a u WRITE-ALL ;
+   path pathu DOTS$ a u FS:WRITE-ALL ;
 
 \ Seed `.dots/<path>` as a symlink to the target.
 : LINK ( ptr u8 n ptr u8 n -- ) {: target:ptr targetu:n path:ptr pathu:n :}
    path pathu DOTS$ PARENTS
-   target targetu path pathu DOTS$ MAKE-SYMLINK ;
+   target targetu path pathu DOTS$ FS:MAKE-SYMLINK ;
 
 \ Make `.dots/<path>` a named pipe.
 : PUT-FIFO ( ptr u8 n -- )
-   DOTS$ FS-PATHZ FIFO-MODE MKFIFO-CALL 0<> if E-FS-IO throw then ;
+   DOTS$ FS:>PATHZ FIFO-MODE MKFIFO-CALL 0<> if E-FS-IO throw then ;
 
 \ Bits for MODE: READ-ONLY refuses new entries in a directory, WRITABLE
 \ restores it.
@@ -558,11 +573,11 @@ $1ED constant WRITABLE                  \ rwxr-xr-x
 
 \ Set the permission bits of `.dots/<path>`; `.` is `.dots` itself.
 : MODE ( ptr u8 n n -- ) {: path:ptr pathu:n mode:n :}
-   path pathu DOTS$ mode CHMOD-MODE ;
+   path pathu DOTS$ mode FS:CHMOD-MODE ;
 
 \ Remove the directory tree `.dots/<path>`.
 : RM-DIR ( ptr u8 n -- )
-   DOTS$ REMOVE-TREE ;
+   DOTS$ FS:REMOVE-TREE ;
 
 \ Seed a task file in the frontmatter dot writes.
 : PUT-ISSUE ( ptr u8 n ptr u8 n ptr u8 n n -- )
@@ -578,7 +593,7 @@ $1ED constant WRITABLE                  \ rwxr-xr-x
 EXPORT FILE$
 
 \ A deep path, such as the 1015-byte `.dots/<255 a>/<255 b>/<255 c>/<236 d>/p.md`,
-\ would pass FS-PATH-CAP joined to the store's absolute path, so FILE$ cannot
+\ would pass PATH-CAP joined to the store's absolute path, so FILE$ cannot
 \ form it. A case seeds it with the top folder `.dots/a`, `true MOVE-TOP`
 \ renames that to its long name, NAME-MAX `a`s, before dot runs, and
 \ `false MOVE-TOP` renames it back before the tree is read. TOP$ is the top
@@ -595,7 +610,7 @@ HELD 1024 BUF:N>BLEN BUF:INIT
    TOP B$ ;
 : MOVE-TOP ( bool -- ) {: long:bool :}
    HELD BUF:CLEAR long 0= TOP$ FILE$ HELD B+
-   HELD B$ long TOP$ FILE$ RENAME-FILE ;
+   HELD B$ long TOP$ FILE$ FS:RENAME-FILE ;
 
 create LONG BUF:HDR-BYTES allot         \ a long path, or the tree holding it
 LONG 1024 BUF:N>BLEN BUF:INIT
@@ -616,12 +631,11 @@ LONG 1024 BUF:N>BLEN BUF:INIT
 \ Wait for the child, at most RUN-MS, and keep its rc.
 : WAIT ( pid -- ) {: pid:pid :}
    EARLY @ 0<> if EARLY-RC @ RC ! 0 EARLY ! exit then
-   pid RUN-MS >MS PROC-WAIT-BOUNDED {: o:outcome :}
-   o MATCH outcome
+   pid RUN-MS >MS PROCESS:WAIT-BOUNDED {: o:PROCESS:ending :}
+   o MATCH PROCESS:ending
       timeout OF
-         pid PROC-KILL-TREE
-         pid PROC-WAIT-OUTCOME MATCH outcome
-            timeout OF ENDOF
+         pid PROCESS:KILL-TREE
+         pid PROCESS:WAIT MATCH PROCESS:status
             exited OF drop ENDOF
             signaled OF drop ENDOF
          ;MATCH
@@ -629,7 +643,7 @@ LONG 1024 BUF:N>BLEN BUF:INIT
       exited OF drop ENDOF
       signaled OF drop ENDOF
    ;MATCH
-   o PROC-OUTCOME>DEADLINE-RC RC>N RC ! ;
+   o PROCESS:ENDING>DEADLINE-RC RC>N RC ! ;
 
 : RUN ( ptr u8 n -- )
    SPAWN WAIT ;
@@ -665,7 +679,7 @@ LONG 1024 BUF:N>BLEN BUF:INIT
 \ RUN with PATH the empty directory `no-git` beside `.dots`: dot finds no git.
 : RUN-NO-GIT ( ptr u8 n -- )
    DOT-ARGV {: prog:ptr progu:n :}
-   s" no-git" FILE$ MAKE-DIRS
+   s" no-git" FILE$ FS:MAKE-DIRS
    s" PATH" >LEN s" no-git" FILE$ >LEN PROC-ENV+
    prog progu s" out" OPEN-OUT LAUNCH-PATHED WAIT ;
 
@@ -693,8 +707,8 @@ private
 \ time into `out`, closing its end after max bytes, or at EOF when max is -1.
 : READ-PIPE ( ptr u8 n n n -- ) {: a:ptr u:n chunk:n max:n :}
    chunk 1 < chunk CHUNK-CAP > or if E-STR-CAPACITY throw then
-   PIPE-PAIR {: rd:fd wr:fd :}
-   rd FD-CLOEXEC!
+   FD:PIPE-PAIR {: rd:fd wr:fd :}
+   rd FD:FD-CLOEXEC!
    a u DOT-ARGV wr FD>N LAUNCH {: pid:pid :}
    TEXT BUF:CLEAR
    0 begin {: total:n :}
@@ -706,21 +720,21 @@ private
    until drop
    rd FD>N CLOSE
    pid WAIT
-   s" out" STREAM$ TEXT B$ WRITE-ALL ;
+   s" out" STREAM$ TEXT B$ FS:WRITE-ALL ;
 
 public
 
 \ Run bin/dot with fd 1 closed: the harness's own stdout, close-on-exec while
 \ dot starts.
 : RUN-CLOSED ( ptr u8 n -- )
-   1 >FD FD-CLOEXEC!
+   1 >FD FD:FD-CLOEXEC!
    DOT-ARGV -1 LAUNCH {: pid:pid :}
-   1 F-SETFD 0 fcntl 0<> if E-FS-IO throw then
+   1 FD:F-SETFD 0 fcntl 0<> if E-FS-IO throw then
    pid WAIT ;
 
 \ Run bin/dot with its stdout a pipe whose read end is already closed.
 : RUN-BROKEN ( ptr u8 n -- ) {: a:ptr u:n :}
-   PIPE-PAIR {: rd:fd wr:fd :}
+   FD:PIPE-PAIR {: rd:fd wr:fd :}
    rd FD>N CLOSE
    a u DOT-ARGV wr FD>N LAUNCH WAIT ;
 
@@ -745,13 +759,13 @@ public
 
 \ The child is still running after ms: it waits on something the case holds.
 : WAITING ( pid n -- pid ) {: pid:pid ms:n :}
-   pid ms >MS PROC-WAIT-BOUNDED {: o:outcome :}
-   o MATCH outcome
+   pid ms >MS PROCESS:WAIT-BOUNDED {: o:PROCESS:ending :}
+   o MATCH PROCESS:ending
       timeout OF true ENDOF
       exited OF drop false ENDOF
       signaled OF drop false ENDOF
    ;MATCH {: waiting:bool :}
-   waiting 0= if o PROC-OUTCOME>DEADLINE-RC RC>N EARLY-RC ! 1 EARLY ! then
+   waiting 0= if o PROCESS:ENDING>DEADLINE-RC RC>N EARLY-RC ! 1 EARLY ! then
    waiting s" waiting" LABEL GT-CHECK
    pid ;
 
@@ -779,8 +793,8 @@ public
 : DOT-CASE ( ptr u8 n [ -- ] -- ) {: a:ptr u:n body :}
    a u CASE-BUF NAME-CAP CASE-U COPY!
    GT-ROOT CASE$ STORE-BUF STORE-U JOIN!
-   STORE$ EXISTS? if s" tests: two cases are named " type CASE$ type cr s" tests: duplicate case" 2 die then
-   s" .dots/archive" FILE$ MAKE-DIRS
+   STORE$ FS:EXISTS? if s" tests: two cases are named " type CASE$ type cr s" tests: duplicate case" 2 die then
+   s" .dots/archive" FILE$ FS:MAKE-DIRS
    IDS-RESET
    -1 CHILD-K !
    0 EARLY !
@@ -820,7 +834,7 @@ public
    a u SNAP$ MASK want wantu s" dir" LABEL GT-CHECK$ ;
 
 : MODE= ( ptr u8 n n -- ) {: a:ptr u:n want:n :}
-   a u DOTS$ STAT-MODE PERMISSIONS and want s" mode" LABEL GT-CHECK-N ;
+   a u DOTS$ FS:STAT-MODE PERMISSIONS and want s" mode" LABEL GT-CHECK-N ;
 
 \ `.dots/<a>` and `.dots/<b>` hold the same line under the prefix, unmasked:
 \ two times one command wrote.

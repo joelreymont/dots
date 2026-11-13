@@ -30,7 +30,7 @@ DYNAMIC-BUFFER LINE u8
    row 0 LINE rowu BYTE-COPY
    u rowu ?do 32 i LINE c! loop
    10 u LINE c!
-   count 0 ?do s" import.jsonl" FILE$ 0 LINE u 1+ APPEND-FILE loop ;
+   count 0 ?do s" import.jsonl" FILE$ 0 LINE u 1+ FS:APPEND-FILE loop ;
 
 s" import" SECTION
 
@@ -162,7 +162,7 @@ f .dots/b.md
 \ A malformed line ends the import; the edges accepted before it are written.
 : MALFORMED-LINE-EDGE ( -- )
    ROWS-EDGE
-   s" import.jsonl" FILE$ s\" not json\n" APPEND-FILE
+   s" import.jsonl" FILE$ s\" not json\n" FS:APPEND-FILE
    IMPORT
    1 RC=
    s" " OUT=
@@ -519,7 +519,7 @@ s" parent-path-is-file" ' PARENT-PATH-IS-FILE DOT-CASE
 
 \ A row whose parent folder is a link is skipped and counted, nothing written.
 : PARENT-PATH-IS-SYMLINK ( -- )
-   s" outside" FILE$ MAKE-DIRS
+   s" outside" FILE$ FS:MAKE-DIRS
    s" ../outside" s" p" LINK
    s\" {\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\",\"dependencies\":[{\"depends_on_id\":\"p\",\"type\":\"parent-child\"}]}
 " JSONL
@@ -575,7 +575,7 @@ s" parent-folder-fails" ' PARENT-FOLDER-FAILS DOT-CASE
 \ A parentless row whose folder is a link is skipped and counted, as add refuses
 \ it.
 : OWN-PATH-IS-SYMLINK ( -- )
-   s" outside" FILE$ MAKE-DIRS
+   s" outside" FILE$ FS:MAKE-DIRS
    s" ../outside" s" a" LINK
    s\" {\"id\":\"a\",\"title\":\"A\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
 " JSONL
@@ -935,7 +935,7 @@ s" archived-parent-symlink" ' ARCHIVED-PARENT-SYMLINK DOT-CASE
 \ A closed parentless row is refused before its write when the archive is a
 \ symlink: nothing is written.
 : CLOSED-ROW-ARCHIVE-SYMLINK ( -- )
-   s" external" FILE$ MAKE-DIRS
+   s" external" FILE$ FS:MAKE-DIRS
    s" archive" RM-DIR
    s" ../external" s" archive" LINK
    s\" {\"id\":\"p\",\"title\":\"P\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\",\"created_at\":\"2026-01-01T00:00:00Z\"}
@@ -1503,7 +1503,7 @@ f .dots/p.md
 s" parent-not-directory" ' PARENT-NOT-DIRECTORY DOT-CASE
 
 \ With p at the 1015-byte path, p's own folder is 1012 bytes: p's file there,
-\ 1017 bytes, fits FS-PATH-CAP, but the 9-byte id's file, 1025 bytes, does
+\ 1017 bytes, fits PATH-CAP, but the 9-byte id's file, 1025 bytes, does
 \ not. The import ends before p gains a folder, as add -P refuses. The tree is
 \ read with the top folder renamed back to `a`.
 : CHILD-PATH-TOO-LONG ( -- )
@@ -1709,7 +1709,7 @@ s" unreadable-file" ' UNREADABLE-FILE DOT-CASE
 \ anything.
 : NOT-A-FILE ( -- )
    s" ../.dots" RM-DIR
-   s" import.jsonl" FILE$ MAKE-DIRS
+   s" import.jsonl" FILE$ FS:MAKE-DIRS
    IMPORT
    1 RC=
    s" " OUT=
@@ -1721,7 +1721,7 @@ s" not-a-file" ' NOT-A-FILE DOT-CASE
 \ A row whose file path is taken by a directory is skipped and counted, as add
 \ refuses it.
 : IMPORT-OVER-TASK-DIR ( -- )
-   s" .dots/a.md" FILE$ MAKE-DIRS
+   s" .dots/a.md" FILE$ FS:MAKE-DIRS
    ROW-A JSONL
    IMPORT
    0 RC=
@@ -1745,7 +1745,7 @@ s" import-create-noreplace" ' IMPORT-CREATE-NOREPLACE DOT-CASE
 
 \ A read that fails after the open is an I/O error, never the end of input.
 : READ-FAILURE ( -- )
-   s" import.jsonl" FILE$ MAKE-DIRS
+   s" import.jsonl" FILE$ FS:MAKE-DIRS
    s" tests/read-probe.f" RUN-HB
    1 RC=
    s" " OUT=
@@ -1758,7 +1758,7 @@ s" read-failure" ' READ-FAILURE DOT-CASE
 
 \ init beside a .git that is no repository warns that git add failed.
 : INIT-GIT-INVALID ( -- )
-   s" .git" FILE$ MAKE-DIRS
+   s" .git" FILE$ FS:MAKE-DIRS
    s" init" RUN
    0 RC=
    s" " OUT=
@@ -1772,7 +1772,7 @@ s" init-git-invalid" ' INIT-GIT-INVALID DOT-CASE
 \ init beside a .git with no git on PATH warns that .dots is not staged.
 : INIT-NO-GIT ( -- )
    s" ../.dots" RM-DIR
-   s" .git" FILE$ MAKE-DIRS
+   s" .git" FILE$ FS:MAKE-DIRS
    s" init" RUN-NO-GIT
    0 RC=
    s" " OUT=

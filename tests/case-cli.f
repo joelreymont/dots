@@ -5,6 +5,8 @@ require dot.f
 using DOT-T
 package DOT-CLI
 
+493 constant MODE-DIR                 \ octal 755
+
 : USAGE-TEXT ( -- ptr u8 n )
    s\" dots - Connect the dots
 
@@ -593,11 +595,11 @@ s" init-absent-jsonl" ' INIT-ABSENT-JSONL DOT-CASE
 \ search, as an I/O error before it creates anything. `.dots/../p` needs
 \ `.dots`, so p's mode is set through MODE first and restored through its path.
 : INIT-JSONL-UNREADABLE-DIR ( -- )
-   s" p" FILE$ MAKE-DIRS
+   s" p" FILE$ FS:MAKE-DIRS
    s" ../p" 0 MODE
    s" ../.dots" RM-DIR
    s" init|--from-jsonl|p/x.jsonl" RUN
-   s" p" FILE$ FS-MUT-MODE-DIR CHMOD-MODE
+   s" p" FILE$ MODE-DIR FS:CHMOD-MODE
    1 RC=
    s" " OUT=
    s\" I/O error\n" ERR=
@@ -651,7 +653,7 @@ s" show-ambiguous-prefix" ' SHOW-AMBIGUOUS-PREFIX DOT-CASE
    s" p/p.md" s" P" s" open" 2 PUT-ISSUE
    s" p" 0 MODE
    s" ls" RUN
-   s" p" FS-MUT-MODE-DIR MODE
+   s" p" MODE-DIR MODE
    1 RC=
    s" " OUT=
    s\" I/O error\n" ERR=
@@ -672,7 +674,7 @@ s" unreadable-folder" ' UNREADABLE-FOLDER DOT-CASE
 
 : WRITER-WAITS-FOR-LOCK ( -- )
    s" a.md" s" Before" s" open" 2 PUT-ISSUE
-   HOLD
+   DOT-T:HOLD
    s" update|a|--status|done" SPAWN
    200 WAITING
    s" a.md" s" Written while waiting" s" open" 2 PUT-ISSUE
@@ -699,7 +701,7 @@ s" writer-waits-for-lock" ' WRITER-WAITS-FOR-LOCK DOT-CASE
 
 : READER-SKIPS-LOCK ( -- )
    s" a.md" s" Seeded task" s" open" 2 PUT-ISSUE
-   HOLD
+   DOT-T:HOLD
    s" show|a" RUN
    RELEASE
    0 RC=

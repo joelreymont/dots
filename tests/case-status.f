@@ -988,7 +988,7 @@ s" off-legacy-collision" ' OFF-LEGACY-COLLISION DOT-CASE
 \ C's own folder would be a link out of the store: the close refuses before
 \ anything moves, through the link or beside it.
 : OFF-LEGACY-NOT-DIRECTORY ( -- )
-   s" outside" FILE$ MAKE-DIRS
+   s" outside" FILE$ FS:MAKE-DIRS
    s" t/t.md" s" T" s" open" 2 PUT-ISSUE
    s" t/c.md" s" C" s" closed" 2 PUT-ISSUE
    s" ../../outside" s" t/c" LINK

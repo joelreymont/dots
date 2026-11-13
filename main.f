@@ -1,12 +1,12 @@
 \ Native, filesystem-compatible dots CLI for the full size comparison.
-require src/lib/errors.f
+require src/lib/error.f
 require src/lib/string.f
+require src/lib/span.f
 require src/lib/fs.f
 require src/lib/fs-mutate.f
 require src/lib/fs-list.f
 require src/lib/process-env.f
-require src/lib/json-write.f
-require src/lib/json-read.f
+require src/lib/json.f
 require src/lib/decimal.f
 require src/lib/jsonl.f
 require src/lib/utf8-scalar.f
@@ -21,6 +21,13 @@ package DOT-READ
 1048576 constant ISSUE-MAX
 65536 constant CONFIG-MAX
 512 constant MAX-DEPTH
+
+\ A path's mode, or none when it cannot be statted; the L form does not
+\ follow a final symlink.
+: TRY-STAT-MODE ( ptr u8 n -- option<n> )
+   FS:TRY-STAT if FS:STAT-MODE@ OPTION:SOME else OPTION:NONE then ;
+: TRY-LSTAT-MODE ( ptr u8 n -- option<n> )
+   FS:TRY-LSTAT if FS:STAT-MODE@ OPTION:SOME else OPTION:NONE then ;
 
 0 constant F-ID
 1 constant F-TITLE
@@ -58,11 +65,11 @@ variable ISSUE-N
 create FILE-BUF ISSUE-MAX allot
 variable FILE-U
 DYNAMIC-BUFFER BLOCK-BUF u8
-create PATHS MAX-DEPTH FS-PATH-CAP * allot
+create PATHS MAX-DEPTH PATH-CAP * allot
 DYNAMIC-BUFFER SCAN-NAMES u8
 variable SCAN-NAMES-U
 create JSON-OUT-BUF BUF:HDR-BYTES allot
-TYPED-VARIABLE JSON-W JSON-WRITE:writer
+TYPED-VARIABLE JSON-W JSON:writer
 variable CURRENT
 variable VALID
 variable BLOCK-ON
@@ -184,18 +191,18 @@ variable ID-BUCKETS
    idx ID-UNLINK a u idx F-ID FIELD! idx ID-LINK ;
 \ Drop the last record.
 : POP-RECORD ( -- ) ISSUE-N @ 1- dup ID-UNLINK ISSUE-N ! ;
-: PATH-AT ( n -- ptr u8 ) FS-PATH-CAP * PATHS + ;
-: PATH-JOIN ( ptr u8 n ptr u8 n ptr u8 -- n ) JOIN-PATH ;
+: PATH-AT ( n -- ptr u8 ) PATH-CAP * PATHS + ;
+: PATH-JOIN ( ptr u8 n ptr u8 n ptr u8 -- n ) FS:JOIN-PATH ;
 \ A record's own folder is the directory of its path when that directory lies
 \ below the record's partition root and is named after it. The length of that
 \ directory in the path, or 0 without one.
 : OWN-FOLDER-U ( n -- n )
    {: idx:n :}
    idx F-PATH FIELD$ {: path:ptr pu:n :}
-   pu path pu BASENAME nip - 1- {: dir-u:n :}
+   pu path pu FS:BASENAME nip - 1- {: dir-u:n :}
    idx F-ARCHIVED REC-CELL @ 0<> if s" .dots/archive" else s" .dots" then nip
    dir-u >= if 0 exit then
-   path dir-u BASENAME idx F-ID FIELD$ STR= if dir-u else 0 then ;
+   path dir-u FS:BASENAME idx F-ID FIELD$ STR= if dir-u else 0 then ;
 : OWN-FOLDER? ( n -- bool ) OWN-FOLDER-U 0 > ;
 : NEXT-LINE ( ptr u8 n n -- ptr u8 n n bool ) 10 swap SPLIT-NEXT ;
 
@@ -357,7 +364,7 @@ variable ID-BUCKETS
    0 VALID ! 0 BLOCK-ON ! 0 BLOCK-U !
    1 idx F-ERROR REC-CELL !
    idx F-PATH FIELD$ {: path:ptr pu:n :}
-   path pu [: 2dup FILE-BUF ISSUE-MAX READ-ALL FILE-U ! ;] catch
+   path pu [: 2dup FILE-BUF ISSUE-MAX FS:READ-ALL FILE-U ! ;] catch
    dup E-FS-CAPACITY = s" Issue file too large: " path pu ?ISSUE-ERROR
    dup 0<> if throw then drop 2drop
    FILE-BUF FILE-U @ 0 NEXT-LINE {: head:ptr hu:n off:n more:bool :}
@@ -459,7 +466,7 @@ variable ID-BUCKETS
    \ A nested file named after its directory is that folder's own task, a child
    \ of the folder enclosing it below the top level; any other nested file is a
    \ child of its directory.
-   path plen BASENAME {: dir:ptr du:n :}
+   path plen FS:BASENAME {: dir:ptr du:n :}
    SCAN-NAMES-U @ {: begin-at:n :}
    path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
    SCAN-NAMES-U @ {: end-at:n :}
@@ -471,29 +478,29 @@ variable ID-BUCKETS
       name nu s" archive" STR= if
          next
       else
-         \ A path is bounded only by the fs library's FS-PATH-CAP.
-         plen nu + 1+ FS-PATH-CAP > s" I/O error" ?FAIL
+         \ A path is bounded only by PATH-CAP.
+         plen nu + 1+ PATH-CAP > s" I/O error" ?FAIL
          path plen name nu depth 1+ PATH-AT PATH-JOIN {: child-u:n :}
          depth 1+ PATH-AT {: child:ptr :}
          \ One lstat types the entry: symlinks, other types and unstatable
          \ entries match neither branch and are skipped.
-         child child-u FS-TRY-LSTAT-MODE MATCH option
+         child child-u TRY-LSTAT-MODE MATCH option
             none OF 0 ENDOF
-            some OF S-IFMT and ENDOF
+            some OF FS:S-IFMT and ENDOF
          ;MATCH {: kind:n :}
-         kind S-IFREG = name nu FILE-ENTRY? and if
+         kind FS:S-IFREG = name nu FILE-ENTRY? and if
             name nu 3 - {: id:ptr iu:n :}
             depth 0 > if dir du id iu STR= else false then {: owner:bool :}
             depth 0 > owner 0= and owner depth 1 > and or {: has-parent:bool :}
             id iu below owner SCAN-KEEP? if
                child child-u id iu archived has-parent PARSE-FILE
                has-parent if
-                  owner if path plen du - 1- BASENAME else dir du then
+                  owner if path plen du - 1- FS:BASENAME else dir du then
                   CURRENT @ F-PARENT FIELD!
                then
             then
          else
-            kind S-IFDIR = if
+            kind FS:S-IFDIR = if
                SCAN-FAMILY @ 0<> if name nu KEY-PREFIX? else false then
                below or {: inner:bool :}
                depth 1+ child-u archived inner RECURSE
@@ -505,7 +512,7 @@ variable ID-BUCKETS
 
 \ Whether .dots exists. Reading creates nothing: without .dots the store is
 \ empty, and the archive is read only where it is a directory.
-: STORE? ( -- bool ) s" .dots" FS-TRY-LSTAT ;
+: STORE? ( -- bool ) s" .dots" FS:TRY-LSTAT ;
 : LOAD-ISSUES ( bool -- )
    {: include-archive:bool :}
    0 ISSUE-N ! 0 ID-BUCKETS ! 0 ARENA-U ! 0 SCAN-NAMES-U !
@@ -513,7 +520,7 @@ variable ID-BUCKETS
    s" .dots" 0 PATH-AT swap BYTE-COPY
    0 s" .dots" nip false false SCAN-DIR
    include-archive if
-      s" .dots/archive" DIR? if
+      s" .dots/archive" FS:DIR? if
          s" .dots/archive" 0 PATH-AT swap BYTE-COPY
          0 s" .dots/archive" nip true false SCAN-DIR
       then
@@ -603,46 +610,46 @@ variable ID-BUCKETS
    FILTER @ -1 <> if idx F-STATUS REC-CELL @ FILTER @ = exit then
    idx F-STATUS REC-CELL @ 2 <> ;
 
-: JSON-BYTES ( ptr writer ptr u8 n -- ptr writer )
+: JSON-BYTES ( ptr JSON:writer ptr u8 n -- ptr JSON:writer )
    {: w:ptr a:ptr u:n :}
-   a u UTF8:VALID? if w a u JSON-WRITE:STRING exit then
-   w JSON-WRITE:ARRAY-START
+   a u UTF8:VALID? if w a u JSON:WRITE-STRING exit then
+   w JSON:WRITE-ARRAY-START
    u 0 ?do
-      i 0<> if JSON-WRITE:COMMA then
-      a i + c@ JSON-WRITE:U
+      i 0<> if JSON:WRITE-COMMA then
+      a i + c@ JSON:WRITE-U
    loop
-   JSON-WRITE:ARRAY-END ;
-: JSON-FIELD-S ( ptr writer n n ptr u8 n -- ptr writer )
+   JSON:WRITE-ARRAY-END ;
+: JSON-FIELD-S ( ptr JSON:writer n n ptr u8 n -- ptr JSON:writer )
    {: w:ptr idx:n field:n key:ptr ku:n :}
-   w key ku JSON-WRITE:KEY idx field FIELD$ JSON-BYTES ;
-: JSON-FIELD-OPT ( ptr writer n n ptr u8 n -- ptr writer )
+   w key ku JSON:WRITE-KEY idx field FIELD$ JSON-BYTES ;
+: JSON-FIELD-OPT ( ptr JSON:writer n n ptr u8 n -- ptr JSON:writer )
    {: w:ptr idx:n field:n key:ptr ku:n :}
    field F-CLOSED = if
-      idx F-CLOSED-PRESENT REC-CELL @ 0= if w key ku JSON-WRITE:FIELD-NULL exit then
+      idx F-CLOSED-PRESENT REC-CELL @ 0= if w key ku JSON:WRITE-FIELD-NULL exit then
    else
-      idx field FIELD$ nip 0= if w key ku JSON-WRITE:FIELD-NULL exit then
+      idx field FIELD$ nip 0= if w key ku JSON:WRITE-FIELD-NULL exit then
    then
-   w key ku JSON-WRITE:KEY idx field FIELD$ JSON-BYTES ;
-: JSON-FIELD-REASON ( ptr writer n -- ptr writer )
+   w key ku JSON:WRITE-KEY idx field FIELD$ JSON-BYTES ;
+: JSON-FIELD-REASON ( ptr JSON:writer n -- ptr JSON:writer )
    {: w:ptr idx:n :}
    idx F-REASON-PRESENT REC-CELL @ 0= if
-      w s" close_reason" JSON-WRITE:FIELD-NULL
+      w s" close_reason" JSON:WRITE-FIELD-NULL
    else
-      w s" close_reason" JSON-WRITE:KEY idx F-REASON FIELD$ JSON-BYTES
+      w s" close_reason" JSON:WRITE-KEY idx F-REASON FIELD$ JSON-BYTES
    then ;
-: JSON-ISSUE ( ptr writer n -- ptr writer )
+: JSON-ISSUE ( ptr JSON:writer n -- ptr JSON:writer )
    {: w:ptr idx:n :}
-   w JSON-WRITE:OBJECT-START
-   idx F-ID s" id" JSON-FIELD-S JSON-WRITE:COMMA
-   idx F-TITLE s" title" JSON-FIELD-S JSON-WRITE:COMMA
-   idx F-DESC s" description" JSON-FIELD-OPT JSON-WRITE:COMMA
-   s" status" JSON-WRITE:KEY idx F-STATUS REC-CELL @ STATUS>DISPLAY JSON-WRITE:STRING JSON-WRITE:COMMA
-   s" priority" idx F-PRIORITY REC-CELL @ JSON-WRITE:FIELD-INT JSON-WRITE:COMMA
-   idx F-TYPE s" issue_type" JSON-FIELD-S JSON-WRITE:COMMA
-   idx F-CREATED s" created_at" JSON-FIELD-S JSON-WRITE:COMMA
-   idx F-CLOSED s" closed_at" JSON-FIELD-OPT JSON-WRITE:COMMA
+   w JSON:WRITE-OBJECT-START
+   idx F-ID s" id" JSON-FIELD-S JSON:WRITE-COMMA
+   idx F-TITLE s" title" JSON-FIELD-S JSON:WRITE-COMMA
+   idx F-DESC s" description" JSON-FIELD-OPT JSON:WRITE-COMMA
+   s" status" JSON:WRITE-KEY idx F-STATUS REC-CELL @ STATUS>DISPLAY JSON:WRITE-STRING JSON:WRITE-COMMA
+   s" priority" idx F-PRIORITY REC-CELL @ JSON:WRITE-FIELD-INT JSON:WRITE-COMMA
+   idx F-TYPE s" issue_type" JSON-FIELD-S JSON:WRITE-COMMA
+   idx F-CREATED s" created_at" JSON-FIELD-S JSON:WRITE-COMMA
+   idx F-CLOSED s" closed_at" JSON-FIELD-OPT JSON:WRITE-COMMA
    idx JSON-FIELD-REASON
-   JSON-WRITE:OBJECT-END ;
+   JSON:WRITE-OBJECT-END ;
 : PRINT-ISSUE ( n -- )
    {: idx:n :}
    s" [" DOT-IO:PRINT idx F-ID FIELD$ DOT-IO:PRINT s" ] " DOT-IO:PRINT
@@ -652,16 +659,16 @@ variable ID-BUCKETS
    ['] ISSUE-LESS? SORT-ISSUES
    USE-JSON @ 0<> if
       JSON-OUT-BUF 1024 BUF:N>BLEN BUF:INIT
-      JSON-W JSON-OUT-BUF JSON-WRITE:OPEN-BUF JSON-WRITE:ARRAY-START
+      JSON-W JSON-OUT-BUF JSON:WRITE-OPEN-BUF JSON:WRITE-ARRAY-START
       0 FIRST !
       ISSUE-N @ 0 ?do
          i ORDER @ SHOW-IN-LIST? if
-            FIRST @ 0<> if JSON-WRITE:COMMA then
+            FIRST @ 0<> if JSON:WRITE-COMMA then
             i ORDER @ JSON-ISSUE
             1 FIRST !
          then
       loop
-      JSON-WRITE:ARRAY-END dup JSON-WRITE:$ DOT-IO:PRINTLN JSON-WRITE:CLOSE
+      JSON:WRITE-ARRAY-END dup JSON:WRITTEN$ DOT-IO:PRINTLN JSON:WRITE-CLOSE
       JSON-OUT-BUF BUF:DISPOSE
    else
       ISSUE-N @ 0 ?do i ORDER @ dup SHOW-IN-LIST? if PRINT-ISSUE else drop then loop
@@ -859,9 +866,11 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
 : FS-CAUSE ( n -- n )
    0< if FFI:ERRNO dup 0= if drop -1 then exit then
    0 ;
+\ A rename's destination, NUL-ended; FS:>PATHZ holds its source.
+FS:PATHZ-CAP SPAN-BUFFER: DST-PATHZ
 : RENAME-CAUSE ( ptr u8 n ptr u8 n -- n )
    {: src:ptr su:n dst:ptr du:n :}
-   src su FS-PATHZ dst du FS-MUT-PATHZ2 RENAME-CALL FS-CAUSE ;
+   src su FS:>PATHZ dst du DST-PATHZ FS:PATHZ-INTO RENAME-CALL FS-CAUSE ;
 : RENAME-ISSUE ( ptr u8 n ptr u8 n -- )
    {: src:ptr su:n dst:ptr du:n :}
    src su dst du RENAME-CAUSE dst du ?FS-MUTATION-ERROR ;
@@ -869,8 +878,8 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
 \ Both calls refuse an occupied destination in the same rename operation.
 : RENAME-NOREPLACE-CAUSE ( ptr u8 n ptr u8 n -- n )
    {: src:ptr su:n dst:ptr du:n :}
-   src su FS-PATHZ {: src-z:ptr :}
-   dst du FS-MUT-PATHZ2 {: dst-z:ptr :}
+   src su FS:>PATHZ {: src-z:ptr :}
+   dst du DST-PATHZ FS:PATHZ-INTO {: dst-z:ptr :}
    HB-TARGET-MACOS? if
       src-z dst-z 4 RENAME-X-CALL FS-CAUSE
    else
@@ -885,21 +894,21 @@ FUNCTION: RMDIR-CALL rmdir ( ptr u8 -- i32 ) ;FUNCTION
    dst du ?FS-MUTATION-ERROR ;
 : REMOVE-ISSUE-FILE ( ptr u8 n -- )
    {: path:ptr pu:n :}
-   path pu FS-PATHZ UNLINK-CALL FS-CAUSE path pu ?FS-MUTATION-ERROR ;
+   path pu FS:>PATHZ UNLINK-CALL FS-CAUSE path pu ?FS-MUTATION-ERROR ;
 : REMOVE-ISSUE-DIR ( ptr u8 n -- )
    {: path:ptr pu:n :}
-   path pu FS-PATHZ RMDIR-CALL FS-CAUSE path pu ?FS-MUTATION-ERROR ;
+   path pu FS:>PATHZ RMDIR-CALL FS-CAUSE path pu ?FS-MUTATION-ERROR ;
 PROCESS-SYMBOLS
 FUNCTION: ACCESS-CALL access ( ptr u8 n -- i32 ) ;FUNCTION
 : PARENT-WRITABLE? ( ptr u8 n -- bool )
    {: path:ptr pu:n :}
    pu begin dup 0 > while
       dup 1- path + c@ 47 = if
-         1- path swap FS-PATHZ 2 ACCESS-CALL 0= exit
+         1- path swap FS:>PATHZ 2 ACCESS-CALL 0= exit
       then
       1-
    repeat drop
-   s" ." FS-PATHZ 2 ACCESS-CALL 0= ;
+   s" ." FS:>PATHZ 2 ACCESS-CALL 0= ;
 PTR-VARIABLE RESERVED-TEMP
 variable RESERVED-U
 variable RESERVED-FD
@@ -908,7 +917,7 @@ variable RESERVED-FD
 -91003 constant E-ISSUE-TOO-LARGE
 \ The path an E-ISSUE-ISDIR or E-ISSUE-TOO-LARGE names. It reached a syscall,
 \ so it fits FS-PATH-CAP.
-create FAILED-PATH FS-PATH-CAP allot
+create FAILED-PATH PATH-CAP allot
 variable FAILED-PATH-U
 : FAILED-PATH$ ( -- ptr u8 n ) FAILED-PATH FAILED-PATH-U @ ;
 : PATH-THROW ( ptr u8 n n -- )
@@ -917,10 +926,10 @@ variable FAILED-PATH-U
    code throw ;
 : TEMP-THROW ( n ptr u8 n n -- )
    {: fd:n temp:ptr tu:n code:n :}
-   fd close temp tu REMOVE-FILE code throw ;
+   fd close temp tu FS:REMOVE-FILE code throw ;
 : RESERVE-STASH ( ptr u8 n -- ptr u8 n )
    {: path:ptr pu:n :}
-   path pu RESERVE-SIBLING {: temp:ptr tu:n fd:n :}
+   path pu FS:RESERVE-SIBLING {: temp:ptr tu:n fd:n :}
    temp RESERVED-TEMP ! tu RESERVED-U ! fd RESERVED-FD !
    path pu ;
 : RESERVE-ISSUE-SIBLING ( ptr u8 n -- ptr u8 n n )
@@ -952,8 +961,8 @@ variable FAILED-PATH-U
 : ?RENAME-THROW ( ptr u8 n ptr u8 n n -- )
    {: temp:ptr tu:n path:ptr pu:n reason:n :}
    reason 0= if exit then
-   temp tu REMOVE-FILE
-   path pu DIR? if path pu E-ISSUE-ISDIR PATH-THROW then
+   temp tu FS:REMOVE-FILE
+   path pu FS:DIR? if path pu E-ISSUE-ISDIR PATH-THROW then
    reason FS-ACCESS-DENIED = if E-ISSUE-PERMISSION throw then
    E-FS-IO throw ;
 : WRITE-ATOMIC-THROW ( ptr u8 n ptr u8 n -- )
@@ -966,12 +975,12 @@ variable FAILED-PATH-U
    {: path:ptr pu:n src:ptr su:n :}
    path pu src su WRITE-TEMP {: temp:ptr tu:n :}
    temp tu path pu RENAME-NOREPLACE-CAUSE {: reason:n :}
-   reason FS-EXISTS = if temp tu REMOVE-FILE s" Issue already exists" FAIL then
+   reason FS-EXISTS = if temp tu FS:REMOVE-FILE s" Issue already exists" FAIL then
    temp tu path pu reason ?RENAME-THROW ;
 \ MAKE-DIRS, a folder refused for lack of permission named as dot names one.
 \ Habu's mkdir leaves its errno for FFI:ERRNO after the E-FS-IO it throws.
 : MAKE-ISSUE-DIRS ( ptr u8 n -- )
-   [: 2dup MAKE-DIRS ;] catch {: code:n :}
+   [: 2dup FS:MAKE-DIRS ;] catch {: code:n :}
    2drop
    code 0= if exit then
    code E-FS-IO = FFI:ERRNO FS-ACCESS-DENIED = and if E-ISSUE-PERMISSION throw then
@@ -1109,14 +1118,14 @@ variable PAD-COPY
    repeat drop false ;
 \ Whether .dots/config exists; anything there but a file is refused.
 : CONFIG? ( -- bool )
-   s" .dots/config" FS-TRY-STAT-MODE MATCH option
+   s" .dots/config" TRY-STAT-MODE MATCH option
       none OF false ENDOF
-      some OF S-IFMT and S-IFREG <> s" Not a file: .dots/config" ?FAIL true ENDOF
+      some OF FS:S-IFMT and FS:S-IFREG <> s" Not a file: .dots/config" ?FAIL true ENDOF
    ;MATCH ;
 : LOAD-PREFIX ( -- )
    0 CONFIG-U ! 1 PREFIX-STORED !
    CONFIG? if
-      [: s" .dots/config" CONFIG-ROW CONFIG-MAX READ-ALL CONFIG-U ! ;] catch
+      [: s" .dots/config" CONFIG-ROW CONFIG-MAX FS:READ-ALL CONFIG-U ! ;] catch
       dup E-FS-CAPACITY = s" Config file too large: .dots/config" ?FAIL
       dup 0<> if throw then drop
       CONFIG-U @ {: len:n :}
@@ -1130,7 +1139,7 @@ variable PAD-COPY
       repeat drop
    then
    0 PREFIX-STORED !
-   CWD-LEN CWD-ROW swap BASENAME {: base:ptr size:n :}
+   CWD-LEN CWD-ROW swap FS:BASENAME {: base:ptr size:n :}
    size begin dup 0 > if base over 1- + c@ 45 = else false then while
       1-
    repeat {: trim:n :}
@@ -1140,7 +1149,7 @@ variable PAD-COPY
 \ is read through and never replaced.
 : SAVE-CONFIG ( -- )
    PREFIX-STORED @ if exit then
-   s" .dots/config" SYMLINK? s" Config is a symlink: .dots/config" ?FAIL
+   s" .dots/config" FS:SYMLINK? s" Config is a symlink: .dots/config" ?FAIL
    OUT-RESET
    0 begin dup CONFIG-U @ < while
       {: at:n :}
@@ -1216,9 +1225,9 @@ variable PAD-COPY
    SLUG-ROW SLUG-U @ SB-APPEND 45 SB-APPEND-C
    HEX-ROW 8 SB-APPEND SB$ ;
 
-create PATH-ONE FS-PATH-CAP allot
+create PATH-ONE PATH-CAP allot
 variable PATH-ONE-U
-create PATH-TWO FS-PATH-CAP allot
+create PATH-TWO PATH-CAP allot
 variable PATH-TWO-U
 PTR-VARIABLE TITLE-A
 variable TITLE-U
@@ -1237,11 +1246,11 @@ variable PARENT-IDX
 
 : PATH-ONE! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u FS-PATH-CAP > s" I/O error" ?FAIL
+   u PATH-CAP > s" I/O error" ?FAIL
    a PATH-ONE u BYTE-COPY u PATH-ONE-U ! ;
 : PATH-TWO! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u FS-PATH-CAP > s" I/O error" ?FAIL
+   u PATH-CAP > s" I/O error" ?FAIL
    a PATH-TWO u BYTE-COPY u PATH-TWO-U ! ;
 : PATH-ONE$ ( -- ptr u8 n ) PATH-ONE PATH-ONE-U @ ;
 : PATH-TWO$ ( -- ptr u8 n ) PATH-TWO PATH-TWO-U @ ;
@@ -1312,21 +1321,21 @@ variable PARENT-IDX
    idx OWN-FOLDER-U {: own-u:n :}
    SB-RESET
    own-u 0 > if path own-u SB-APPEND SB$ exit then
-   path pu path pu BASENAME nip - SB-APPEND idx F-ID FIELD$ SB-APPEND SB$ ;
+   path pu path pu FS:BASENAME nip - SB-APPEND idx F-ID FIELD$ SB-APPEND SB$ ;
 \ Refuses a record whose file D/<id>.md would not fit FS-PATH-CAP, given the
 \ length of its folder D.
 : CHECK-FILE-FITS ( n n -- )
    {: du:n idx:n :}
-   du 1+ idx F-ID FIELD$ nip + 3 + FS-PATH-CAP > s" I/O error" ?FAIL ;
+   du 1+ idx F-ID FIELD$ nip + 3 + PATH-CAP > s" I/O error" ?FAIL ;
 \ Refuses a parent whose own folder path holds anything but a directory, a link
 \ included, or whose file moved into it would not fit FS-PATH-CAP. SB holds
 \ the own folder.
 : CHECK-OWN-FOLDER ( n -- )
    {: idx:n :}
    idx OWN-FOLDER$ {: own:ptr ou:n :}
-   own ou FS-TRY-LSTAT-MODE MATCH option
+   own ou TRY-LSTAT-MODE MATCH option
       none OF false ENDOF
-      some OF S-IFMT and S-IFDIR <> ENDOF
+      some OF FS:S-IFMT and FS:S-IFDIR <> ENDOF
    ;MATCH s" Not a directory: " own ou ?ISSUE-ERROR
    ou idx CHECK-FILE-FITS ;
 \ A parent without its own folder gets one: D/p.md moves to D/p/p.md. Its
@@ -1414,11 +1423,11 @@ variable PARENT-IDX
       true
    else
       SB-RESET s" .dots/" SB-APPEND idx F-ID FIELD$ SB-APPEND
-      SB$ DIR? dup if SB$ SYMLINK? s" Issue already exists" ?FAIL then
+      SB$ FS:DIR? dup if SB$ FS:SYMLINK? s" Issue already exists" ?FAIL then
    then {: nest:bool :}
    nest if SB$ nip else s" .dots" nip then idx CHECK-FILE-FITS
    nest if 47 SB-APPEND-C idx F-ID FIELD$ SB-APPEND then
-   s" .md" SB-APPEND SB$ FS-TRY-LSTAT s" Issue already exists" ?FAIL
+   s" .md" SB-APPEND SB$ FS:TRY-LSTAT s" Issue already exists" ?FAIL
    SB$ idx F-PATH FIELD!
    s" .dots" MAKE-ISSUE-DIRS SAVE-CONFIG
    PARENT-IDX @ -1 <> if
@@ -1429,8 +1438,8 @@ variable PARENT-IDX
    idx SAVE-RECORD
    s" --json" ARG-AT? if
       JSON-OUT-BUF 1024 BUF:N>BLEN BUF:INIT
-      JSON-W JSON-OUT-BUF JSON-WRITE:OPEN-BUF
-      idx JSON-ISSUE dup JSON-WRITE:$ DOT-IO:PRINTLN JSON-WRITE:CLOSE
+      JSON-W JSON-OUT-BUF JSON:WRITE-OPEN-BUF
+      idx JSON-ISSUE dup JSON:WRITTEN$ DOT-IO:PRINTLN JSON:WRITE-CLOSE
       JSON-OUT-BUF BUF:DISPOSE
    else idx F-ID FIELD$ DOT-IO:PRINTLN then ;
 : ADD-COMMAND ( -- )
@@ -1450,7 +1459,7 @@ DYNAMIC-BUFFER STATUS-ARGS n
 create CLOSED-TIME 40 allot
 variable CLOSED-TIME-U
 
-: RECORD-PATH? ( n -- bool ) F-PATH FIELD$ FILE? ;
+: RECORD-PATH? ( n -- bool ) F-PATH FIELD$ FS:FILE? ;
 : CHECK-PATH ( n -- ) RECORD-PATH? 0= s" Issue not found" ?FAIL ;
 : STATUS-DIR-U ( ptr u8 n -- n )
    {: path:ptr pu:n :}
@@ -1523,28 +1532,28 @@ variable CLOSED-TIME-U
    ISSUE-N @ 0 ?do i old ou new nu archived REBASE-RECORD loop ;
 : REBASE-STATUS-MOVED ( -- ) PATH-ONE$ PATH-TWO$ REBASE-STATUS-SUBTREE ;
 : ASSERT-ARCHIVE-REAL ( -- )
-   s" .dots/archive" SYMLINK? s" Unsafe archive symlink" ?FAIL ;
+   s" .dots/archive" FS:SYMLINK? s" Unsafe archive symlink" ?FAIL ;
 : ASSERT-ARCHIVE-PATH-REAL ( ptr u8 n -- )
    {: path:ptr pu:n :}
    ASSERT-ARCHIVE-REAL
    s" .dots/archive/" nip begin dup pu < while
       path over + c@ 47 = if
-         path over SYMLINK? s" Unsafe archive symlink" ?FAIL
+         path over FS:SYMLINK? s" Unsafe archive symlink" ?FAIL
       then
       1+
    repeat drop
-   path pu SYMLINK? s" Unsafe archive symlink" ?FAIL ;
+   path pu FS:SYMLINK? s" Unsafe archive symlink" ?FAIL ;
 : STATUS-ENSURE-ARCHIVE-PARENT ( ptr u8 n -- )
    {: path:ptr pu:n :}
    path pu STATUS-DIR-U {: parent-u:n :}
    s" .dots/archive" nip parent-u > if exit then
    s" .dots/archive" nip 1+ begin dup parent-u < while
       path over + c@ 47 = if
-         path over SYMLINK? s" Unsafe archive symlink" ?FAIL
+         path over FS:SYMLINK? s" Unsafe archive symlink" ?FAIL
       then
       1+
    repeat drop
-   path parent-u SYMLINK? s" Unsafe archive symlink" ?FAIL
+   path parent-u FS:SYMLINK? s" Unsafe archive symlink" ?FAIL
    path parent-u MAKE-ISSUE-DIRS ;
 \ Move a top-level record's file or own folder between the partitions, leaving
 \ the paths in PATH-ONE and PATH-TWO. Whether it moved: not when the record is
@@ -1615,7 +1624,7 @@ variable FAMILY-N
 \ Whether anything, a dangling symlink included, takes the path.
 : OCCUPIED? ( ptr u8 n -- bool )
    {: path:ptr pu:n :}
-   path pu EXISTS? path pu SYMLINK? or ;
+   path pu FS:EXISTS? path pu FS:SYMLINK? or ;
 \ fix repairs each top-level folder .dots/<f>/ holding no valid task f. With no
 \ task f anywhere it is an orphan folder: its regular .md files move to .dots/.
 \ With one valid task f it is f's legacy folder: what a scan reads in it,
@@ -1632,15 +1641,15 @@ variable FIX-LEFT
 variable FIX-NEST
 variable FIX-BAD
 variable FIX-ORPHANS
-create FIX-SOURCE-ROW FS-PATH-CAP allot
+create FIX-SOURCE-ROW PATH-CAP allot
 variable FIX-SOURCE-U
-create FIX-DEST-ROW FS-PATH-CAP allot
+create FIX-DEST-ROW PATH-CAP allot
 variable FIX-DEST-U
 : FIX-SOURCE$ ( -- ptr u8 n ) FIX-SOURCE-ROW FIX-SOURCE-U @ ;
 : FIX-DEST$ ( -- ptr u8 n ) FIX-DEST-ROW FIX-DEST-U @ ;
 : FIX-DEST! ( ptr u8 n -- )
    {: a:ptr u:n :}
-   u FS-PATH-CAP > s" I/O error" ?FAIL
+   u PATH-CAP > s" I/O error" ?FAIL
    a FIX-DEST-ROW u BYTE-COPY u FIX-DEST-U ! ;
 : COUNT-FIX-ENTRY ( ptr u8 n -- ) 2drop 1 FIX-LEFT +! ;
 \ Whether a valid task f lies in the folder, which is then that task's own.
@@ -1674,19 +1683,19 @@ variable FIX-DEST-U
 \ nests, a directory other than archive.
 : FIX-MOVES? ( ptr u8 n -- bool )
    {: name:ptr nu:n :}
-   PATH-ONE$ FS-TRY-LSTAT-MODE MATCH option
+   PATH-ONE$ TRY-LSTAT-MODE MATCH option
       none OF 0 ENDOF
-      some OF S-IFMT and ENDOF
+      some OF FS:S-IFMT and ENDOF
    ;MATCH {: kind:n :}
-   kind S-IFREG = if name nu FILE-ENTRY? exit then
-   kind S-IFDIR = FIX-NEST @ 0<> and if name nu s" archive" STR= 0= exit then
+   kind FS:S-IFREG = if name nu FILE-ENTRY? exit then
+   kind FS:S-IFDIR = FIX-NEST @ 0<> and if name nu s" archive" STR= 0= exit then
    false ;
 \ Counts the entries that move and notes whether anything takes a destination,
 \ or a legacy entry would take f's own file's. FIX-FOLDER refuses on that
 \ after it checks the destination folder, before the first move.
 : FIX-CHECK ( n n -- )
    {: begin-at:n end-at:n :}
-   FIX-SOURCE$ BASENAME {: id:ptr iu:n :}
+   FIX-SOURCE$ FS:BASENAME {: id:ptr iu:n :}
    0 FIX-MOVES ! 0 FIX-TAKEN !
    begin-at begin dup end-at < while
       {: at:n :}
@@ -1719,7 +1728,7 @@ variable FIX-DEST-U
    {: name:ptr nu:n :}
    SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ {: a:ptr u:n :}
    a FIX-SOURCE-ROW u BYTE-COPY u FIX-SOURCE-U !
-   FIX-SOURCE$ BASENAME {: id:ptr iu:n :}
+   FIX-SOURCE$ FS:BASENAME {: id:ptr iu:n :}
    id iu FIX-HOME? if exit then
    id iu FIX-OWNER {: owner:n :}
    \ A nest can depend on an orphan repair.
@@ -1761,7 +1770,7 @@ variable FIX-DEST-U
    {: name:ptr nu:n :}
    name nu s" archive" STR= if exit then
    SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ PATH-TWO!
-   PATH-TWO$ SYMLINK? 0= PATH-TWO$ DIR? and if name nu FIX-FOLDER then ;
+   PATH-TWO$ FS:SYMLINK? 0= PATH-TWO$ FS:DIR? and if name nu FIX-FOLDER then ;
 \ Runs FIX-NAME on each name the scanned names hold before byte n.
 : FIX-PASS ( n -- )
    {: end-at:n :}
@@ -1800,9 +1809,9 @@ variable FIX-DEST-U
 create REOPEN-INDICES REOPEN-MAX cells allot
 create REOPEN-BACKUP-PATHS REOPEN-MAX 1024 * allot
 create REOPEN-BACKUP-US REOPEN-MAX cells allot
-create REOPEN-SOURCE FS-PATH-CAP allot
+create REOPEN-SOURCE PATH-CAP allot
 variable REOPEN-SOURCE-U
-create REOPEN-DEST FS-PATH-CAP allot
+create REOPEN-DEST PATH-CAP allot
 variable REOPEN-DEST-U
 variable REOPEN-N
 variable REOPEN-BACKUPS
@@ -1845,7 +1854,7 @@ variable REOPEN-PARENT-KEEP-U
    s" .dots/archive/" nip {: base-u:n :}
    path pu STATUS-DIR-U {: dir-u:n :}
    dir-u base-u >= if dir-u else pu then {: root-u:n :}
-   root-u FS-PATH-CAP > s" I/O error" ?FAIL
+   root-u PATH-CAP > s" I/O error" ?FAIL
    path REOPEN-SOURCE root-u BYTE-COPY root-u REOPEN-SOURCE-U !
    ISSUE-N @ 0 ?do
       i F-ARCHIVED REC-CELL @ 0<> i OWN-FOLDER? and if
@@ -1861,24 +1870,24 @@ variable REOPEN-PARENT-KEEP-U
    SB-RESET s" .dots/" SB-APPEND
    REOPEN-SOURCE base-u + REOPEN-SOURCE-U @ base-u - SB-APPEND
    SB$ {: dst:ptr du:n :}
-   du FS-PATH-CAP > s" I/O error" ?FAIL
+   du PATH-CAP > s" I/O error" ?FAIL
    dst REOPEN-DEST du BYTE-COPY
    du REOPEN-DEST-U ! ;
 : REOPEN-ENSURE-DEST-PARENT ( -- )
    REOPEN-DEST$ {: path:ptr pu:n :}
    path pu STATUS-DIR-U {: parent-u:n :}
-   s" .dots" SYMLINK? s" Unsafe active symlink" ?FAIL
+   s" .dots" FS:SYMLINK? s" Unsafe active symlink" ?FAIL
    s" .dots" nip REOPEN-PARENT-KEEP-U !
    s" .dots" nip parent-u >= if exit then
    s" .dots" nip 1+ begin dup parent-u < while
       path over + c@ 47 = if
-         path over SYMLINK? s" Unsafe active symlink" ?FAIL
-         path over DIR? if dup REOPEN-PARENT-KEEP-U ! then
+         path over FS:SYMLINK? s" Unsafe active symlink" ?FAIL
+         path over FS:DIR? if dup REOPEN-PARENT-KEEP-U ! then
       then
       1+
    repeat drop
-   path parent-u SYMLINK? s" Unsafe active symlink" ?FAIL
-   path parent-u DIR? if parent-u REOPEN-PARENT-KEEP-U ! then
+   path parent-u FS:SYMLINK? s" Unsafe active symlink" ?FAIL
+   path parent-u FS:DIR? if parent-u REOPEN-PARENT-KEEP-U ! then
    path parent-u MAKE-ISSUE-DIRS ;
 : REOPEN-CLEAN-NEW-PARENTS ( -- )
    REOPEN-DEST$ {: path:ptr pu:n :}
@@ -1891,7 +1900,7 @@ variable REOPEN-PARENT-KEEP-U
 : REOPEN-STAGE-ONE ( n -- )
    {: at:n :}
    at REOPEN-INDEX F-PATH FIELD$ {: path:ptr pu:n :}
-   path pu [: 2dup FILE-BUF ISSUE-MAX READ-ALL FILE-U ! ;] catch
+   path pu [: 2dup FILE-BUF ISSUE-MAX FS:READ-ALL FILE-U ! ;] catch
    dup E-FS-CAPACITY = if path pu E-ISSUE-TOO-LARGE PATH-THROW then
    dup 0<> if throw then drop 2drop
    FILE-U @ {: size:n :}
@@ -1936,7 +1945,7 @@ variable REOPEN-PARENT-KEEP-U
 : REOPEN-CLEAN-BACKUPS ( -- )
    0 REOPEN-CLEAN-ERROR !
    REOPEN-BACKUPS @ 0 ?do
-      i REOPEN-BACKUP$ FS-PATHZ UNLINK-CALL FS-CAUSE
+      i REOPEN-BACKUP$ FS:>PATHZ UNLINK-CALL FS-CAUSE
       dup 0<> if REOPEN-CLEAN-ERROR ! else drop then
    loop
    REOPEN-CLEAN-ERROR @ 0<> s" Reopened issue; temporary cleanup failed" ?FAIL ;
@@ -1990,7 +1999,7 @@ variable REOPEN-PARENT-KEEP-U
    idx REOPEN-TARGET ! status REOPEN-WANTED-STATUS !
    0 REOPEN-BACKUPS !
    REOPEN-DEST$ {: dest:ptr du:n :}
-   dest du SYMLINK? dest du FILE? or dest du DIR? or s" Issue already exists" ?FAIL
+   dest du FS:SYMLINK? dest du FS:FILE? or dest du FS:DIR? or s" Issue already exists" ?FAIL
    REOPEN-ENSURE-DEST-PARENT
    REOPEN-SOURCE$ REOPEN-DEST$ RENAME-NOREPLACE-CAUSE
    dup 0<> if
@@ -2021,7 +2030,7 @@ variable STATUS-SAVE-IDX
 : STATUS-CHANGE ( n n -- )
    {: idx:n status:n :}
    idx F-ARCHIVED REC-CELL @ 0<> status 2 <> and if
-      idx F-PATH FIELD$ FILE? 0= s" Issue not found" ?FAIL
+      idx F-PATH FIELD$ FS:FILE? 0= s" Issue not found" ?FAIL
       idx CHECK-ERROR
       idx status REOPEN-ARCHIVED exit
    then
@@ -2079,12 +2088,12 @@ variable STATUS-SAVE-IDX
       at SCANNED-NAME {: name:ptr nu:n next:n :}
       name nu s" archive" STR= 0= if
          SB-RESET s" .dots/" SB-APPEND name nu SB-APPEND SB$ PATH-ONE!
-         PATH-ONE$ SYMLINK? 0= PATH-ONE$ DIR? and if
+         PATH-ONE$ FS:SYMLINK? 0= PATH-ONE$ FS:DIR? and if
             SB-RESET PATH-ONE$ SB-APPEND 47 SB-APPEND-C name nu SB-APPEND
-            s" .md" SB-APPEND SB$ FS-TRY-LSTAT-MODE MATCH option
+            s" .md" SB-APPEND SB$ TRY-LSTAT-MODE MATCH option
                none OF 0 ENDOF
-               some OF S-IFMT and ENDOF
-            ;MATCH S-IFREG <> if true exit then
+               some OF FS:S-IFMT and ENDOF
+            ;MATCH FS:S-IFREG <> if true exit then
          then
       then
       next
@@ -2120,7 +2129,7 @@ variable STATUS-SAVE-IDX
       ts CLOSED-TIME tu BYTE-COPY tu CLOSED-TIME-U !
    then
    STATUS-INDEX @ 0 ?do
-      i STATUS-ARGS @ RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
+      i STATUS-ARGS @ RESOLVE-ARG dup F-PATH FIELD$ FS:FILE? if dup PARSE-RECORD then
       STATUS-MODE @ STATUS-CHANGE
    loop ;
 : UPDATE-COMMAND ( -- )
@@ -2138,7 +2147,7 @@ variable STATUS-SAVE-IDX
    repeat
    STATUS-MODE @ -1 = s" --status required" ?FAIL
    1 SCAN-KEYED ! 1 SCAN-FAMILY ! 1 script-argv$ SCAN-KEY+
-   LOAD-STATUS-ISSUES 1 RESOLVE-ARG dup F-PATH FIELD$ FILE? if dup PARSE-RECORD then
+   LOAD-STATUS-ISSUES 1 RESOLVE-ARG dup F-PATH FIELD$ FS:FILE? if dup PARSE-RECORD then
    STATUS-MODE @ STATUS-CHANGE ;
 : INIT-EMPTY ( -- )
    s" .dots/archive" MAKE-ISSUE-DIRS ;
@@ -2146,7 +2155,7 @@ variable STATUS-SAVE-IDX
    {: depth:n plen:n :}
    depth MAX-DEPTH 1- >= s" I/O error" ?FAIL
    depth PATH-AT {: path:ptr :}
-   path plen SYMLINK? if path plen REMOVE-ISSUE-FILE exit then
+   path plen FS:SYMLINK? if path plen REMOVE-ISSUE-FILE exit then
    SCAN-NAMES-U @ {: begin-at:n :}
    path plen [: GATHER-SCAN-NAME ;] FS-LIST:EACH
    SCAN-NAMES-U @ {: end-at:n :}
@@ -2155,8 +2164,8 @@ variable STATUS-SAVE-IDX
       at SCANNED-NAME {: name:ptr nu:n next:n :}
       path plen name nu depth 1+ PATH-AT PATH-JOIN {: child-u:n :}
       depth 1+ PATH-AT {: child:ptr :}
-      child child-u SYMLINK? if child child-u REMOVE-ISSUE-FILE else
-         child child-u DIR? if depth 1+ child-u RECURSE
+      child child-u FS:SYMLINK? if child child-u REMOVE-ISSUE-FILE else
+         child child-u FS:DIR? if depth 1+ child-u RECURSE
          else child child-u REMOVE-ISSUE-FILE then
       then
       next
@@ -2168,7 +2177,7 @@ variable STATUS-SAVE-IDX
    path 0 PATH-AT pu BYTE-COPY
    0 pu REMOVE-DEEP-TREE ;
 : PURGE-COMMAND ( -- )
-   s" .dots/archive" SYMLINK? 0= if s" .dots/archive" MAKE-ISSUE-DIRS then
+   s" .dots/archive" FS:SYMLINK? 0= if s" .dots/archive" MAKE-ISSUE-DIRS then
    s" .dots/archive" REMOVE-ISSUE-TREE
    s" .dots/archive" MAKE-ISSUE-DIRS
    s" Archive purged" DOT-IO:PRINTLN ;
@@ -2198,9 +2207,9 @@ variable STATUS-SAVE-IDX
    {: base:ptr bu:n id:ptr iu:n :}
    id iu s" archive" STR= if exit then
    SB-RESET base bu SB-APPEND id iu SB-APPEND SB$ PATH-ONE!
-   PATH-ONE$ FS-TRY-LSTAT-MODE MATCH option
+   PATH-ONE$ TRY-LSTAT-MODE MATCH option
       none OF false ENDOF
-      some OF S-IFMT and S-IFDIR = ENDOF
+      some OF FS:S-IFMT and FS:S-IFDIR = ENDOF
    ;MATCH if PATH-ONE$ REMOVE-ISSUE-TREE then ;
 \ A task's legacy folders, where add -P used to put its children: the one
 \ named after it at the top of its partition and, when archived, at the top of
@@ -2429,9 +2438,9 @@ variable SLUG-FOLDER
 variable SLUG-FOLDER-MOVED
 variable SLUG-CHILD-FOLDER
 variable SLUG-CHILD-MOVED
-create SLUG-CHILD-FROM FS-PATH-CAP allot
+create SLUG-CHILD-FROM PATH-CAP allot
 variable SLUG-CHILD-FROM-U
-create SLUG-CHILD-TO FS-PATH-CAP allot
+create SLUG-CHILD-TO PATH-CAP allot
 variable SLUG-CHILD-TO-U
 variable SLUG-IDX
 variable SLUG-KEEP-OLD
@@ -2494,7 +2503,7 @@ variable SLUG-PATH-U
       PATH-ONE SLUG-PARENT-SLASH @ 1+ +
       SLUG-LAST-SLASH @ SLUG-PARENT-SLASH @ - 1-
       OLD-ID$ STR= if
-         PATH-ONE SLUG-LAST-SLASH @ DIR? if
+         PATH-ONE SLUG-LAST-SLASH @ FS:DIR? if
             1 SLUG-FOLDER !
             SB-RESET PATH-ONE SLUG-PARENT-SLASH @ 1+ SB-APPEND
             RENAMED-ID$ SB-APPEND SB$ PATH-TWO!
@@ -2509,7 +2518,7 @@ variable SLUG-PATH-U
 : SLUG-CHILD-PATH ( ptr u8 n ptr u8 -- n )
    {: id:ptr iu:n row:ptr :}
    SB-RESET s" .dots/" SB-APPEND id iu SB-APPEND SB$ {: path:ptr pu:n :}
-   pu FS-PATH-CAP > s" I/O error" ?FAIL
+   pu PATH-CAP > s" I/O error" ?FAIL
    path row pu BYTE-COPY pu ;
 \ A task with the old ID inside the folder owns it: SLUG-PLAN-PATH moves a
 \ task's own folder, and a duplicate ID keeps its folder.
@@ -2524,8 +2533,8 @@ variable SLUG-PATH-U
 \ never a child folder.
 : SLUG-CHILD-MOVES? ( -- bool )
    SLUG-CHILD-FROM$ s" .dots/archive" STR= if false exit then
-   SLUG-CHILD-FROM$ SYMLINK? if false exit then
-   SLUG-CHILD-FROM$ DIR? 0= if false exit then
+   SLUG-CHILD-FROM$ FS:SYMLINK? if false exit then
+   SLUG-CHILD-FROM$ FS:DIR? 0= if false exit then
    SLUG-CHILD-OWNED? 0= ;
 : SLUG-PLAN-CHILD ( -- )
    OLD-ID$ SLUG-CHILD-FROM SLUG-CHILD-PATH SLUG-CHILD-FROM-U !
@@ -2584,7 +2593,7 @@ variable SLUG-PATH-U
 : SLUG-STAGE ( -- )
    ISSUE-N @ 0 ?do
       i 7 SLUG-CELL @ 0<> if
-         i 0 SLUG-STORED$ FILE? 0= if E-FS-IO throw then
+         i 0 SLUG-STORED$ FS:FILE? 0= if E-FS-IO throw then
          i SLUG-STAGE-ONE
       then
    loop ;
@@ -2598,7 +2607,7 @@ variable SLUG-PATH-U
    RENAME-CAUSE dup FS-ACCESS-DENIED = if drop E-ISSUE-PERMISSION throw then
    dup 0<> if drop E-FS-IO throw else drop then ;
 : SLUG-UNLINK ( ptr u8 n -- )
-   FS-PATHZ UNLINK-CALL FS-CAUSE
+   FS:>PATHZ UNLINK-CALL FS-CAUSE
    dup 2 = if drop exit then
    dup FS-ACCESS-DENIED = if drop E-ISSUE-PERMISSION throw then
    dup 0<> if drop E-FS-IO throw else drop then ;
@@ -2677,7 +2686,7 @@ variable SLUG-PATH-U
    OLD-ID$ RENAMED-ID$ STR= if exit then
    RENAMED-ID$ CREATABLE-ID? 0= s" Invalid issue id" ?FAIL
    RENAMED-ID$ FIND-EXACT -1 <> if SLUG-SKIP exit then
-   idx F-PATH FIELD$ FILE? 0= s" Issue not found" ?FAIL
+   idx F-PATH FIELD$ FS:FILE? 0= s" Issue not found" ?FAIL
    idx SLUG-PLAN-PATH SLUG-PLAN-CHILD
    SLUG-DEST-OCCUPIED? if SLUG-SKIP exit then
    idx SLUG-IDX !
@@ -2696,14 +2705,14 @@ variable SLUG-PATH-U
 create GIT-EXEC-ROW PATH-CAP allot
 : GIT-ADD-DOTS ( -- )
    STORE? 0= if exit then
-   s" .git" EXISTS? 0= if exit then
+   s" .git" FS:EXISTS? 0= if exit then
    s" git" >LEN GIT-EXEC-ROW FIND-EXECUTABLE MATCH option
       none OF s\" Warning: git not found; .dots not staged\n" 2 -rot STDERR-WRITE drop ENDOF
       some OF {: path-u:len :}
          PROC-ARGV-RESET
          s" add" >LEN PROC-ARGV+
          s" .dots" >LEN PROC-ARGV+
-         s" /dev/null" FS-PATHZ FS-O-WRONLY FS-MODE-0644 open {: sink:n :}
+         s" /dev/null" FS:>PATHZ FS:O-WRONLY FS:MODE-0644 open {: sink:n :}
          GIT-EXEC-ROW path-u -1 >FD sink >FD sink >FD PROC-RUN-ARGV-IO-RC
          sink close
          MATCH result
@@ -2743,77 +2752,77 @@ variable DEP-TYPE-U
 variable JSONL-SEEN
 variable JSONL-DEP-SEEN
 
-: JSONL-KEY-BIT ( JR:reader -- JR:reader n )
-   s" id" JR:STR-EQ? if 1 exit then
-   s" title" JR:STR-EQ? if 2 exit then
-   s" description" JR:STR-EQ? if 4 exit then
-   s" status" JR:STR-EQ? if 8 exit then
-   s" priority" JR:STR-EQ? if 16 exit then
-   s" issue_type" JR:STR-EQ? if 32 exit then
-   s" assignee" JR:STR-EQ? if 64 exit then
-   s" created_at" JR:STR-EQ? if 128 exit then
-   s" updated_at" JR:STR-EQ? if 256 exit then
-   s" closed_at" JR:STR-EQ? if 512 exit then
-   s" close_reason" JR:STR-EQ? if 1024 exit then
-   s" dependencies" JR:STR-EQ? if 2048 exit then
+: JSONL-KEY-BIT ( JSON:reader -- JSON:reader n )
+   s" id" JSON:READ-STR-EQ? if 1 exit then
+   s" title" JSON:READ-STR-EQ? if 2 exit then
+   s" description" JSON:READ-STR-EQ? if 4 exit then
+   s" status" JSON:READ-STR-EQ? if 8 exit then
+   s" priority" JSON:READ-STR-EQ? if 16 exit then
+   s" issue_type" JSON:READ-STR-EQ? if 32 exit then
+   s" assignee" JSON:READ-STR-EQ? if 64 exit then
+   s" created_at" JSON:READ-STR-EQ? if 128 exit then
+   s" updated_at" JSON:READ-STR-EQ? if 256 exit then
+   s" closed_at" JSON:READ-STR-EQ? if 512 exit then
+   s" close_reason" JSON:READ-STR-EQ? if 1024 exit then
+   s" dependencies" JSON:READ-STR-EQ? if 2048 exit then
    0 ;
 
-: JSONL-MALFORMED ( JR:reader -- ) JR:CLOSE E-JR-MALFORMED throw ;
-: JSONL-START ( -- JR:reader )
+: JSONL-MALFORMED ( JSON:reader -- ) JSON:READ-CLOSE E-JSON-READ-MALFORMED throw ;
+: JSONL-START ( -- JSON:reader )
    JSONL-CURSOR JSONL:READER
-   JR:NEXT JR:T-OBJ <> if JSONL-MALFORMED then ;
+   JSON:READ-NEXT JSON:T-OBJ <> if JSONL-MALFORMED then ;
 : JSONL-VALIDATE ( -- )
    0 JSONL-SEEN !
    JSONL-START
-   begin JR:NEXT dup JR:T-OBJ-END <> while
-      JR:T-KEY <> if JSONL-MALFORMED then
+   begin JSON:READ-NEXT dup JSON:T-OBJ-END <> while
+      JSON:T-KEY <> if JSONL-MALFORMED then
       JSONL-KEY-BIT {: bit:n :}
       JSONL-SEEN @ bit and 0<> if JSONL-MALFORMED then
       JSONL-SEEN @ bit or JSONL-SEEN !
-      JR:NEXT drop JR:SKIP-VALUE
+      JSON:READ-NEXT drop JSON:READ-SKIP-VALUE
    repeat drop
-   JR:NEXT JR:T-END <> if JSONL-MALFORMED then
-   JR:CLOSE ;
-: JSONL-FIND ( ptr u8 n -- JR:reader bool )
+   JSON:READ-NEXT JSON:T-END <> if JSONL-MALFORMED then
+   JSON:READ-CLOSE ;
+: JSONL-FIND ( ptr u8 n -- JSON:reader bool )
    {: key:ptr ku:n :}
-   JSONL-START key ku JR:FIND-KEY ;
+   JSONL-START key ku JSON:READ-FIND-KEY ;
 variable JSONL-BYTE-U
 : JSONL-BYTE-VALUE ( ptr u8 n -- n )
    DECIMAL:EXACT MATCH option
-      none OF E-JR-MALFORMED throw ENDOF
+      none OF E-JSON-READ-MALFORMED throw ENDOF
       some OF ENDOF
    ;MATCH
-   dup 0 < over 255 > or if E-JR-MALFORMED throw then ;
-: JSONL-BYTE-ELEM ( JR:reader -- JR:reader n )
-   JR:TOKEN {: kind:n :}
-   kind JR:T-STR = if
+   dup 0 < over 255 > or if E-JSON-READ-MALFORMED throw then ;
+: JSONL-BYTE-ELEM ( JSON:reader -- JSON:reader n )
+   JSON:READ-TOKEN {: kind:n :}
+   kind JSON:T-STR = if
       JSONL-DECODE-BUF JSONL-BYTE-U @ +
-      1048576 JSONL-BYTE-U @ - JR:STR {: size:n :}
+      1048576 JSONL-BYTE-U @ - JSON:READ-STR {: size:n :}
       JSONL-DECODE-BUF JSONL-BYTE-U @ + size JSONL-BYTE-VALUE exit
    then
-   kind JR:T-INT = kind JR:T-FLOAT = or if
-      JR:SPAN$ JSONL-BYTE-VALUE exit
+   kind JSON:T-INT = kind JSON:T-FLOAT = or if
+      JSON:READ-SPAN$ JSONL-BYTE-VALUE exit
    then
-   E-JR-MALFORMED throw ;
-: JSONL-BYTE-ARRAY ( JR:reader -- JR:reader n )
+   E-JSON-READ-MALFORMED throw ;
+: JSONL-BYTE-ARRAY ( JSON:reader -- JSON:reader n )
    0 JSONL-BYTE-U !
-   begin JR:NEXT dup JR:T-ARR-END <> while
+   begin JSON:READ-NEXT dup JSON:T-ARR-END <> while
       drop
-      JSONL-BYTE-U @ 1048576 >= if E-JR-MALFORMED throw then
+      JSONL-BYTE-U @ 1048576 >= if E-JSON-READ-MALFORMED throw then
       JSONL-BYTE-ELEM JSONL-DECODE-BUF JSONL-BYTE-U @ + c!
       1 JSONL-BYTE-U +!
    repeat drop JSONL-BYTE-U @ ;
-: JSONL-STRING-VALUE ( JR:reader -- JR:reader n )
-   JR:TOKEN dup JR:T-STR = if
-      drop JSONL-DECODE-BUF 1048576 JR:STR exit
+: JSONL-STRING-VALUE ( JSON:reader -- JSON:reader n )
+   JSON:READ-TOKEN dup JSON:T-STR = if
+      drop JSONL-DECODE-BUF 1048576 JSON:READ-STR exit
    then
-   JR:T-ARR = if JSONL-BYTE-ARRAY exit then
-   E-JR-MALFORMED throw ;
+   JSON:T-ARR = if JSONL-BYTE-ARRAY exit then
+   E-JSON-READ-MALFORMED throw ;
 \ The decoded string under the key, in JSONL-DECODE-BUF, and true; or an
 \ empty span and false when the key is absent or null. The reader stays open.
-: JSONL-STRING? ( ptr u8 n -- JR:reader ptr u8 n bool )
+: JSONL-STRING? ( ptr u8 n -- JSON:reader ptr u8 n bool )
    JSONL-FIND if
-      JR:TOKEN JR:T-NULL = if s" " false exit then
+      JSON:READ-TOKEN JSON:T-NULL = if s" " false exit then
       JSONL-STRING-VALUE {: size:n :}
       JSONL-DECODE-BUF size true exit
    then s" " false ;
@@ -2821,24 +2830,24 @@ variable JSONL-BYTE-U
    {: field:n :}
    JSONL-STRING? {: present:bool :}
    present if IMPORT-IDX @ field FIELD! else 2drop then
-   JR:CLOSE present ;
+   JSON:READ-CLOSE present ;
 : JSONL-REQUIRED-STRING ( ptr u8 n n -- )
-   JSONL-STRING-FIELD 0= if E-JR-MALFORMED throw then ;
+   JSONL-STRING-FIELD 0= if E-JSON-READ-MALFORMED throw then ;
 : JSONL-PRIORITY ( -- )
    s" priority" JSONL-FIND 0= if JSONL-MALFORMED then
-   JR:TOKEN {: kind:n :}
-   kind JR:T-INT = if
-      JR:INT IMPORT-IDX @ F-PRIORITY REC-CELL ! JR:CLOSE exit
+   JSON:READ-TOKEN {: kind:n :}
+   kind JSON:T-INT = if
+      JSON:READ-INT IMPORT-IDX @ F-PRIORITY REC-CELL ! JSON:READ-CLOSE exit
    then
-   kind JR:T-STR = kind JR:T-FLOAT = or 0= if JSONL-MALFORMED then
-   kind JR:T-STR = if
-      JSONL-DECODE-BUF 1048576 JR:STR {: size:n :} JSONL-DECODE-BUF size
-   else JR:SPAN$ then
+   kind JSON:T-STR = kind JSON:T-FLOAT = or 0= if JSONL-MALFORMED then
+   kind JSON:T-STR = if
+      JSONL-DECODE-BUF 1048576 JSON:READ-STR {: size:n :} JSONL-DECODE-BUF size
+   else JSON:READ-SPAN$ then
    DECIMAL:EXACT MATCH option
       none OF JSONL-MALFORMED ENDOF
       some OF IMPORT-IDX @ F-PRIORITY REC-CELL ! ENDOF
    ;MATCH
-   JR:CLOSE ;
+   JSON:READ-CLOSE ;
 : JSONL-STATUS ( -- )
    s" status" F-REASON JSONL-REQUIRED-STRING
    IMPORT-IDX @ F-REASON FIELD$ 2dup s" in_progress" STR= if 2drop 1 else
@@ -2864,33 +2873,33 @@ variable JSONL-BYTE-U
 : DEP-TYPE! ( ptr u8 n -- )
    {: a:ptr u:n :}
    a DEP-TYPE-ROW u BYTE-COPY u DEP-TYPE-U ! ;
-: JSONL-DEP-OBJECT ( JR:reader -- JR:reader )
+: JSONL-DEP-OBJECT ( JSON:reader -- JSON:reader )
    -1 DEP-ID-U ! -1 DEP-TYPE-U !
    0 JSONL-DEP-SEEN !
-   begin JR:NEXT dup JR:T-OBJ-END <> while
-      JR:T-KEY <> if E-JR-MALFORMED throw then
-      s" depends_on_id" JR:STR-EQ? {: id-key:bool :}
-      s" type" JR:STR-EQ? {: type-key:bool :}
+   begin JSON:READ-NEXT dup JSON:T-OBJ-END <> while
+      JSON:T-KEY <> if E-JSON-READ-MALFORMED throw then
+      s" depends_on_id" JSON:READ-STR-EQ? {: id-key:bool :}
+      s" type" JSON:READ-STR-EQ? {: type-key:bool :}
       id-key if
-         JSONL-DEP-SEEN @ 1 and 0<> if E-JR-MALFORMED throw then
+         JSONL-DEP-SEEN @ 1 and 0<> if E-JSON-READ-MALFORMED throw then
          JSONL-DEP-SEEN @ 1 or JSONL-DEP-SEEN !
       then
       type-key if
-         JSONL-DEP-SEEN @ 2 and 0<> if E-JR-MALFORMED throw then
+         JSONL-DEP-SEEN @ 2 and 0<> if E-JSON-READ-MALFORMED throw then
          JSONL-DEP-SEEN @ 2 or JSONL-DEP-SEEN !
       then
-      JR:NEXT {: token:n :}
+      JSON:READ-NEXT {: token:n :}
       id-key if
          JSONL-STRING-VALUE {: size:n :}
          JSONL-DECODE-BUF size DEP-ID!
       else type-key if
-         token JR:T-NULL = if -1 DEP-TYPE-U ! else
+         token JSON:T-NULL = if -1 DEP-TYPE-U ! else
             JSONL-STRING-VALUE {: size:n :}
             JSONL-DECODE-BUF size DEP-TYPE!
          then
-      else JR:SKIP-VALUE then then
+      else JSON:READ-SKIP-VALUE then then
    repeat drop
-   DEP-ID-U @ -1 = if E-JR-MALFORMED throw then
+   DEP-ID-U @ -1 = if E-JSON-READ-MALFORMED throw then
    DEP-TYPE-U @ -1 = if s" blocks" DEP-TYPE! then
    DEP-TYPE-ROW DEP-TYPE-U @ s" parent-child" STR= if
       IMPORT-IDX @ F-PARENT-PRESENT REC-CELL @ 0= if
@@ -2904,19 +2913,19 @@ variable JSONL-BYTE-U
    then ;
 : JSONL-DEPENDENCIES ( -- )
    s" dependencies" JSONL-FIND if
-      JR:TOKEN dup JR:T-NULL = if drop JR:CLOSE exit then
-      JR:T-ARR <> if JSONL-MALFORMED then
-      begin JR:NEXT dup JR:T-ARR-END <> while
-         JR:T-OBJ <> if E-JR-MALFORMED throw then
+      JSON:READ-TOKEN dup JSON:T-NULL = if drop JSON:READ-CLOSE exit then
+      JSON:T-ARR <> if JSONL-MALFORMED then
+      begin JSON:READ-NEXT dup JSON:T-ARR-END <> while
+         JSON:T-OBJ <> if E-JSON-READ-MALFORMED throw then
          JSONL-DEP-OBJECT
-      repeat drop JR:CLOSE
-   else JR:CLOSE then ;
+      repeat drop JSON:READ-CLOSE
+   else JSON:READ-CLOSE then ;
 : JSONL-PARSE-LINE ( -- )
    JSONL-VALIDATE
    s" " NEW-RECORD IMPORT-IDX !
    0 IMPORT-DEP-U !
-   s" id" JSONL-STRING? 0= if 2drop JR:CLOSE E-JR-MALFORMED throw then
-   IMPORT-IDX @ ID! JR:CLOSE
+   s" id" JSONL-STRING? 0= if 2drop JSON:READ-CLOSE E-JSON-READ-MALFORMED throw then
+   IMPORT-IDX @ ID! JSON:READ-CLOSE
    s" title" F-TITLE JSONL-REQUIRED-STRING
    s" description" F-DESC JSONL-STRING-FIELD drop
    JSONL-STATUS JSONL-PRIORITY
@@ -3645,7 +3654,7 @@ variable SKIP-BUCKETS
 : IMPORT-TAKEN? ( n -- bool )
    {: idx:n :}
    idx F-ID FIELD$ SB-APPEND s" .md" SB-APPEND
-   SB$ FS-TRY-LSTAT if true exit then
+   SB$ FS:TRY-LSTAT if true exit then
    SB$ idx F-PATH FIELD! false ;
 \ Write the row at IMPORT-IDX where add -P would: in its parent's own folder,
 \ made first, wherever the parent lives, the archive included, the row taking
@@ -3667,9 +3676,9 @@ variable SKIP-BUCKETS
       parent -1 = if
          idx F-PARENT FIELD$ SKIPPED? if IMPORT-SKIP exit then
          SB-RESET s" .dots/" SB-APPEND idx F-PARENT FIELD$ SB-APPEND SB$ PATH-ONE!
-         PATH-ONE$ FS-TRY-LSTAT-MODE MATCH option
+         PATH-ONE$ TRY-LSTAT-MODE MATCH option
             none OF PATH-ONE$ MAKE-ISSUE-DIRS false ENDOF
-            some OF S-IFMT and S-IFDIR <> ENDOF
+            some OF FS:S-IFMT and FS:S-IFDIR <> ENDOF
          ;MATCH if IMPORT-SKIP exit then
          SB-RESET PATH-ONE$ SB-APPEND 47 SB-APPEND-C
          idx IMPORT-TAKEN? if IMPORT-SKIP exit then
@@ -3686,8 +3695,8 @@ variable SKIP-BUCKETS
       1 idx F-CHILD REC-CELL !
    else
       SB-RESET s" .dots/" SB-APPEND idx F-ID FIELD$ SB-APPEND
-      SB$ DIR? if
-         SB$ SYMLINK? if IMPORT-SKIP exit then
+      SB$ FS:DIR? if
+         SB$ FS:SYMLINK? if IMPORT-SKIP exit then
          47 SB-APPEND-C
       else SB-RESET idx IMPORT-ROOT$ SB-APPEND then
       idx IMPORT-TAKEN? if IMPORT-SKIP exit then
@@ -3812,8 +3821,8 @@ variable SKIP-BUCKETS
 \ other failure to reach it is an I/O error.
 : CHECK-JSONL-PATH ( ptr u8 n -- )
    {: path:ptr pu:n :}
-   path pu FILE? if exit then
-   path pu FS-PATHZ 0 ACCESS-CALL 0= s" Not a file: " path pu ?ISSUE-ERROR
+   path pu FS:FILE? if exit then
+   path pu FS:>PATHZ 0 ACCESS-CALL 0= s" Not a file: " path pu ?ISSUE-ERROR
    FFI:ERRNO FS-NO-ENTRY = s" File not found: " path pu ?ISSUE-ERROR
    s" I/O error" FAIL ;
 \ Run the word on the path each `--from-jsonl` names.

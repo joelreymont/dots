@@ -857,7 +857,7 @@ s" config-at-limit" ' CONFIG-AT-LIMIT DOT-CASE
 s" config-too-large" ' CONFIG-TOO-LARGE DOT-CASE
 
 : CONFIG-DIRECTORY ( -- )
-   s" .dots/config" FILE$ MAKE-DIRS
+   s" .dots/config" FILE$ FS:MAKE-DIRS
    s" add|T" RUN
    1 RC=
    s" " OUT=
@@ -1428,7 +1428,7 @@ s" pinned-taken-file-symlink" ' PINNED-TAKEN-FILE-SYMLINK DOT-CASE
 
 : PINNED-TAKEN-FILE-DIRECTORY ( -- )
    PINNED-STORE
-   s" .dots/x-task-5eed1d00.md" FILE$ MAKE-DIRS
+   s" .dots/x-task-5eed1d00.md" FILE$ FS:MAKE-DIRS
    s" add|Task" RUN-PINNED
    1 RC=
    s" " OUT=
@@ -1454,7 +1454,7 @@ s" pinned-taken-file-directory" ' PINNED-TAKEN-FILE-DIRECTORY DOT-CASE
 \ add writes nothing through a folder link, so the outside folder stays empty.
 : PINNED-TAKEN-FOLDER-SYMLINK ( -- )
    PINNED-STORE
-   s" outside" FILE$ MAKE-DIRS
+   s" outside" FILE$ FS:MAKE-DIRS
    s" ../outside" s" x-task-5eed1d00" LINK
    s" add|Task" RUN-PINNED
    1 RC=
@@ -1639,7 +1639,7 @@ s" pinned-free-symlinked-dir-child" ' PINNED-FREE-SYMLINKED-DIR-CHILD DOT-CASE
 
 : PINNED-FREE-EMPTY-FOLDER ( -- )
    PINNED-STORE
-   s" .dots/x-task-5eed1d00" FILE$ MAKE-DIRS
+   s" .dots/x-task-5eed1d00" FILE$ FS:MAKE-DIRS
    s" add|Task" RUN-PINNED
    0 RC=
    s\" x-task-5eed1d00\n" OUT=
@@ -1673,7 +1673,7 @@ s" pinned-free-empty-folder" ' PINNED-FREE-EMPTY-FOLDER DOT-CASE
 
 : PINNED-FREE-EMPTY-FOLDER-CHILD ( -- )
    PINNED-STORE
-   s" .dots/x-task-5eed1d00" FILE$ MAKE-DIRS
+   s" .dots/x-task-5eed1d00" FILE$ FS:MAKE-DIRS
    s" add|Task|-P|a" RUN-PINNED
    0 RC=
    s\" x-task-5eed1d00\n" OUT=
@@ -1746,7 +1746,7 @@ d .dots/" L+
 ;
 s" pinned-free-long-path" ' PINNED-FREE-LONG-PATH DOT-CASE
 
-\ A child whose path would pass FS-PATH-CAP is refused before p gains a
+\ A child whose path would pass PATH-CAP is refused before p gains a
 \ folder. The tree is read with the top folder renamed back to `a`.
 : PINNED-PARENT-PATH-TOO-LONG ( -- )
    PINNED-STORE
@@ -1781,7 +1781,7 @@ f .dots/config
 s" pinned-parent-path-too-long" ' PINNED-PARENT-PATH-TOO-LONG DOT-CASE
 
 \ With a 210-byte d folder, p's own folder for the 20-byte id is 1005 bytes:
-\ the child's file there, 1023 bytes, fits FS-PATH-CAP, but p's own file
+\ the child's file there, 1023 bytes, fits PATH-CAP, but p's own file
 \ there, 1029 bytes, does not. add refuses before p gains a folder.
 210 constant OWN-D-NAME                 \ the d folder that bounds p's own path
 : PINNED-PARENT-OWN-PATH-TOO-LONG ( -- )
@@ -1821,7 +1821,7 @@ s" pinned-parent-own-path-too-long" ' PINNED-PARENT-OWN-PATH-TOO-LONG DOT-CASE
 : PINNED-PARENT-FOLDER-SYMLINK ( -- )
    PINNED-STORE
    s" p.md" s" P" s" open" 2 PUT-ISSUE
-   s" outside" FILE$ MAKE-DIRS
+   s" outside" FILE$ FS:MAKE-DIRS
    s" ../outside" s" p" LINK
    s" add|Kid|-P|p" RUN-PINNED
    1 RC=
@@ -1858,7 +1858,7 @@ s" pinned-parent-folder-symlink" ' PINNED-PARENT-FOLDER-SYMLINK DOT-CASE
 : PARENT-FOLDER-SYMLINK-NO-CONFIG ( -- )
    s" a.md" s" A" s" open" 2 PUT-ISSUE
    s" p.md" s" P" s" open" 2 PUT-ISSUE
-   s" outside" FILE$ MAKE-DIRS
+   s" outside" FILE$ FS:MAKE-DIRS
    s" ../outside" s" p" LINK
    s" add|Kid|-P|p" RUN
    1 RC=
