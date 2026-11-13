@@ -489,7 +489,8 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
    then ;
 
 \ Build tests/probe.c into the run's root with cc; the run dies without cc,
-\ since no other suite covers what RUN-PROBE and RUN-PINNED do.
+\ since no other suite covers what RUN-PROBE and RUN-PINNED do. cc gets the
+\ harness's environment: a compiler driver finds its linker on PATH.
 : BUILD-PROBE ( -- )
    s" cc" >LEN CC-BUF FIND-EXECUTABLE MATCH option
       none OF s" tests/run.f: no cc on PATH to build tests/probe.c" 2 die ENDOF
@@ -498,7 +499,7 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
    GT-ROOT HB-TARGET-MACOS? if s" probe.dylib" else s" probe.so" then
    PROBE-BUF PROBE-U JOIN!
    SOURCE-ROOT:CURRENT$ s" probe.c" REPO-BUF REPO-U JOIN!
-   PROC-ARGV-RESET
+   PROC-ARGV-ENV-RESET PROC-ENV-INHERIT-MISSING
    HB-TARGET-MACOS? if
       s" -dynamiclib" >LEN PROC-ARGV+
    else
@@ -508,7 +509,7 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
    PROBE-BUF PROBE-U @ >LEN PROC-ARGV+
    REPO-BUF REPO-U @ >LEN PROC-ARGV+
    HB-TARGET-MACOS? 0= if s" -ldl" >LEN PROC-ARGV+ then
-   CC-BUF ccu >LEN -1 >FD -1 >FD -1 >FD PROC-RUN-ARGV-IO-RC MATCH result
+   CC-BUF ccu >LEN -1 >FD -1 >FD -1 >FD PROC-RUN-ARGV-ENV-IO-RC MATCH result
       ok OF drop ENDOF
       err OF drop s" tests/run.f: cc failed to build tests/probe.c" 2 die ENDOF
    ;MATCH ;
