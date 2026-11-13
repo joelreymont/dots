@@ -436,17 +436,29 @@ FUNCTION: SET-UMASK umask ( n -- n ) ;FUNCTION
 : CLOSE ( n -- )
    FS:CLOSE-FD 0<> if E-FS-IO throw then ;
 
+\ A request for the prepared program, argv and environment in the store, with
+\ stdin in, stdout out (closed when out is -1) and stderr err.
+: LAUNCH-REQUEST ( ptr u8 ptr ptr u8 ptr ptr u8 n n n -- PROCESS:request )
+   {: pathz:ptr argv:ptr envp:ptr in:n out:n err:n :}
+   pathz dup ZLEN PROCESS:NEW PROCESS:HERMETIC
+   argv PROCESS:ARGV-ROWS envp PROCESS:ENV-ROWS
+   STORE$ PROCESS:CWD
+   0 >FD in >FD PROCESS:FD
+   out 0 >= if 1 >FD out >FD PROCESS:FD else 1 >FD PROCESS:CLOSED then
+   2 >FD err >FD PROCESS:FD ;
+
 \ Start the program in the store with the argv and PATH PROC-ARGV+ and PROC-ENV+
 \ built and the fd as its stdout, which LAUNCH-PATHED closes once the child
-\ holds it; -1 gives the child the harness's own. stdin is /dev/null and
+\ holds it; -1 starts the child with stdout closed. stdin is /dev/null and
 \ stderr the `err` file.
 : LAUNCH-PATHED ( ptr u8 n n -- pid ) {: prog:ptr progu:n out:n :}
    s" HOME" ENV-COPY
    s" TZ" >LEN s" UTC" >LEN PROC-ENV+
    OPEN-NULL {: in:n :}
    s" err" OPEN-OUT {: err:n :}
-   prog progu >LEN STORE$ >LEN in >FD out >FD err >FD
-   PROC-CWD:SPAWN-ARGV-ENV-CWD-IO {: pid:pid :}
+   [: prog progu >LEN PROC-ARGV-PREPARE PROC-ENV-PREPARE in out err
+      LAUNCH-REQUEST PROCESS:SPAWN ;]
+   [: PROC-ARGV-ENV-RESET ;] finally {: pid:pid :}
    in CLOSE err CLOSE
    out 0 >= if out CLOSE then
    pid ;
@@ -725,13 +737,9 @@ private
 
 public
 
-\ Run bin/dot with fd 1 closed: the harness's own stdout, close-on-exec while
-\ dot starts.
+\ Run bin/dot with fd 1 closed.
 : RUN-CLOSED ( ptr u8 n -- )
-   1 >FD FD:FD-CLOEXEC!
-   DOT-ARGV -1 LAUNCH {: pid:pid :}
-   1 FD:F-SETFD 0 fcntl 0<> if E-FS-IO throw then
-   pid WAIT ;
+   DOT-ARGV -1 LAUNCH WAIT ;
 
 \ Run bin/dot with its stdout a pipe whose read end is already closed.
 : RUN-BROKEN ( ptr u8 n -- ) {: a:ptr u:n :}
