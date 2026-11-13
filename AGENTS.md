@@ -41,6 +41,5 @@ form.
 - Keep generated binaries and compiler cache out of commits. Update the size
   claim in README only after measuring a rebuilt, stripped binary on the same
   target platform.
-- The source and build are Habu; the Zig source stays on the `zig` branch.
-- Do not restore the Zig CI or release workflow without a verified Habu
-  bootstrap and release process for every supported runner and target.
+- Do not add a CI or release workflow without a verified Habu bootstrap and
+  release process for every supported runner and target.
