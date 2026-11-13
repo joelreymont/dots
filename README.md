@@ -6,7 +6,7 @@ Fast task tracking in plain Markdown files. Dots is a single native Habu CLI;
 tasks live in `.dots/` and can be read, edited, and versioned with ordinary
 file tools. It needs no database or server at runtime.
 
-The current stripped macOS arm64 binary is **214,908 bytes** (about 210 KiB).
+The current stripped Linux arm64 binary is **327,888 bytes** (about 320 KiB).
 
 ## Install from source
 
