@@ -10,9 +10,9 @@ The current stripped macOS arm64 binary is **214,908 bytes** (about 210 KiB).
 
 ## Install from source
 
-Install Habu so that `hb` on `PATH` resolves to an installed release, normally
-`~/.local/bin/hb` through `~/.local/lib/habu/current`. `build.sh` builds from
-that release's root, which must contain `bin/hb` and `tools/hb-build.f`. To
+Install Habu so that `hb` on `PATH` resolves to an installed tree, normally
+`~/.local/bin/hb` linking to `~/.local/lib/habu/bin/hb`. `build.sh` builds from
+that tree's root, which must contain `bin/hb` and `tools/hb-build.f`. To
 build with another Habu, put its `bin/hb` first on `PATH`.
 
 ```sh
